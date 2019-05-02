@@ -110,8 +110,8 @@ extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, float2 *din) 
 
   queue_setup();
 
+  printf("In FPGA\n");
   // If fft size changes, need to rebuild program using another binary
-  //if(fft_size_changed == true || flag == 0){
   if(fft_size_changed == true){
     status = select_binary(N);
     checkError(status, "Failed to select binary as no relevant FFT3d binaries found in the directory!");
@@ -208,6 +208,11 @@ static void fftfpga_run_3d(bool inverse, const uint32_t *N, float2 *c_in) {
  * \retval true if no board binary found in the location
  *****************************************************************************/
 static bool select_binary(const uint32_t *N){
+    if(!setCwdToExeDir()){
+        printf("Not set current working directory to executable dir");
+        return false;
+
+    }
     switch(N[0]){
         case 16 :
           binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/synthesis/syn16/fft3d", device);
