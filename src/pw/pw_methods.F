@@ -36,9 +36,11 @@ MODULE pw_methods
                                               pw_cuda_c1dr3d_3d_ps,&
                                               pw_cuda_r3dc1d_3d,&
                                               pw_cuda_r3dc1d_3d_ps
-   USE pw_fpga,                         ONLY: pw_fpga_c1dr3d_3d,&
+   USE pw_fpga,                         ONLY: pw_fpga_c1dr3d_3d_sp,&
+                                              pw_fpga_c1dr3d_3d_dp,&
                                               pw_fpga_check_bitstream,&
-                                              pw_fpga_r3dc1d_3d
+                                              pw_fpga_r3dc1d_3d_sp,&
+                                              pw_fpga_r3dc1d_3d_dp
    USE pw_grid_types,                   ONLY: HALFSPACE,&
                                               PW_MODE_DISTRIBUTED,&
                                               PW_MODE_LOCAL,&
@@ -1287,6 +1289,7 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: c_in, c_out
       INTEGER                                            :: dir, handle, handle2, my_pos, nrays, &
                                                             out_space, out_unit
+      !INTEGER                                            :: i
       INTEGER, DIMENSION(3)                              :: nloc
       INTEGER, DIMENSION(:), POINTER                     :: n
       LOGICAL                                            :: test, use_pw_cuda
@@ -1382,17 +1385,30 @@ CONTAINS
 #elif defined (__PW_FPGA)
             ! check if bitstream for the fft size is present
             ! if not, perform fft3d in CPU
-
             IF (pw_fpga_check_bitstream(n) .EQV. .TRUE.) THEN
                ALLOCATE (c_out(n(1), n(2), n(3)))
+               !ALLOCATE (c_in(n(1), n(2), n(3)))
 
                CALL copy_rc(pw1%cr3d, c_out)
-               ! typecast dp to sp
-               CALL pw_fpga_r3dc1d_3d(n, c_out)
-               ! scale and then gather
+               !CALL copy_rc(pw1%cr3d, c_in)
+#if defined (__PW_FPGA_SP)
+               WRITE (*,*) "Choosing Forward Single Precision FFT3d"
+               CALL pw_fpga_r3dc1d_3d_sp(n, c_out)
+#else
+               WRITE (*,*) "Choosing Forward Double Precision FFT3d"
+               CALL pw_fpga_r3dc1d_3d_dp(n, c_out)
+#endif
                CALL zdscal(n(1)*n(2)*n(3), norm, c_out, 1)
+
+               !CALL fft3d(dir, n, c_in, scale=norm, debug=test)
+
+               !do i = 1,10
+               ! WRITE (*,*) "FW", c_out(1,1,i), c_in(1,1,i)
+               !end do
+
                CALL pw_gather(pw2, c_out)
 
+               !DEALLOCATE (c_in)
                DEALLOCATE (c_out)
             ELSE
                ALLOCATE (c_out(n(1), n(2), n(3)))
@@ -1433,14 +1449,29 @@ CONTAINS
             ! if not, perform fft3d in CPU
             IF (pw_fpga_check_bitstream(n) .EQV. .TRUE.) THEN
                ALLOCATE (c_out(n(1), n(2), n(3)))
+               !ALLOCATE (c_in(n(1), n(2), n(3)))
 
                CALL pw_scatter(pw1, c_out)
+               !CALL pw_scatter(pw1, c_in)
+
                ! transform using FPGA
-               CALL pw_fpga_c1dr3d_3d(n, c_out)
+#if defined (__PW_FPGA_SP)
+               WRITE (*,*) "Choosing Backward Single Precision FFT3d"
+               CALL pw_fpga_c1dr3d_3d_sp(n, c_out)
+#else
+               WRITE (*,*) "Choosing Backward Double Precision FFT3d"
+               CALL pw_fpga_c1dr3d_3d_dp(n, c_out)
+#endif
                CALL zdscal(n(1)*n(2)*n(3), norm, c_out, 1)
                ! use real part only
                CALL copy_cr(c_out, pw2%cr3d)
 
+               !CALL fft3d(dir, n, c_in, scale=norm, debug=test)
+               !do i = 1,10
+               ! WRITE (*,*) "BW", c_out(1,1,i), c_in(1,1,i)
+               !end do
+
+               !DEALLOCATE (c_in)
                DEALLOCATE (c_out)
             ELSE
                ALLOCATE (c_out(n(1), n(2), n(3)))

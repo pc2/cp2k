@@ -20,6 +20,12 @@ typedef struct {
   float y;
 } float2;
 
+#ifdef __PW_FPGA_SP
+    typedef float2 cmplx;
+#else
+    typedef double2 cmplx;
+#endif
+
 // Initialize FPGA
 extern "C" int pw_fpga_initialize_();
 
@@ -27,7 +33,10 @@ extern "C" int pw_fpga_initialize_();
 extern "C" void pw_fpga_final_();
 
 // Single precision FFT3d procedure
-extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, float2 *din);
+extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, cmplx *din);
+
+
+extern "C" void pw_fpga_fft3d_dp_(uint32_t direction, uint32_t *N, cmplx *din);
 
 // Check fpga bitstream present in directory
 extern "C" bool pw_fpga_check_bitstream_(uint32_t *N);

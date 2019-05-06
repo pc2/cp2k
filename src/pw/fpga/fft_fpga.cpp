@@ -47,8 +47,8 @@ static uint32_t fft_size[3] = {0,0,0};
 bool fft_size_changed = true;
 std::string binary_file = "";
 
-float2 *h_outData, *h_inData;
-float2 *h_verify_tmp, *h_verify;
+cmplx *h_outData, *h_inData;
+cmplx *h_verify_tmp, *h_verify;
 
 // Function prototypes
 bool init();
@@ -56,7 +56,7 @@ void cleanup();
 static void init_program(const uint32_t *N);
 static void queue_setup();
 static void queue_cleanup();
-static void fftfpga_run_3d(const bool fsign, const uint32_t *N, float2 *c_in);
+static void fftfpga_run_3d(const bool fsign, const uint32_t *N, cmplx *c_in);
 static bool select_binary(const uint32_t *N);
 
 // --- CODE -------------------------------------------------------------------
@@ -106,11 +106,11 @@ extern "C" bool pw_fpga_check_bitstream_(uint32_t *N){
  * \param   N   : integer pointer to size of FFT3d  
  * \param   din : complex input/output single precision data pointer 
  *****************************************************************************/
-extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, float2 *din) {
+extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, cmplx *din) {
 
   queue_setup();
 
-  printf("In FPGA\n");
+  printf("In SP FPGA C function\n");
   // If fft size changes, need to rebuild program using another binary
   if(fft_size_changed == true){
     status = select_binary(N);
@@ -131,6 +131,30 @@ extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, float2 *din) 
 
 }
 
+extern "C" void pw_fpga_fft3d_dp_(uint32_t direction, uint32_t *N, cmplx *din) {
+
+  queue_setup();
+
+  printf("In DP FPGA C function\n");
+  // If fft size changes, need to rebuild program using another binary
+  if(fft_size_changed == true){
+    status = select_binary(N);
+    checkError(status, "Failed to select binary as no relevant FFT3d binaries found in the directory!");
+
+    init_program(N);
+  }
+
+  // setup device specific constructs 
+  if(direction == 1){
+    fftfpga_run_3d(0, N, din);
+  }
+  else{
+    fftfpga_run_3d(1, N, din);
+  }
+
+  queue_cleanup();
+
+}
 /******************************************************************************
  * \brief   Execute a single precision complex FFT3d
  * \author  Arjun Ramaswami
@@ -138,15 +162,15 @@ extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, float2 *din) 
  * \param   N       : integer pointer to size of FFT3d  
  * \param   din     : complex input/output single precision data pointer 
  *****************************************************************************/
-static void fftfpga_run_3d(bool inverse, const uint32_t *N, float2 *c_in) {
+static void fftfpga_run_3d(bool inverse, const uint32_t *N, cmplx *c_in) {
 
-  h_inData = (float2 *)alignedMalloc(sizeof(float2) * N[0] * N[1] * N[2]);
-  h_outData = (float2 *)alignedMalloc(sizeof(float2) * N[0] * N[1] * N[2]);
+  h_inData = (cmplx *)alignedMalloc(sizeof(cmplx) * N[0] * N[1] * N[2]);
+  h_outData = (cmplx *)alignedMalloc(sizeof(cmplx) * N[0] * N[1] * N[2]);
 
-  memcpy(h_inData, c_in, sizeof(float2) * N[0] * N[1] * N[2]);
+  memcpy(h_inData, c_in, sizeof(cmplx) * N[0] * N[1] * N[2]);
 
   // Copy data from host to device
-  status = clEnqueueWriteBuffer(queue1, d_inData, CL_TRUE, 0, sizeof(float2) * N[0] * N[1] * N[2], h_inData, 0, NULL, NULL);
+  status = clEnqueueWriteBuffer(queue1, d_inData, CL_TRUE, 0, sizeof(cmplx) * N[0] * N[1] * N[2], h_inData, 0, NULL, NULL);
   checkError(status, "Failed to copy data to device");
 
   // Can't pass bool to device, so convert it to int
@@ -189,10 +213,10 @@ static void fftfpga_run_3d(bool inverse, const uint32_t *N, float2 *c_in) {
   checkError(status, "failed to finish");
 
   // Copy results from device to host
-  status = clEnqueueReadBuffer(queue3, d_outData, CL_TRUE, 0, sizeof(float2) * N[0] * N[1] * N[2], h_outData, 0, NULL, NULL);
+  status = clEnqueueReadBuffer(queue3, d_outData, CL_TRUE, 0, sizeof(cmplx) * N[0] * N[1] * N[2], h_outData, 0, NULL, NULL);
   checkError(status, "Failed to read data from device");
 
-  memcpy(c_in, h_outData, sizeof(float2) * N[0] * N[1] * N[2] );
+  memcpy(c_in, h_outData, sizeof(cmplx) * N[0] * N[1] * N[2] );
 
   if (h_outData)
 	alignedFree(h_outData);
@@ -213,6 +237,9 @@ static bool select_binary(const uint32_t *N){
         return false;
 
     }
+    printf("Selecting Binary\n");
+#ifdef __PW_FPGA_SP
+    printf("Selecting Single Precision binaries\n");
     switch(N[0]){
         case 16 :
           binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/synthesis/syn16/fft3d", device);
@@ -224,12 +251,30 @@ static bool select_binary(const uint32_t *N){
      
         case 64 :
           binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/synthesis/syn64/fft3d", device);
-          // binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/emulation/fft3d", device);
           break;
         
         default:
           return true;
     }
+#else
+    printf("Selecting emulation Double Precision binaries \n");
+    switch(N[0]){
+        case 16 :
+          binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/emulation_dp/emu16/fft3d", device);
+        break;
+
+        case 32 :
+          binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/emulation_dp/emu32/fft3d", device);
+          break;
+     
+        case 64 :
+          binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/emulation_dp/emu64/fft3d", device);
+          break;
+        
+        default:
+          return true;
+    }
+#endif
     
     return false;
 }
@@ -292,9 +337,9 @@ static void init_program(const uint32_t *N) {
   transpose_kernel_2 = clCreateKernel(program, "transpose3d", &status);
   checkError(status, "Failed to create transpose3d kernel");
 
-  d_inData = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float2) * N[0] * N[1] * N[2], NULL, &status);
+  d_inData = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cmplx) * N[0] * N[1] * N[2], NULL, &status);
   checkError(status, "Failed to allocate input device buffer\n");
-  d_outData = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float2) * N[0] * N[1] * N[2], NULL, &status);
+  d_outData = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cmplx) * N[0] * N[1] * N[2], NULL, &status);
   checkError(status, "Failed to allocate output device buffer\n");
 }
 

@@ -15,7 +15,8 @@ MODULE pw_fpga
    USE ISO_C_BINDING,                   ONLY: C_BOOL,&
                                               C_INT,&
                                               C_LOC,&
-                                              C_PTR
+                                              C_PTR,&
+                                              C_DOUBLE_COMPLEX
    USE kinds,                           ONLY: dp,&
                                               sp
 #include "../base/base_uses.f90"
@@ -26,7 +27,8 @@ MODULE pw_fpga
 
    PUBLIC :: pw_fpga_init, pw_fpga_finalize
    PUBLIC :: pw_fpga_check_bitstream
-   PUBLIC :: pw_fpga_r3dc1d_3d, pw_fpga_c1dr3d_3d
+   PUBLIC :: pw_fpga_r3dc1d_3d_sp, pw_fpga_c1dr3d_3d_sp
+   PUBLIC :: pw_fpga_r3dc1d_3d_dp, pw_fpga_c1dr3d_3d_dp
 
    INTERFACE
 ! **************************************************************************************************
@@ -66,7 +68,7 @@ MODULE pw_fpga
 
    INTERFACE
 ! **************************************************************************************************
-!> \brief FFT3d using FPGA
+!> \brief single precision FFT3d using FPGA 
 !> \param dir - direction of FFT3d ...
 !> \param npts - dimensions of FFT3d
 !> \param single precision c_in...
@@ -79,6 +81,24 @@ MODULE pw_fpga
             INTENT(IN)                            :: n
          TYPE(C_PTR), VALUE                       :: c_in_sp
       END SUBROUTINE pw_fpga_fft3d_sp
+   END INTERFACE
+
+   INTERFACE
+! **************************************************************************************************
+!> \brief double precision FFT3d using FPGA
+!> \param dir - direction of FFT3d ...
+!> \param npts - dimensions of FFT3d
+!> \param double precision c_in...
+! **************************************************************************************************
+      SUBROUTINE pw_fpga_fft3d_dp(dir, n, c_in_dp) &
+         BIND(C, name="pw_fpga_fft3d_dp_")
+         IMPORT
+         INTEGER(KIND=C_INT), VALUE, INTENT(IN)   :: dir
+         INTEGER(KIND=C_INT), DIMENSION(*), &
+            INTENT(IN)                            :: n
+         !TYPE(C_PTR), VALUE                       :: c_in_dp
+         COMPLEX(KIND=C_DOUBLE_COMPLEX)           :: c_in_dp(n(1), n(2), n(3))
+      END SUBROUTINE pw_fpga_fft3d_dp
    END INTERFACE
 
 CONTAINS
@@ -105,11 +125,78 @@ CONTAINS
    END SUBROUTINE pw_fpga_finalize
 
 ! **************************************************************************************************
-!> \brief perform an in-place fft3d on the FPGA
+!> \brief perform an in-place double precision fft3d on the FPGA
 !> \param n ...
 !> \param c_out  ...
 ! **************************************************************************************************
-   SUBROUTINE pw_fpga_r3dc1d_3d(n, c_out)
+   SUBROUTINE pw_fpga_r3dc1d_3d_dp(n, c_out)
+      INTEGER, DIMENSION(:), INTENT(IN)          :: n
+      COMPLEX(KIND=dp), INTENT(INOUT)            :: c_out(n(1), n(2), n(3))
+
+#if ! defined (__PW_FPGA)
+      MARK_USED(c_out)
+      MARK_USED(n)
+#else
+      INTEGER                                           :: handle3
+      INTEGER                                           :: i
+      CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d_dp'
+
+      WRITE (*,*) "FW DP"
+      do i = 1,10
+       WRITE (*,*) c_out(1,1,i)
+      end do
+
+      CALL timeset(routineX, handle3)
+      CALL pw_fpga_fft3d_dp(+1, n, c_out)
+      CALL timestop(handle3)
+
+      do i = 1,10
+       WRITE (*,*) c_out(1,1,i)
+      end do
+
+#endif
+   END SUBROUTINE
+
+! **************************************************************************************************
+!> \brief perform an in-place double precision inverse fft3d on the FPGA
+!> \param n ...
+!> \param c_out  ...
+! **************************************************************************************************
+   SUBROUTINE pw_fpga_c1dr3d_3d_dp(n, c_out)
+      INTEGER, DIMENSION(:), INTENT(IN)                 :: n
+      COMPLEX(KIND=dp), INTENT(INOUT)    :: c_out(n(1), n(2), n(3))
+
+#if ! defined (__PW_FPGA)
+      MARK_USED(c_out)
+      MARK_USED(n)
+#else
+      !COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER     :: c_in
+      INTEGER                                           :: handle3
+      INTEGER                                           :: i
+      CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_dp'
+
+      WRITE (*,*) "BW DP"
+
+      do i = 1,10
+       WRITE (*,*) c_out(1,1,i)
+      end do
+
+      CALL timeset(routineX, handle3)
+      CALL pw_fpga_fft3d_dp(-1, n, c_out)
+      CALL timestop(handle3)
+
+      do i = 1,10
+       WRITE (*,*) c_out(1,1,i)
+      end do
+#endif
+   END SUBROUTINE
+
+! **************************************************************************************************
+!> \brief perform an in-place single precision fft3d on the FPGA
+!> \param n ...
+!> \param c_out  ...
+! **************************************************************************************************
+   SUBROUTINE pw_fpga_r3dc1d_3d_sp(n, c_out)
       COMPLEX(KIND=dp), DIMENSION(:, :, :), &
          INTENT(INOUT)                               :: c_out
       INTEGER, DIMENSION(:), INTENT(IN)                 :: n
@@ -121,8 +208,9 @@ CONTAINS
       COMPLEX, DIMENSION(:, :, :), POINTER              :: c_in_sp
       INTEGER                                           :: handle3
 
-      CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d'
+      CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d_sp'
 
+      WRITE (*,*) "In FW SP fortran function"
       ALLOCATE (c_in_sp(n(1), n(2), n(3)))
       ! pointer to single precision complex array
       c_in_sp(:, :, :) = CMPLX(c_out(:, :, :), KIND=sp)
@@ -139,11 +227,11 @@ CONTAINS
    END SUBROUTINE
 
 ! **************************************************************************************************
-!> \brief perform an in-place inverse fft3d on the FPGA
+!> \brief perform an in-place single precision inverse fft3d on the FPGA
 !> \param n ...
 !> \param c_out  ...
 ! **************************************************************************************************
-   SUBROUTINE pw_fpga_c1dr3d_3d(n, c_out)
+   SUBROUTINE pw_fpga_c1dr3d_3d_sp(n, c_out)
       COMPLEX(KIND=dp), DIMENSION(:, :, :), &
          INTENT(INOUT)                               :: c_out
       INTEGER, DIMENSION(:), INTENT(IN)                 :: n
@@ -156,8 +244,9 @@ CONTAINS
       COMPLEX, DIMENSION(:, :, :), POINTER              :: c_in_sp
       INTEGER                                           :: handle3
 
-      CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d'
+      CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_sp'
 
+      WRITE (*,*) "In BW SP fortran function"
       ALLOCATE (c_in_sp(n(1), n(2), n(3)))
       ! pointer to single precision complex array
       c_in_sp(:, :, :) = CMPLX(c_out(:, :, :), KIND=sp)
