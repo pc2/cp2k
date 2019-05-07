@@ -1407,9 +1407,9 @@ CONTAINS
 
                inquire(file="data.dat", EXIST=file_exist)
                if (file_exist) then
-                    open(8, file = 'data.dat', status = 'old', position = "append")
+                    open(7, file = 'data.dat', status = 'old', position = "append")
                else 
-                    open(8, file = 'data.dat', status = 'new')
+                    open(7, file = 'data.dat', status = 'new')
                end if
 
                !IF (test .AND. out_unit > 0)  THEN
