@@ -172,7 +172,9 @@ CONTAINS
 #else
       !COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER     :: c_in
       INTEGER                                           :: handle3
+      !INTEGER                                           :: i, j, k
       INTEGER                                           :: i
+
       CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_dp'
 
       WRITE (*,*) "BW DP"
