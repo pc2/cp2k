@@ -6,7 +6,7 @@
 #endif
 
 #ifndef TYPE_FLOAT
-#  define TYPE_FLOAT 1
+#  define TYPE_FLOAT 0
 #endif 
 
 #ifndef CMPLEX

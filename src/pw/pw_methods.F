@@ -1290,12 +1290,12 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: c_outTest
       INTEGER                                            :: dir, handle, handle2, my_pos, nrays, &
                                                             out_space, out_unit
-      INTEGER                                            :: i, j, k
-      COMPLEX(KIND=dp)  :: test_dp
+!      INTEGER                                            :: i, j, k
+!      COMPLEX(KIND=dp)  :: test_dp
       INTEGER, DIMENSION(3)                              :: nloc
       INTEGER, DIMENSION(:), POINTER                     :: n
       LOGICAL                                            :: test, use_pw_cuda
-      LOGICAL :: file_exist
+!      LOGICAL :: file_exist
       REAL(KIND=dp)                                      :: norm
 
       CALL timeset(routineN, handle2)
@@ -1404,26 +1404,26 @@ CONTAINS
 #endif
                CALL zdscal(n(1)*n(2)*n(3), norm, c_out, 1)
 
-               CALL fft3d(dir, n, c_outTest, scale=norm, debug=test)
+!               CALL fft3d(dir, n, c_outTest, scale=norm, debug=test)
 
-               inquire(file="data.dat", EXIST=file_exist)
-               if (file_exist) then
-                  open(7, file = 'data.dat', status = 'old', position = "append")
-               else 
-                    open(7, file = 'data.dat', status = 'new')
-               end if
-
-               open(7, file = 'data.dat', status = 'old', position = "append")
-               write (7,*) "Forward -"
-               do i = 1, n(1)
-                 do j = 1, n(2)
-                   do k = 1, n(3)
-                        test_dp = c_out(i,j,k) - c_outTest(i,j,k)
-                        write (7,*) c_out(i,j,k), ":", c_outTest(i,j,k), test_dp
-                     end do
-                 end do
-               end do
-               close(7)
+!               inquire(file="data.dat", EXIST=file_exist)
+!               if (file_exist) then
+!                  open(7, file = 'data.dat', status = 'old', position = "append")
+!               else 
+!                    open(7, file = 'data.dat', status = 'new')
+!               end if
+!
+!               open(7, file = 'data.dat', status = 'old', position = "append")
+!               write (7,*) "Forward -"
+!               do i = 1, n(1)
+!                 do j = 1, n(2)
+!                   do k = 1, n(3)
+!                        test_dp = c_out(i,j,k) - c_outTest(i,j,k)
+!                        write (7,*) c_out(i,j,k), ":", c_outTest(i,j,k), test_dp
+!                     end do
+!                 end do
+!               end do
+!               close(7)
                !do i = 1,10
                ! WRITE (*,*) "FW after comp", c_out(1,1,i), c_outTest(1,1,i)
                !end do
@@ -1488,7 +1488,7 @@ CONTAINS
                ! use real part only
                CALL copy_cr(c_out, pw2%cr3d)
 
-               CALL fft3d(dir, n, c_outTest, scale=norm, debug=test)
+               !CALL fft3d(dir, n, c_outTest, scale=norm, debug=test)
 
                !inquire(file="data_bw.dat", EXIST=file_exist)
 
