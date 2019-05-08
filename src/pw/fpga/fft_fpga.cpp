@@ -32,7 +32,7 @@ static cl_context context = NULL;
 static cl_program program = NULL;
 
 static cl_command_queue queue1 = NULL, queue2 = NULL, queue3 = NULL;
-static cl_command_queue queue4 = NULL, queue5 = NULL;
+static cl_command_queue queue4 = NULL, queue5 = NULL, queue6 = NULL;
 
 static cl_kernel fft_kernel = NULL, fft_kernel_2 = NULL;
 static cl_kernel transpose_kernel_2 = NULL, fetch_kernel = NULL, transpose_kernel = NULL;
@@ -164,24 +164,28 @@ extern "C" void pw_fpga_fft3d_dp_(uint32_t direction, uint32_t *N, cmplx *din) {
  *****************************************************************************/
 static void fftfpga_run_3d(bool inverse, const uint32_t *N, cmplx *c_in) {
 
+  int inverse_int = inverse;
+
   h_inData = (cmplx *)alignedMalloc(sizeof(cmplx) * N[0] * N[1] * N[2]);
   h_outData = (cmplx *)alignedMalloc(sizeof(cmplx) * N[0] * N[1] * N[2]);
 
   memcpy(h_inData, c_in, sizeof(cmplx) * N[0] * N[1] * N[2]);
 
   // Copy data from host to device
-  status = clEnqueueWriteBuffer(queue1, d_inData, CL_TRUE, 0, sizeof(cmplx) * N[0] * N[1] * N[2], h_inData, 0, NULL, NULL);
+  status = clEnqueueWriteBuffer(queue6, d_inData, CL_TRUE, 0, sizeof(cmplx) * N[0] * N[1] * N[2], h_inData, 0, NULL, NULL);
   checkError(status, "Failed to copy data to device");
 
+  status = clFinish(queue6);
+  checkError(status, "failed to finish");
   // Can't pass bool to device, so convert it to int
 
   status = clSetKernelArg(fetch_kernel, 0, sizeof(cl_mem), (void *)&d_inData);
   checkError(status, "Failed to set kernel arg 0");
-  status = clSetKernelArg(fft_kernel, 0, sizeof(cl_int), (void*)&inverse);
+  status = clSetKernelArg(fft_kernel, 0, sizeof(cl_int), (void*)&inverse_int);
   checkError(status, "Failed to set kernel arg 1");
   status = clSetKernelArg(transpose_kernel, 0, sizeof(cl_mem), (void *)&d_outData);
   checkError(status, "Failed to set kernel arg 2");
-  status = clSetKernelArg(fft_kernel_2, 0, sizeof(cl_int), (void*)&inverse);
+  status = clSetKernelArg(fft_kernel_2, 0, sizeof(cl_int), (void*)&inverse_int);
   checkError(status, "Failed to set kernel arg 3");
 
   status = clEnqueueTask(queue1, fetch_kernel, 0, NULL, NULL);
@@ -237,9 +241,8 @@ static bool select_binary(const uint32_t *N){
         return false;
 
     }
-    printf("Selecting Binary\n");
 #ifdef __PW_FPGA_SP
-    printf("Selecting Single Precision binaries\n");
+    printf("Selecting Single Precision binaries - (%d, %d, %d)\n", N[0], N[1], N[2]);
     switch(N[0]){
         case 16 :
           binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/synthesis/syn16/fft3d", device);
@@ -257,7 +260,7 @@ static bool select_binary(const uint32_t *N){
           return true;
     }
 #else
-    printf("Selecting emulation Double Precision binaries \n");
+    printf("Selecting emulation Double Precision binaries  - (%d, %d, %d)\n", N[0], N[1], N[2] );
     switch(N[0]){
         case 16 :
           binary_file = getBoardBinaryFile("../../fpgabitstream/fft3d/emulation_dp/emu16/fft3d", device);
@@ -360,6 +363,8 @@ static void queue_setup(){
   checkError(status, "Failed to create command queue4");
   queue5 = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &status);
   checkError(status, "Failed to create command queue5");
+  queue6 = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE, &status);
+  checkError(status, "Failed to create command queue6");
 
 }
 
@@ -407,6 +412,8 @@ void queue_cleanup() {
     clReleaseCommandQueue(queue4);
   if(queue5) 
     clReleaseCommandQueue(queue5);
+  if(queue6) 
+    clReleaseCommandQueue(queue6);
 }
 
 #endif

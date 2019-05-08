@@ -16,7 +16,8 @@ MODULE pw_fpga
                                               C_INT,&
                                               C_LOC,&
                                               C_PTR,&
-                                              C_DOUBLE_COMPLEX
+                                              C_DOUBLE_COMPLEX,&
+                                              C_FLOAT_COMPLEX
    USE kinds,                           ONLY: dp,&
                                               sp
 #include "../base/base_uses.f90"
@@ -79,7 +80,8 @@ MODULE pw_fpga
          INTEGER(KIND=C_INT), VALUE, INTENT(IN)   :: dir
          INTEGER(KIND=C_INT), DIMENSION(*), &
             INTENT(IN)                            :: n
-         TYPE(C_PTR), VALUE                       :: c_in_sp
+         !TYPE(C_PTR), VALUE                       :: c_in_sp
+         COMPLEX(KIND=C_FLOAT_COMPLEX)           :: c_in_sp(n(1), n(2), n(3))
       END SUBROUTINE pw_fpga_fft3d_sp
    END INTERFACE
 
@@ -138,21 +140,12 @@ CONTAINS
       MARK_USED(n)
 #else
       INTEGER                                           :: handle3
-      INTEGER                                           :: i
+      !INTEGER                                           :: i
       CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d_dp'
-
-      WRITE (*,*) "FW DP"
-      do i = 1,10
-       WRITE (*,*) c_out(1,1,i)
-      end do
 
       CALL timeset(routineX, handle3)
       CALL pw_fpga_fft3d_dp(+1, n, c_out)
       CALL timestop(handle3)
-
-      do i = 1,10
-       WRITE (*,*) c_out(1,1,i)
-      end do
 
 #endif
    END SUBROUTINE
@@ -173,23 +166,14 @@ CONTAINS
       !COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER     :: c_in
       INTEGER                                           :: handle3
       !INTEGER                                           :: i, j, k
-      INTEGER                                           :: i
+      !INTEGER                                           :: i
 
       CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_dp'
-
-      WRITE (*,*) "BW DP"
-
-      do i = 1,10
-       WRITE (*,*) c_out(1,1,i)
-      end do
 
       CALL timeset(routineX, handle3)
       CALL pw_fpga_fft3d_dp(-1, n, c_out)
       CALL timestop(handle3)
 
-      do i = 1,10
-       WRITE (*,*) c_out(1,1,i)
-      end do
 #endif
    END SUBROUTINE
 
@@ -199,9 +183,8 @@ CONTAINS
 !> \param c_out  ...
 ! **************************************************************************************************
    SUBROUTINE pw_fpga_r3dc1d_3d_sp(n, c_out)
-      COMPLEX(KIND=dp), DIMENSION(:, :, :), &
-         INTENT(INOUT)                               :: c_out
       INTEGER, DIMENSION(:), INTENT(IN)                 :: n
+      COMPLEX(KIND=dp), INTENT(INOUT)             :: c_out(n(1), n(2), n(3))
 
 #if ! defined (__PW_FPGA)
       MARK_USED(c_out)
@@ -209,20 +192,22 @@ CONTAINS
 #else
       COMPLEX, DIMENSION(:, :, :), POINTER              :: c_in_sp
       INTEGER                                           :: handle3
+      !INTEGER                                           :: i
 
       CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d_sp'
 
-      WRITE (*,*) "In FW SP fortran function"
       ALLOCATE (c_in_sp(n(1), n(2), n(3)))
       ! pointer to single precision complex array
-      c_in_sp(:, :, :) = CMPLX(c_out(:, :, :), KIND=sp)
+      !c_in_sp = CMPLX(real(c_out), 0.0_sp, KIND=sp)
+      c_in_sp = CMPLX(c_out, KIND=sp)
 
       CALL timeset(routineX, handle3)
-      CALL pw_fpga_fft3d_sp(+1, n, c_loc(c_in_sp))
+      CALL pw_fpga_fft3d_sp(+1, n, c_in_sp)
       CALL timestop(handle3)
 
       ! typecast sp back to dp
-      c_out(:, :, :) = CMPLX(c_in_sp(:, :, :), KIND=dp)
+      !c_out = CMPLX(real(c_in_sp), 0.0_dp, KIND=dp)
+      c_out = CMPLX(c_in_sp, KIND=dp)
 
       DEALLOCATE (c_in_sp)
 #endif
@@ -234,9 +219,8 @@ CONTAINS
 !> \param c_out  ...
 ! **************************************************************************************************
    SUBROUTINE pw_fpga_c1dr3d_3d_sp(n, c_out)
-      COMPLEX(KIND=dp), DIMENSION(:, :, :), &
-         INTENT(INOUT)                               :: c_out
       INTEGER, DIMENSION(:), INTENT(IN)                 :: n
+      COMPLEX(KIND=dp), INTENT(INOUT)             :: c_out(n(1), n(2), n(3))
 
 #if ! defined (__PW_FPGA)
       MARK_USED(c_out)
@@ -248,17 +232,16 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_sp'
 
-      WRITE (*,*) "In BW SP fortran function"
       ALLOCATE (c_in_sp(n(1), n(2), n(3)))
       ! pointer to single precision complex array
-      c_in_sp(:, :, :) = CMPLX(c_out(:, :, :), KIND=sp)
+      c_in_sp = CMPLX(c_out, KIND=sp)
 
       CALL timeset(routineX, handle3)
-      CALL pw_fpga_fft3d_sp(-1, n, c_loc(c_in_sp))
+      CALL pw_fpga_fft3d_sp(-1, n, c_in_sp)
       CALL timestop(handle3)
 
       ! typecast sp back to dp
-      c_out(:, :, :) = CMPLX(c_in_sp(:, :, :), KIND=dp)
+      c_out = CMPLX(c_in_sp, KIND=dp)
 
       DEALLOCATE (c_in_sp)
 #endif

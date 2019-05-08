@@ -1394,11 +1394,12 @@ CONTAINS
 
                CALL copy_rc(pw1%cr3d, c_out)
                CALL copy_rc(pw1%cr3d, c_outTest)
+
 #if defined (__PW_FPGA_SP)
-               WRITE (*,*) "Choosing Forward Single Precision FFT3d"
+               !WRITE (*,*) "Choosing Forward Single Precision FFT3d"
                CALL pw_fpga_r3dc1d_3d_sp(n, c_out)
 #else
-               WRITE (*,*) "Choosing Forward Double Precision FFT3d"
+               !WRITE (*,*) "Choosing Forward Double Precision FFT3d"
                CALL pw_fpga_r3dc1d_3d_dp(n, c_out)
 #endif
                CALL zdscal(n(1)*n(2)*n(3), norm, c_out, 1)
@@ -1407,13 +1408,12 @@ CONTAINS
 
                inquire(file="data.dat", EXIST=file_exist)
                if (file_exist) then
-                    open(7, file = 'data.dat', status = 'old', position = "append")
+                  open(7, file = 'data.dat', status = 'old', position = "append")
                else 
                     open(7, file = 'data.dat', status = 'new')
                end if
 
-               !IF (test .AND. out_unit > 0)  THEN
-               !open(7, file = 'data.dat', status = 'old', position = "append")
+               open(7, file = 'data.dat', status = 'old', position = "append")
                write (7,*) "Forward -"
                do i = 1, n(1)
                  do j = 1, n(2)
@@ -1424,9 +1424,8 @@ CONTAINS
                  end do
                end do
                close(7)
-               !END IF
                !do i = 1,10
-               ! WRITE (*,*) "FW", c_out(1,1,i), c_in(1,1,i)
+               ! WRITE (*,*) "FW after comp", c_out(1,1,i), c_outTest(1,1,i)
                !end do
 
                CALL pw_gather(pw2, c_out)
@@ -1479,10 +1478,10 @@ CONTAINS
 
                ! transform using FPGA
 #if defined (__PW_FPGA_SP)
-               WRITE (*,*) "Choosing Backward Single Precision FFT3d"
+               !WRITE (*,*) "Choosing Backward Single Precision FFT3d"
                CALL pw_fpga_c1dr3d_3d_sp(n, c_out)
 #else
-               WRITE (*,*) "Choosing Backward Double Precision FFT3d"
+               !WRITE (*,*) "Choosing Backward Double Precision FFT3d"
                CALL pw_fpga_c1dr3d_3d_dp(n, c_out)
 #endif
                CALL zdscal(n(1)*n(2)*n(3), norm, c_out, 1)
@@ -1491,24 +1490,24 @@ CONTAINS
 
                CALL fft3d(dir, n, c_outTest, scale=norm, debug=test)
 
-               inquire(file="data_bw.dat", EXIST=file_exist)
+               !inquire(file="data_bw.dat", EXIST=file_exist)
 
-               if (file_exist) then
-                    open(8, file = 'data_bw.dat', status = 'old', position = "append")
-               else 
-                    open(8, file = 'data_bw.dat', status = 'new')
-               end if
+               !if (file_exist) then
+               !     open(8, file = 'data_bw.dat', status = 'old', position = "append")
+               !else 
+               !     open(8, file = 'data_bw.dat', status = 'new')
+               !end if
 
-               write (8,*) "Backward -"
-               do i = 1, n(1)
-                 do j = 1, n(2)
-                   do k = 1, n(3)
-                    test_dp = c_out(i,j,k) - c_outTest(i,j,k)
-                    write (8,*) c_out(i,j,k), ":", c_outTest(i,j,k), test_dp
-                   end do
-                 end do
-               end do
-               close(8)
+               !write (8,*) "Backward -"
+               !do i = 1, n(1)
+               !  do j = 1, n(2)
+               !    do k = 1, n(3)
+               !     test_dp = c_out(i,j,k) - c_outTest(i,j,k)
+               !     write (8,*) c_out(i,j,k), ":", c_outTest(i,j,k), test_dp
+               !    end do
+               !  end do
+               !end do
+               !close(8)
                !CALL fft3d(dir, n, c_in, scale=norm, debug=test)
                !do i = 1,10
                ! WRITE (*,*) "BW", c_out(1,1,i), c_in(1,1,i)
