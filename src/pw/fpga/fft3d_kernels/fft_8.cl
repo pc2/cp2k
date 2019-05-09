@@ -212,31 +212,67 @@ cmplex comp_mult(cmplex a, cmplex b) {
 cmplex twiddle(int index, int stage, int size, int stream) {
    cmplex twid;
    // Coalesces the twiddle tables for indexed access
-   constant double * twiddles_cos[TWID_STAGES][6] = {
-                        {tc00, tc01, tc02, tc03, tc04, tc05}, 
-                        {tc10, tc11, tc12, tc13, tc14, tc15}, 
-                        {tc20, tc21, tc22, tc23, tc24, tc25}, 
-                        {tc30, tc31, tc32, tc33, tc34, tc35}, 
-                        {tc40, tc41, tc42, tc43, tc44, tc45}
-   };
-   constant double * twiddles_sin[TWID_STAGES][6] = {
-                        {ts00, ts01, ts02, ts03, ts04, ts05}, 
-                        {ts10, ts11, ts12, ts13, ts14, ts15}, 
-                        {ts20, ts21, ts22, ts23, ts24, ts25}, 
-                        {ts30, ts31, ts32, ts33, ts34, ts35}, 
-                        {ts40, ts41, ts42, ts43, ts44, ts45}
-   };
 
-   // Use the precomputed twiddle fators, if available - otherwise, compute them
-   int twid_stage = stage >> 1;
-   if (1==0 && size <= (1 << (TWID_STAGES * 2 + 2))) {
-      twid.x = twiddles_cos[twid_stage][stream]
-                                  [index * ((1 << (TWID_STAGES * 2 + 2)) / size)];
-      twid.y = twiddles_sin[twid_stage][stream]
-                                  [index * ((1 << (TWID_STAGES * 2 + 2)) / size)];
-   } else {
-      // This would generate hardware consuming a large number of resources
-      // Instantiated only if precomputed twiddle factors are available
+       int twid_stage = stage >> 1;
+
+   #if TYPE_FLOAT == 1
+       constant float * twiddles_cos[TWID_STAGES][6] = {
+                            {tc00, tc01, tc02, tc03, tc04, tc05}, 
+                            {tc10, tc11, tc12, tc13, tc14, tc15}, 
+                            {tc20, tc21, tc22, tc23, tc24, tc25}, 
+                            {tc30, tc31, tc32, tc33, tc34, tc35}, 
+                            {tc40, tc41, tc42, tc43, tc44, tc45}
+       };
+       constant float * twiddles_sin[TWID_STAGES][6] = {
+                            {ts00, ts01, ts02, ts03, ts04, ts05}, 
+                            {ts10, ts11, ts12, ts13, ts14, ts15}, 
+                            {ts20, ts21, ts22, ts23, ts24, ts25}, 
+                            {ts30, ts31, ts32, ts33, ts34, ts35}, 
+                            {ts40, ts41, ts42, ts43, ts44, ts45}
+       };
+
+       // Use the precomputed twiddle factors, if available for single precision floats  - otherwise, compute them
+
+       if (size <= (1 << (TWID_STAGES * 2 + 2))) {
+          twid.x = twiddles_cos[twid_stage][stream]
+                                      [index * ((1 << (TWID_STAGES * 2 + 2)) / size)];
+          twid.y = twiddles_sin[twid_stage][stream]
+                                      [index * ((1 << (TWID_STAGES * 2 + 2)) / size)];
+       } else {
+          // This would generate hardware consuming a large number of resources
+          // Instantiated only if precomputed twiddle factors are available
+
+          const float TWOPI = 2.0f * M_PI_F;
+
+          int multiplier;
+
+          // The latter 3 streams will generate the second half of the elements
+          // In that case phase = 1
+          
+          int phase = 0;
+          if (stream >= 3) {
+             stream -= 3; 
+             phase = 1;
+          }
+          switch (stream) {
+             case 0: multiplier = 2; break;
+             case 1: multiplier = 1; break;
+             case 2: multiplier = 3; break;
+             default: multiplier = 0;
+          }
+          int pos = (1 << (stage - 1)) * multiplier * ((index + (size / 8) * phase) 
+                                              & (size / 4 / (1 << (stage - 1)) - 1));
+          float theta = -1.0f * TWOPI / size * (pos & (size - 1));
+          twid.x = cos(theta);
+          twid.y = sin(theta);
+       }
+
+    #else
+
+      constant double * twiddles_cos[TWID_STAGES][6];
+      constant double * twiddles_sin[TWID_STAGES][6];
+      // Use the precomputed twiddle factors, if available for single precision floats  - otherwise, compute them
+
       const double TWOPI = 2.0f * M_PI;
       int multiplier;
 
@@ -259,7 +295,9 @@ cmplex twiddle(int index, int stage, int size, int stream) {
       double theta = -1.0f * TWOPI / size * (pos & (size - 1));
       twid.x = cos(theta);
       twid.y = sin(theta);
-   }
+
+    #endif
+
    return twid;
 }
 

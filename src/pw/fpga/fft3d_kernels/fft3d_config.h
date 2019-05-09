@@ -20,3 +20,14 @@
 #endif
 
 #endif // CMPLEX
+
+#ifndef PREC
+#  define PREC
+
+#if TYPE_FLOAT == 1
+    typedef float prec;
+#else 
+    typedef double prec;
+#endif
+
+#endif //prec
