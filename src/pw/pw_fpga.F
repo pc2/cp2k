@@ -15,7 +15,6 @@ MODULE pw_fpga
    USE ISO_C_BINDING,                   ONLY: C_BOOL,&
                                               C_INT,&
                                               C_LOC,&
-                                              C_PTR,&
                                               C_DOUBLE_COMPLEX,&
                                               C_FLOAT_COMPLEX
    USE kinds,                           ONLY: dp,&
@@ -80,7 +79,6 @@ MODULE pw_fpga
          INTEGER(KIND=C_INT), VALUE, INTENT(IN)   :: dir
          INTEGER(KIND=C_INT), DIMENSION(*), &
             INTENT(IN)                            :: n
-         !TYPE(C_PTR), VALUE                       :: c_in_sp
          COMPLEX(KIND=C_FLOAT_COMPLEX)           :: c_in_sp(n(1), n(2), n(3))
       END SUBROUTINE pw_fpga_fft3d_sp
    END INTERFACE
@@ -98,7 +96,6 @@ MODULE pw_fpga
          INTEGER(KIND=C_INT), VALUE, INTENT(IN)   :: dir
          INTEGER(KIND=C_INT), DIMENSION(*), &
             INTENT(IN)                            :: n
-         !TYPE(C_PTR), VALUE                       :: c_in_dp
          COMPLEX(KIND=C_DOUBLE_COMPLEX)           :: c_in_dp(n(1), n(2), n(3))
       END SUBROUTINE pw_fpga_fft3d_dp
    END INTERFACE
@@ -140,8 +137,8 @@ CONTAINS
       MARK_USED(n)
 #else
       INTEGER                                           :: handle3
-      !INTEGER                                           :: i
       CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d_dp'
+      WRITE (*,*) "Calling Fortran"
 
       CALL timeset(routineX, handle3)
       CALL pw_fpga_fft3d_dp(+1, n, c_out)
@@ -163,12 +160,10 @@ CONTAINS
       MARK_USED(c_out)
       MARK_USED(n)
 #else
-      !COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER     :: c_in
       INTEGER                                           :: handle3
-      !INTEGER                                           :: i, j, k
-      !INTEGER                                           :: i
 
       CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_dp'
+      WRITE (*,*) "Calling Backward Fortran"
 
       CALL timeset(routineX, handle3)
       CALL pw_fpga_fft3d_dp(-1, n, c_out)
@@ -198,7 +193,6 @@ CONTAINS
 
       ALLOCATE (c_in_sp(n(1), n(2), n(3)))
       ! pointer to single precision complex array
-      !c_in_sp = CMPLX(real(c_out), 0.0_sp, KIND=sp)
       c_in_sp = CMPLX(c_out, KIND=sp)
 
       CALL timeset(routineX, handle3)

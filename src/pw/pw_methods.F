@@ -1287,15 +1287,11 @@ CONTAINS
       CHARACTER(LEN=9)                                   :: mode
       COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: grays
       COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: c_in, c_out
-      COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: c_outTest
       INTEGER                                            :: dir, handle, handle2, my_pos, nrays, &
                                                             out_space, out_unit
-!      INTEGER                                            :: i, j, k
-!      COMPLEX(KIND=dp)  :: test_dp
       INTEGER, DIMENSION(3)                              :: nloc
       INTEGER, DIMENSION(:), POINTER                     :: n
       LOGICAL                                            :: test, use_pw_cuda
-!      LOGICAL :: file_exist
       REAL(KIND=dp)                                      :: norm
 
       CALL timeset(routineN, handle2)
@@ -1390,47 +1386,18 @@ CONTAINS
             ! if not, perform fft3d in CPU
             IF (pw_fpga_check_bitstream(n) .EQV. .TRUE.) THEN
                ALLOCATE (c_out(n(1), n(2), n(3)))
-               ALLOCATE (c_outTest(n(1), n(2), n(3)))
 
+               WRITE (*,*) "FPGA selection"
                CALL copy_rc(pw1%cr3d, c_out)
-               CALL copy_rc(pw1%cr3d, c_outTest)
-
 #if defined (__PW_FPGA_SP)
-               !WRITE (*,*) "Choosing Forward Single Precision FFT3d"
                CALL pw_fpga_r3dc1d_3d_sp(n, c_out)
 #else
-               !WRITE (*,*) "Choosing Forward Double Precision FFT3d"
                CALL pw_fpga_r3dc1d_3d_dp(n, c_out)
 #endif
                CALL zdscal(n(1)*n(2)*n(3), norm, c_out, 1)
 
-!               CALL fft3d(dir, n, c_outTest, scale=norm, debug=test)
-
-!               inquire(file="data.dat", EXIST=file_exist)
-!               if (file_exist) then
-!                  open(7, file = 'data.dat', status = 'old', position = "append")
-!               else 
-!                    open(7, file = 'data.dat', status = 'new')
-!               end if
-!
-!               open(7, file = 'data.dat', status = 'old', position = "append")
-!               write (7,*) "Forward -"
-!               do i = 1, n(1)
-!                 do j = 1, n(2)
-!                   do k = 1, n(3)
-!                        test_dp = c_out(i,j,k) - c_outTest(i,j,k)
-!                        write (7,*) c_out(i,j,k), ":", c_outTest(i,j,k), test_dp
-!                     end do
-!                 end do
-!               end do
-!               close(7)
-               !do i = 1,10
-               ! WRITE (*,*) "FW after comp", c_out(1,1,i), c_outTest(1,1,i)
-               !end do
-
                CALL pw_gather(pw2, c_out)
 
-               DEALLOCATE (c_outTest)
                DEALLOCATE (c_out)
             ELSE
                ALLOCATE (c_out(n(1), n(2), n(3)))
@@ -1471,49 +1438,19 @@ CONTAINS
             ! if not, perform fft3d in CPU
             IF (pw_fpga_check_bitstream(n) .EQV. .TRUE.) THEN
                ALLOCATE (c_out(n(1), n(2), n(3)))
-               ALLOCATE (c_outTest(n(1), n(2), n(3)))
 
+               WRITE (*,*) "FPGA  BW selection"
                CALL pw_scatter(pw1, c_out)
-               CALL pw_scatter(pw1, c_outTest)
-
                ! transform using FPGA
 #if defined (__PW_FPGA_SP)
-               !WRITE (*,*) "Choosing Backward Single Precision FFT3d"
                CALL pw_fpga_c1dr3d_3d_sp(n, c_out)
 #else
-               !WRITE (*,*) "Choosing Backward Double Precision FFT3d"
                CALL pw_fpga_c1dr3d_3d_dp(n, c_out)
 #endif
                CALL zdscal(n(1)*n(2)*n(3), norm, c_out, 1)
                ! use real part only
                CALL copy_cr(c_out, pw2%cr3d)
 
-               !CALL fft3d(dir, n, c_outTest, scale=norm, debug=test)
-
-               !inquire(file="data_bw.dat", EXIST=file_exist)
-
-               !if (file_exist) then
-               !     open(8, file = 'data_bw.dat', status = 'old', position = "append")
-               !else 
-               !     open(8, file = 'data_bw.dat', status = 'new')
-               !end if
-
-               !write (8,*) "Backward -"
-               !do i = 1, n(1)
-               !  do j = 1, n(2)
-               !    do k = 1, n(3)
-               !     test_dp = c_out(i,j,k) - c_outTest(i,j,k)
-               !     write (8,*) c_out(i,j,k), ":", c_outTest(i,j,k), test_dp
-               !    end do
-               !  end do
-               !end do
-               !close(8)
-               !CALL fft3d(dir, n, c_in, scale=norm, debug=test)
-               !do i = 1,10
-               ! WRITE (*,*) "BW", c_out(1,1,i), c_in(1,1,i)
-               !end do
-
-               DEALLOCATE (c_outTest)
                DEALLOCATE (c_out)
             ELSE
                ALLOCATE (c_out(n(1), n(2), n(3)))
