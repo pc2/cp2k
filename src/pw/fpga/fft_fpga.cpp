@@ -58,7 +58,7 @@ static void init_program(const uint32_t *N);
 static void queue_setup();
 static void queue_cleanup();
 static void fftfpga_run_3d(const bool fsign, const uint32_t *N, cmplx *c_in);
-static bool select_binary(const uint32_t *N);
+static bool select_binary(char *path, const uint32_t *N);
 
 // --- CODE -------------------------------------------------------------------
 
@@ -107,14 +107,18 @@ extern "C" bool pw_fpga_check_bitstream_(uint32_t *N){
  * \param   N   : integer pointer to size of FFT3d  
  * \param   din : complex input/output single precision data pointer 
  *****************************************************************************/
-extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, cmplx *din) {
+extern "C" void pw_fpga_fft3d_sp_(int dir_path_len, char *data_path, uint32_t direction, uint32_t *N, cmplx *din) {
+
+  char *cwd = (char *)malloc(sizeof(char) * (dir_path_len + 1));
+  strncpy(cwd, data_path, dir_path_len + 1);
+  cwd[dir_path_len] = '\0';
 
   queue_setup();
 
   printf("In SP FPGA C function\n");
   // If fft size changes, need to rebuild program using another binary
   if(fft_size_changed == true){
-    status = select_binary(N);
+    status = select_binary(cwd, N);
     checkError(status, "Failed to select binary as no relevant FFT3d binaries found in the directory!");
 
     init_program(N);
@@ -130,16 +134,21 @@ extern "C" void pw_fpga_fft3d_sp_(uint32_t direction, uint32_t *N, cmplx *din) {
 
   queue_cleanup();
 
+  free(cwd);
 }
 
-extern "C" void pw_fpga_fft3d_dp_(uint32_t direction, uint32_t *N, cmplx *din) {
+extern "C" void pw_fpga_fft3d_dp_(int dir_path_len, char *data_path, uint32_t direction, uint32_t *N, cmplx *din) {
+
+  char *cwd = (char *)malloc(sizeof(char) * (dir_path_len + 1));
+  strncpy(cwd, data_path, dir_path_len + 1);
+  cwd[dir_path_len] = '\0';
 
   queue_setup();
 
   printf("In DP FPGA C function\n");
   // If fft size changes, need to rebuild program using another binary
   if(fft_size_changed == true){
-    status = select_binary(N);
+    status = select_binary(cwd, N);
     checkError(status, "Failed to select binary as no relevant FFT3d binaries found in the directory!");
 
     init_program(N);
@@ -154,6 +163,7 @@ extern "C" void pw_fpga_fft3d_dp_(uint32_t direction, uint32_t *N, cmplx *din) {
   }
 
   queue_cleanup();
+  free(cwd);
 
 }
 /******************************************************************************
@@ -230,55 +240,31 @@ static void fftfpga_run_3d(bool inverse, const uint32_t *N, cmplx *c_in) {
 
 }
 
-bool getCwdDir(char * path, int len) {
-  // Get path of executable.
-  ssize_t n = readlink("/proc/self/exe", path, len -1 );
-  //ssize_t n = readlink("/proc/self/exe", path, sizeof(path)/sizeof(path[0]) - 1);
-  
-  if(n == -1) {
-    return false;
-  }
-  path[n] = 0;
-
-  // Find the last '\' or '/' and terminate the path there; it is now
-  // the directory containing the executable.
-  size_t i;
-  for(i = strlen(path) - 1; i > 0 && path[i] != '/' && path[i] != '\\'; --i);
-  path[i] = '\0';
-
-  //memcpy(cwd, path, n);
-  return true;
-}
 /******************************************************************************
  * \brief  select an FPGA board binary from the default location
  * \author Arjun Ramaswami
  * \param  N - integer pointer to the size of the FFT3d
  * \retval true if no board binary found in the location
  *****************************************************************************/
-static bool select_binary(const uint32_t *N){
-    char cwd[300];
-    if(!getCwdDir(cwd, sizeof(cwd)/sizeof(cwd[0]) )){
-        printf("Problem finding executable\n");
-    }
+static bool select_binary(char * path, const uint32_t *N){
 
 #ifdef __PW_FPGA_SP
-    //printf("Selecting Single Precision binaries - (%d, %d, %d)\n", N[0], N[1], N[2]);
     switch(N[0]){
         case 16 :
-          strcat(cwd, "/../../fpgabitstream/fft3d/synthesis/syn16/fft3d");
-          printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], cwd);
+          strcat(path, "/../fpgabitstream/fft3d/synthesis/syn16/fft3d");
+          printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
         break;
 
         case 32 :
-          strcat(cwd, "/../../fpgabitstream/fft3d/synthesis/syn32/fft3d");
-          printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], cwd);
+          strcat(path, "/../fpgabitstream/fft3d/synthesis/syn32/fft3d");
+          printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
           break;
      
         case 64 :
-          strcat(cwd, "/../../fpgabitstream/fft3d/synthesis/syn64/fft3d");
-          printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], cwd);
+          strcat(path, "/../fpgabitstream/fft3d/synthesis/syn64/fft3d");
+          printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
           break;
         
@@ -286,24 +272,23 @@ static bool select_binary(const uint32_t *N){
           return true;
     }
 #else
-    //printf("Selecting emulation Double Precision binaries  - (%d, %d, %d)\n", N[0], N[1], N[2] );
     switch(N[0]){
         case 16 :
-          strcat(cwd, "/../../fpgabitstream/fft3d/emulation_dp/emu16/fft3d");
-          printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], cwd);
-          binary_file = getBoardBinaryFile(cwd, device);
+          strcat(path, "/../fpgabitstream/fft3d/emulation_dp/emu16/fft3d");
+          printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
+          binary_file = getBoardBinaryFile(path, device);
         break;
 
         case 32 :
-          strcat(cwd, "/../../fpgabitstream/fft3d/emulation_dp/emu32/fft3d");
-          printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], cwd);
-          binary_file = getBoardBinaryFile(cwd, device);
+          strcat(path, "/../fpgabitstream/fft3d/emulation_dp/emu32/fft3d");
+          printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
+          binary_file = getBoardBinaryFile(path, device);
           break;
      
         case 64 :
-          strcat(cwd, "/../../fpgabitstream/fft3d/emulation_dp/emu64/fft3d");
-          printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], cwd);
-          binary_file = getBoardBinaryFile(cwd, device);
+          strcat(path,"/../fpgabitstream/fft3d/emulation_dp/emu64/fft3d");
+          printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
+          binary_file = getBoardBinaryFile(path, device);
           break;
         
         default:

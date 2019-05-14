@@ -1387,7 +1387,7 @@ CONTAINS
             IF (pw_fpga_check_bitstream(n) .EQV. .TRUE.) THEN
                ALLOCATE (c_out(n(1), n(2), n(3)))
 
-               WRITE (*,*) "FPGA selection"
+               WRITE (*,*) "FW FPGA selection"
                CALL copy_rc(pw1%cr3d, c_out)
 #if defined (__PW_FPGA_SP)
                CALL pw_fpga_r3dc1d_3d_sp(n, c_out)
@@ -1439,7 +1439,7 @@ CONTAINS
             IF (pw_fpga_check_bitstream(n) .EQV. .TRUE.) THEN
                ALLOCATE (c_out(n(1), n(2), n(3)))
 
-               WRITE (*,*) "FPGA  BW selection"
+               WRITE (*,*) "FPGA BW selection"
                CALL pw_scatter(pw1, c_out)
                ! transform using FPGA
 #if defined (__PW_FPGA_SP)

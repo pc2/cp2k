@@ -15,10 +15,14 @@ MODULE pw_fpga
    USE ISO_C_BINDING,                   ONLY: C_BOOL,&
                                               C_INT,&
                                               C_LOC,&
+                                              C_CHAR,&
+                                              C_PTR,&
                                               C_DOUBLE_COMPLEX,&
                                               C_FLOAT_COMPLEX
+   USE cp_files,                        ONLY: get_data_dir
    USE kinds,                           ONLY: dp,&
-                                              sp
+                                              sp,&
+                                              default_path_length
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -62,6 +66,7 @@ MODULE pw_fpga
          INTEGER(KIND=C_INT), DIMENSION(*), &
             INTENT(IN)                            :: n
          LOGICAL(KIND=C_BOOL)                     :: res
+
       END FUNCTION pw_fpga_check_bitstream
 
    END INTERFACE
@@ -73,9 +78,11 @@ MODULE pw_fpga
 !> \param npts - dimensions of FFT3d
 !> \param single precision c_in...
 ! **************************************************************************************************
-      SUBROUTINE pw_fpga_fft3d_sp(dir, n, c_in_sp) &
+      SUBROUTINE pw_fpga_fft3d_sp(dir_path_len, data_dir_path, dir, n, c_in_sp) &
          BIND(C, name="pw_fpga_fft3d_sp_")
          IMPORT
+         INTEGER(KIND=C_INT), VALUE,  INTENT(IN)  :: dir_path_len
+         CHARACTER(len=1, kind=C_CHAR), TARGET    :: data_dir_path(dir_path_len)
          INTEGER(KIND=C_INT), VALUE, INTENT(IN)   :: dir
          INTEGER(KIND=C_INT), DIMENSION(*), &
             INTENT(IN)                            :: n
@@ -90,9 +97,11 @@ MODULE pw_fpga
 !> \param npts - dimensions of FFT3d
 !> \param double precision c_in...
 ! **************************************************************************************************
-      SUBROUTINE pw_fpga_fft3d_dp(dir, n, c_in_dp) &
+      SUBROUTINE pw_fpga_fft3d_dp(dir_path_len, data_dir_path, dir, n, c_in_dp) &
          BIND(C, name="pw_fpga_fft3d_dp_")
          IMPORT
+         INTEGER(KIND=C_INT), VALUE,  INTENT(IN)  :: dir_path_len
+         CHARACTER(len=1, kind=C_CHAR), TARGET    :: data_dir_path(dir_path_len)
          INTEGER(KIND=C_INT), VALUE, INTENT(IN)   :: dir
          INTEGER(KIND=C_INT), DIMENSION(*), &
             INTENT(IN)                            :: n
@@ -136,12 +145,17 @@ CONTAINS
       MARK_USED(c_out)
       MARK_USED(n)
 #else
-      INTEGER                                           :: handle3
+      INTEGER                                     :: handle3
+      CHARACTER(len=100)                          :: data_dir_path
+      INTEGER                                     :: dir_path_len
+
       CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d_dp'
-      WRITE (*,*) "Calling Fortran"
+
+      data_dir_path = TRIM(get_data_dir())
+      dir_path_len = len_trim(data_dir_path)
 
       CALL timeset(routineX, handle3)
-      CALL pw_fpga_fft3d_dp(+1, n, c_out)
+      CALL pw_fpga_fft3d_dp(dir_path_len, data_dir_path, +1, n, c_out)
       CALL timestop(handle3)
 
 #endif
@@ -160,13 +174,17 @@ CONTAINS
       MARK_USED(c_out)
       MARK_USED(n)
 #else
-      INTEGER                                           :: handle3
+      INTEGER                                          :: handle3
+      CHARACTER(len=100)                               :: data_dir_path
+      INTEGER                                          :: dir_path_len
 
       CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_dp'
-      WRITE (*,*) "Calling Backward Fortran"
+
+      data_dir_path = TRIM(get_data_dir()) 
+      dir_path_len = len_trim(data_dir_path)
 
       CALL timeset(routineX, handle3)
-      CALL pw_fpga_fft3d_dp(-1, n, c_out)
+      CALL pw_fpga_fft3d_dp(dir_path_len, data_dir_path, -1, n, c_out)
       CALL timestop(handle3)
 
 #endif
@@ -185,18 +203,23 @@ CONTAINS
       MARK_USED(c_out)
       MARK_USED(n)
 #else
-      COMPLEX, DIMENSION(:, :, :), POINTER              :: c_in_sp
-      INTEGER                                           :: handle3
-      !INTEGER                                           :: i
+      COMPLEX, DIMENSION(:, :, :), POINTER             :: c_in_sp
+      INTEGER                                          :: handle3
+      !INTEGER                                          :: i
+      CHARACTER(len=100)                               :: data_dir_path
+      INTEGER                                          :: dir_path_len
 
       CHARACTER(len=*), PARAMETER :: routineX = 'fw_fft_fpga_r3dc1d_sp'
+
+      data_dir_path = TRIM(get_data_dir()) 
+      dir_path_len = len_trim(data_dir_path)
 
       ALLOCATE (c_in_sp(n(1), n(2), n(3)))
       ! pointer to single precision complex array
       c_in_sp = CMPLX(c_out, KIND=sp)
 
       CALL timeset(routineX, handle3)
-      CALL pw_fpga_fft3d_sp(+1, n, c_in_sp)
+      CALL pw_fpga_fft3d_sp(dir_path_len, data_dir_path, +1, n, c_in_sp)
       CALL timestop(handle3)
 
       ! typecast sp back to dp
@@ -221,17 +244,22 @@ CONTAINS
       MARK_USED(n)
 
 #else
-      COMPLEX, DIMENSION(:, :, :), POINTER              :: c_in_sp
-      INTEGER                                           :: handle3
+      COMPLEX, DIMENSION(:, :, :), POINTER             :: c_in_sp
+      INTEGER                                          :: handle3
+      CHARACTER(len=100)                               :: data_dir_path
+      INTEGER                                          :: dir_path_len
 
       CHARACTER(len=*), PARAMETER :: routineX = 'bw_fft_fpga_c1dr3d_sp'
+
+      data_dir_path = TRIM(get_data_dir()) 
+      dir_path_len = len_trim(data_dir_path)
 
       ALLOCATE (c_in_sp(n(1), n(2), n(3)))
       ! pointer to single precision complex array
       c_in_sp = CMPLX(c_out, KIND=sp)
 
       CALL timeset(routineX, handle3)
-      CALL pw_fpga_fft3d_sp(-1, n, c_in_sp)
+      CALL pw_fpga_fft3d_sp(dir_path_len, data_dir_path, -1, n, c_in_sp)
       CALL timestop(handle3)
 
       ! typecast sp back to dp
