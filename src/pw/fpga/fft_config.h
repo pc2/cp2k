@@ -33,10 +33,10 @@ extern "C" int pw_fpga_initialize_();
 extern "C" void pw_fpga_final_();
 
 // Single precision FFT3d procedure
-extern "C" void pw_fpga_fft3d_sp_(int dir_path_len, char * data_path, uint32_t direction, uint32_t *N, cmplx *din);
+extern "C" void pw_fpga_fft3d_sp_(int data_path_len, char * data_path, uint32_t direction, uint32_t *N, cmplx *din);
 
 
-extern "C" void pw_fpga_fft3d_dp_(int dir_path_len, char * data_path, uint32_t direction, uint32_t *N, cmplx *din);
+extern "C" void pw_fpga_fft3d_dp_(int data_path_len, char * data_path, uint32_t direction, uint32_t *N, cmplx *din);
 
 // Check fpga bitstream present in directory
 extern "C" bool pw_fpga_check_bitstream_(uint32_t *N);

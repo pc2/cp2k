@@ -74,7 +74,6 @@ extern "C" void pw_fpga_final_(){
 /******************************************************************************
  * \brief  check whether FFT3d can be computed on the FPGA or not. This depends 
  *         on the availability of bitstreams whose sizes are for now listed here 
- * \author Arjun Ramaswami
  * \param  N - integer pointer to the size of the FFT3d
  * \retval true if no board binary found in the location
  *****************************************************************************/
@@ -102,23 +101,22 @@ extern "C" bool pw_fpga_check_bitstream_(uint32_t *N){
 
 /******************************************************************************
  * \brief   compute an in-place single precision complex 3D-FFT on the FPGA
- * \author  Arjun Ramaswami
+ * \param   data_path_len - length of the path to the data directory
+ * \param   data_path - path to the data directory 
  * \param   direction : direction - 1/forward, otherwise/backward FFT3d
  * \param   N   : integer pointer to size of FFT3d  
  * \param   din : complex input/output single precision data pointer 
  *****************************************************************************/
-extern "C" void pw_fpga_fft3d_sp_(int dir_path_len, char *data_path, uint32_t direction, uint32_t *N, cmplx *din) {
+extern "C" void pw_fpga_fft3d_sp_(int data_path_len, char *data_path, uint32_t direction, uint32_t *N, cmplx *din) {
 
-  char *cwd = (char *)malloc(sizeof(char) * (dir_path_len + 1));
-  strncpy(cwd, data_path, dir_path_len + 1);
-  cwd[dir_path_len] = '\0';
+  data_path[data_path_len] = '\0';
 
   queue_setup();
 
   printf("In SP FPGA C function\n");
   // If fft size changes, need to rebuild program using another binary
   if(fft_size_changed == true){
-    status = select_binary(cwd, N);
+    status = select_binary(data_path, N);
     checkError(status, "Failed to select binary as no relevant FFT3d binaries found in the directory!");
 
     init_program(N);
@@ -133,22 +131,26 @@ extern "C" void pw_fpga_fft3d_sp_(int dir_path_len, char *data_path, uint32_t di
   }
 
   queue_cleanup();
-
-  free(cwd);
 }
 
-extern "C" void pw_fpga_fft3d_dp_(int dir_path_len, char *data_path, uint32_t direction, uint32_t *N, cmplx *din) {
+/******************************************************************************
+ * \brief   compute an in-place double precision complex 3D-FFT on the FPGA
+ * \param   data_path_len - length of the path to the data directory
+ * \param   data_path - path to the data directory 
+ * \param   direction : direction - 1/forward, otherwise/backward FFT3d
+ * \param   N   : integer pointer to size of FFT3d  
+ * \param   din : complex input/output single precision data pointer 
+ *****************************************************************************/
+extern "C" void pw_fpga_fft3d_dp_(int data_path_len, char *data_path, uint32_t direction, uint32_t *N, cmplx *din) {
 
-  char *cwd = (char *)malloc(sizeof(char) * (dir_path_len + 1));
-  strncpy(cwd, data_path, dir_path_len + 1);
-  cwd[dir_path_len] = '\0';
+  data_path[data_path_len] = '\0';
 
   queue_setup();
 
   printf("In DP FPGA C function\n");
   // If fft size changes, need to rebuild program using another binary
   if(fft_size_changed == true){
-    status = select_binary(cwd, N);
+    status = select_binary(data_path, N);
     checkError(status, "Failed to select binary as no relevant FFT3d binaries found in the directory!");
 
     init_program(N);
@@ -163,12 +165,10 @@ extern "C" void pw_fpga_fft3d_dp_(int dir_path_len, char *data_path, uint32_t di
   }
 
   queue_cleanup();
-  free(cwd);
 
 }
 /******************************************************************************
  * \brief   Execute a single precision complex FFT3d
- * \author  Arjun Ramaswami
  * \param   inverse : boolean
  * \param   N       : integer pointer to size of FFT3d  
  * \param   din     : complex input/output single precision data pointer 
@@ -242,7 +242,7 @@ static void fftfpga_run_3d(bool inverse, const uint32_t *N, cmplx *c_in) {
 
 /******************************************************************************
  * \brief  select an FPGA board binary from the default location
- * \author Arjun Ramaswami
+ * \param  path - path to the data directory
  * \param  N - integer pointer to the size of the FFT3d
  * \retval true if no board binary found in the location
  *****************************************************************************/
@@ -251,19 +251,19 @@ static bool select_binary(char * path, const uint32_t *N){
 #ifdef __PW_FPGA_SP
     switch(N[0]){
         case 16 :
-          strcat(path, "/../fpgabitstream/fft3d/synthesis/syn16/fft3d");
+          strcat(path, "/../fpgabitstream/fft3d/synthesis_sp/syn16/fft3d");
           printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
         break;
 
         case 32 :
-          strcat(path, "/../fpgabitstream/fft3d/synthesis/syn32/fft3d");
+          strcat(path, "/../fpgabitstream/fft3d/synthesis_sp/syn32/fft3d");
           printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
           break;
      
         case 64 :
-          strcat(path, "/../fpgabitstream/fft3d/synthesis/syn64/fft3d");
+          strcat(path, "/../fpgabitstream/fft3d/synthesis_sp/syn64/fft3d");
           printf("Selecting Single Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
           break;
@@ -274,19 +274,19 @@ static bool select_binary(char * path, const uint32_t *N){
 #else
     switch(N[0]){
         case 16 :
-          strcat(path, "/../fpgabitstream/fft3d/emulation_dp/emu16/fft3d");
+          strcat(path, "/../fpgabitstream/fft3d/synthesis_dp/syn16/fft3d");
           printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
         break;
 
         case 32 :
-          strcat(path, "/../fpgabitstream/fft3d/emulation_dp/emu32/fft3d");
+          strcat(path, "/../fpgabitstream/fft3d/synthesis_dp/syn32/fft3d");
           printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
           break;
      
         case 64 :
-          strcat(path,"/../fpgabitstream/fft3d/emulation_dp/emu64/fft3d");
+          strcat(path,"/../fpgabitstream/fft3d/synthesis_dp/syn64/fft3d");
           printf("Selecting Double Precision binaries - (%d, %d, %d) in path %s\n", N[0], N[1], N[2], path);
           binary_file = getBoardBinaryFile(path, device);
           break;
@@ -301,7 +301,6 @@ static bool select_binary(char * path, const uint32_t *N){
 
 /******************************************************************************
  * \brief   Initialize the OpenCL FPGA environment
- * \author  Arjun Ramaswami
  * \retval  true if error in initialization
  *****************************************************************************/
 bool init() {
@@ -332,7 +331,6 @@ bool init() {
 
 /******************************************************************************
  * \brief   Initialize the program and its kernels
- * \author  Arjun Ramaswami
  * \param   N - integer pointer to the size of the FFT
  *****************************************************************************/
 static void init_program(const uint32_t *N) {
@@ -365,7 +363,6 @@ static void init_program(const uint32_t *N) {
 
 /******************************************************************************
  * \brief   Create a command queue for each kernel
- * \author  Arjun Ramaswami
  *****************************************************************************/
 static void queue_setup(){
   cl_int status;
@@ -387,7 +384,6 @@ static void queue_setup(){
 
 /******************************************************************************
  * \brief   Free resources allocated during initialization
- * \author  Arjun Ramaswami
  *****************************************************************************/
 void cleanup(){
 
@@ -416,7 +412,6 @@ void cleanup(){
 
 /******************************************************************************
  * \brief   Release all command queues
- * \author  Arjun Ramaswami
  *****************************************************************************/
 void queue_cleanup() {
   if(queue1) 
