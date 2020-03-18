@@ -52,7 +52,8 @@ MODULE iterate_matrix
 
    PUBLIC :: invert_Hotelling, matrix_sign_Newton_Schulz, matrix_sqrt_Newton_Schulz, &
              matrix_sqrt_proot, matrix_sign_proot, matrix_sign_submatrix, &
-             matrix_sign_submatrix_modmu, purify_mcweeny, invert_Taylor, determinant
+             matrix_sign_submatrix_modmu, matrix_sign_submatrix_modmu2, &
+             purify_mcweeny, invert_Taylor, determinant
 
 CONTAINS
 
@@ -1345,14 +1346,189 @@ CONTAINS
    END SUBROUTINE matrix_sign_submatrix
 
 ! **************************************************************************************************
+!> \brief Submatrix method with internal adjustment of chemical potential, hybrid solution
+!> \param matrix_sign ...
+!> \param matrix ...
+!> \param mu ...
+!> \param nelectron ...
+!> \author Robert Schade, Michael Lass
+! **************************************************************************************************
+   SUBROUTINE matrix_sign_submatrix_modmu2(matrix_sign, matrix, mu, nelectron)
+
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_sign, matrix
+      REAL(KIND=dp), INTENT(INOUT)                       :: mu
+      INTEGER, INTENT(IN)                                :: nelectron
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'matrix_sign_submatrix_modmu2', &
+                                     routineP = moduleN//':'//routineN
+
+      INTEGER                                            :: group, handle, i, j, k, l, myrank, nblkcols, &
+                                                            sm_size, unit_nr, sm_firstcol, sm_lastcol
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: my_sms
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mapped_eigvals
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: sm, sm_sign, tmp
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(dbcsr_distribution_type)                      :: dist
+      TYPE(submatrix_dissection_type)                    :: dissection
+      REAL(KIND=dp)                                      :: trace, increment, new_mu, modified_eigval, tmpsum
+      TYPE(eigbuf), DIMENSION(:), ALLOCATABLE            :: eigbufs
+
+      REAL(KIND=dp), PARAMETER                           :: initial_increment = 0.01_dp
+
+      CALL timeset(routineN, handle)
+
+      ! print output on all ranks
+      logger => cp_get_default_logger()
+      unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
+
+      CALL dbcsr_get_info(matrix=matrix, nblkcols_total=nblkcols, distribution=dist, group=group)
+      CALL dbcsr_distribution_get(dist=dist, mynode=myrank)
+
+      CALL dissection%init(matrix)
+      CALL dissection%get_sm_ids_for_rank(myrank, my_sms)
+
+      ALLOCATE (eigbufs(SIZE(my_sms)))
+
+      WRITE (unit_nr, '(T3,A,1X,E10.3)') "MU:", mu
+      trace = 0.0_dp
+
+! gfortran before 8.3 complains about internal symbols not being specified in
+! any data clause when using DEFAULT(NONE) and OOP procedures are called from
+! within the parallel region.
+#if __GNUC__ < 8 || (__GNUC__ == 8 && (__GNUC_MINOR__ < 3))
+      !$OMP PARALLEL DEFAULT(SHARED) &
+#else
+      !$OMP PARALLEL DEFAULT(NONE) &
+#endif
+      !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j, tmp) &
+      !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs) &
+      !$OMP          REDUCTION(+:trace)
+      !$OMP DO SCHEDULE(GUIDED)
+      DO i = 1, SIZE(my_sms)
+         WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "processing submatrix", my_sms(i)
+         CALL dissection%generate_submatrix(my_sms(i), sm)
+         sm_size = SIZE(sm, 1)
+         ALLOCATE (sm_sign(sm_size, sm_size))
+         !PRINT *, "sm", my_sms(i), "size", sm_size
+         CALL dense_matrix_sign_direct(sm_sign, sm, sm_size, eigvals=eigbufs(i)%eigvals, eigvecs=tmp)
+         CALL dissection%copy_resultcol(my_sms(i), sm_sign)
+         CALL dissection%get_relevant_sm_columns(my_sms(i), sm_firstcol, sm_lastcol)
+         ALLOCATE (eigbufs(i)%eigvecs(sm_firstcol:sm_lastcol, 1:sm_size))
+         eigbufs(i)%eigvecs(:, :) = tmp(sm_firstcol:sm_lastcol, 1:sm_size)
+         DO j = sm_firstcol, sm_lastcol
+            trace = trace - 0.5_dp*sm_sign(j, j) + 0.5_dp
+         ENDDO
+         DEALLOCATE (sm, sm_sign, tmp)
+      ENDDO
+      !$OMP END DO
+      !$OMP END PARALLEL
+
+      increment = initial_increment
+      new_mu = mu
+      DO i = 1, 10 !FIXME: define an parameter or something, check for convergence
+         CALL mp_sum(trace, group)
+         IF (myrank .eq. 0) PRINT *, "mu:", new_mu, "creates trace error:", trace - nelectron
+         IF (ABS(trace - nelectron) < 0.5_dp) EXIT
+
+         IF (trace < nelectron) THEN
+            new_mu = new_mu + increment
+            increment = increment*2
+         ELSE
+            new_mu = new_mu - increment
+            increment = increment*2
+         ENDIF
+
+         trace = 0
+         ! gfortran before 8.3 complains about internal symbols not being specified in
+         ! any data clause when using DEFAULT(NONE) and OOP procedures are called from
+         ! within the parallel region.
+#if __GNUC__ < 8 || (__GNUC__ == 8 && (__GNUC_MINOR__ < 3))
+         !$OMP PARALLEL DEFAULT(SHARED) &
+#else
+         !$OMP PARALLEL DEFAULT(NONE) &
+#endif
+         !$OMP          PRIVATE(i, k, l, sm_sign, tmp, sm_size, sm_firstcol, sm_lastcol, modified_eigval, tmpsum, &
+         !$OMP                  mapped_eigvals) &
+         !$OMP          SHARED(dissection, my_sms, unit_nr, eigbufs, mu, new_mu, nelectron) &
+         !$OMP          REDUCTION(+:trace)
+         !$OMP DO SCHEDULE(GUIDED)
+         DO j = 1, SIZE(my_sms)
+            sm_size = SIZE(eigbufs(j)%eigvals)
+            !print *, "my", j, "global", my_sms(j), "should have size", sm_size
+            ALLOCATE (mapped_eigvals(sm_size))
+
+            DO k = 1, sm_size
+               modified_eigval = eigbufs(j)%eigvals(k) + mu - new_mu
+               IF (modified_eigval > 0) THEN
+                  mapped_eigvals(k) = 1.0
+               ELSE IF (modified_eigval < 0) THEN
+                  mapped_eigvals(k) = -1.0
+               ELSE
+                  mapped_eigvals(k) = 0.0
+               ENDIF
+            ENDDO
+
+            CALL dissection%get_relevant_sm_columns(my_sms(j), sm_firstcol, sm_lastcol)
+
+            DO k = sm_firstcol, sm_lastcol
+               tmpsum = 0.0_dp
+               DO l = 1, sm_size
+                  tmpsum = tmpsum + (eigbufs(j)%eigvecs(k, l)*mapped_eigvals(l)*eigbufs(j)%eigvecs(k, l))
+               ENDDO
+               trace = trace - 0.5_dp*tmpsum + 0.5_dp
+            ENDDO
+
+            DEALLOCATE (mapped_eigvals)
+         ENDDO
+         !$OMP END DO
+         !$OMP END PARALLEL
+      ENDDO
+
+      DEALLOCATE (eigbufs)
+
+      IF (mu .NE. new_mu) THEN
+! gfortran before 8.3 complains about internal symbols not being specified in
+! any data clause when using DEFAULT(NONE) and OOP procedures are called from
+! within the parallel region.
+#if __GNUC__ < 8 || (__GNUC__ == 8 && (__GNUC_MINOR__ < 3))
+         !$OMP PARALLEL DEFAULT(SHARED) &
+#else
+         !$OMP PARALLEL DEFAULT(NONE) &
+#endif
+         !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j) &
+         !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs, mu, new_mu) &
+         !$OMP          REDUCTION(+:trace)
+         !$OMP DO SCHEDULE(GUIDED)
+         DO i = 1, SIZE(my_sms)
+            WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "processing submatrix", my_sms(i)
+            CALL dissection%generate_submatrix(my_sms(i), sm)
+            sm_size = SIZE(sm, 1)
+            DO j = 1, sm_size
+               sm(j, j) = sm(j, j) + mu - new_mu
+            ENDDO
+            ALLOCATE (sm_sign(sm_size, sm_size))
+            CALL dense_matrix_sign_direct(sm_sign, sm, sm_size)
+            CALL dissection%copy_resultcol(my_sms(i), sm_sign)
+            DEALLOCATE (sm, sm_sign)
+         ENDDO
+         !$OMP END DO
+         !$OMP END PARALLEL
+         mu = new_mu
+      ENDIF
+
+      CALL dissection%communicate_results(matrix_sign)
+      CALL dissection%final
+
+      CALL timestop(handle)
+
+   END SUBROUTINE matrix_sign_submatrix_modmu2
+
+! **************************************************************************************************
 !> \brief Submatrix method with internal adjustment of chemical potential
 !> \param matrix_sign ...
 !> \param matrix ...
 !> \param mu ...
 !> \param nelectron ...
-!> \par History
-!>       2019.03 created [Robert Schade]
-!>       2019.06 impl. submatrix method [Michael Lass]
 !> \author Robert Schade, Michael Lass
 ! **************************************************************************************************
    SUBROUTINE matrix_sign_submatrix_modmu(matrix_sign, matrix, mu, nelectron)
