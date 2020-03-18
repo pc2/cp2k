@@ -33,6 +33,7 @@ MODULE dm_ls_scf_methods
                                               matrix_sign_Newton_Schulz,&
                                               matrix_sign_proot,&
                                               matrix_sign_submatrix,&
+                                              matrix_sign_submatrix_modmu,&
                                               matrix_sqrt_Newton_Schulz,&
                                               matrix_sqrt_proot
    USE kinds,                           ONLY: dp,&
@@ -432,7 +433,7 @@ CONTAINS
          CALL density_matrix_sign_fixed_mu(matrix_p, trace, mu, sign_method, sign_order, &
                                            matrix_ks, matrix_s, matrix_s_inv, threshold, &
                                            do_sign_symmetric, used_submatrix_sign_method, &
-                                           matrix_s_sqrt_inv)
+                                           nelectron, matrix_s_sqrt_inv)
          IF (unit_nr > 0) WRITE (unit_nr, '(T2,A,I2,1X,F13.9,1X,F15.9)') &
             "Density matrix:  iter, mu, trace error: ", iter, mu, trace - nelectron
 
@@ -470,6 +471,7 @@ CONTAINS
 !> \param threshold ...
 !> \param sign_symmetric ...
 !> \param submatrix_sign_method ...
+!> \param nelectron ...
 !> \param matrix_s_sqrt_inv ...
 !> \par History
 !>       2010.10 created [Joost VandeVondele]
@@ -477,7 +479,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE density_matrix_sign_fixed_mu(matrix_p, trace, mu, sign_method, sign_order, matrix_ks, &
                                            matrix_s, matrix_s_inv, threshold, sign_symmetric, submatrix_sign_method, &
-                                           matrix_s_sqrt_inv)
+                                           nelectron, matrix_s_sqrt_inv)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_p
       REAL(KIND=dp), INTENT(OUT)                         :: trace
@@ -487,6 +489,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: threshold
       LOGICAL                                            :: sign_symmetric
       INTEGER                                            :: submatrix_sign_method
+      INTEGER, INTENT(IN)                                :: nelectron
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: matrix_s_sqrt_inv
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'density_matrix_sign_fixed_mu', &
@@ -528,7 +531,8 @@ CONTAINS
          CASE (ls_scf_sign_proot)
             CALL matrix_sign_proot(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order)
          CASE (ls_scf_sign_submatrix)
-            CALL matrix_sign_submatrix(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order, submatrix_sign_method)
+            !CALL matrix_sign_submatrix(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order, submatrix_sign_method)
+            CALL matrix_sign_submatrix_modmu(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron)
          CASE DEFAULT
             CPABORT("Unkown sign method.")
          END SELECT

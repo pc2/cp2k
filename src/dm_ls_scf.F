@@ -982,7 +982,8 @@ CONTAINS
                                               ls_scf_env%sign_order, ls_scf_env%matrix_ks(ispin), &
                                               ls_scf_env%matrix_s, ls_scf_env%matrix_s_inv, &
                                               ls_scf_env%eps_filter, ls_scf_env%sign_symmetric, &
-                                              ls_scf_env%submatrix_sign_method, ls_scf_env%matrix_s_sqrt_inv)
+                                              ls_scf_env%submatrix_sign_method, nelectron_spin_real, & !FIXME: Correct nelec?
+                                              ls_scf_env%matrix_s_sqrt_inv)
          ENDDO
 
          t2 = m_walltime()

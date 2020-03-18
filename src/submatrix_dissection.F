@@ -85,15 +85,16 @@ MODULE submatrix_dissection
       PROCEDURE :: copy_resultcol => submatrix_cpy_resultcol
       PROCEDURE :: communicate_results => submatrix_communicate_results
       PROCEDURE :: get_first_relevant_col => submatrix_get_first_relevant_col
+      PROCEDURE :: get_relevant_sm_columns => submatrix_get_relevant_sm_columns
    END TYPE submatrix_dissection_type
 
 CONTAINS
 
 ! **************************************************************************************************
-!> \brief determine which columns of the submatrix are relevant for the result matrix
+!> \brief determine which block columns of the submatrix are relevant for the result matrix
 !> \param this - object of class submatrix_dissection_type
 !> \param sm_id - id of the submatrix
-!> \return first column of interest for result matrix
+!> \return first block column of interest for result matrix
 ! **************************************************************************************************
    FUNCTION submatrix_get_first_relevant_col(this, sm_id) RESULT(sm_col_offset)
       CLASS(submatrix_dissection_type), INTENT(IN)     :: this
@@ -102,7 +103,6 @@ CONTAINS
       TYPE(set_type)                                   :: nonzero_rows
 
       ! TODO: Should we buffer the list of non-zero rows for each submatrix instead of recalculating it each time?
-      sm_col_offset = 0
       DO i = (sm_id - 1)*this%cols_per_sm + 1, sm_id*this%cols_per_sm     ! all colums that determine submatrix sm_id
          DO j = this%coo_col_offsets(i), this%coo_col_offsets(i + 1) - 1  ! all blocks that are within this column
             CALL nonzero_rows%insert(this%coo_rows(j))
@@ -112,7 +112,7 @@ CONTAINS
       sm_col_offset = 0
       DO i = 1, nonzero_rows%elements
          IF (nonzero_rows%get(i) .EQ. (sm_id - 1)*this%cols_per_sm + 1) THEN
-            ! We just found the nonzero row what corresponds to the first inducing column of our submatrix
+            ! We just found the nonzero row that corresponds to the first inducing column of our submatrix
             sm_col_offset = i
             EXIT
          ENDIF
@@ -124,6 +124,49 @@ CONTAINS
       CALL nonzero_rows%reset
 
    END FUNCTION submatrix_get_first_relevant_col
+
+! **************************************************************************************************
+!> \brief determine which columns of the submatrix are relevant for the result matrix
+!> \param this - object of class submatrix_dissection_type
+!> \param sm_id - id of the submatrix
+!> \param first - first column of submatrix that is relevant
+!> \param last - last column of submatrix that is relevant
+!> \return first column of interest for result matrix
+! **************************************************************************************************
+   SUBROUTINE submatrix_get_relevant_sm_columns(this, sm_id, first, last)
+      CLASS(submatrix_dissection_type), INTENT(IN)     :: this
+      INTEGER, INTENT(IN)                              :: sm_id
+      INTEGER, INTENT(OUT)                             :: first, last
+      INTEGER                                          :: i, j, blkid
+      TYPE(set_type)                                   :: nonzero_rows
+
+      ! TODO: Should we buffer the list of non-zero rows for each submatrix instead of recalculating it each time?
+      DO i = (sm_id - 1)*this%cols_per_sm + 1, sm_id*this%cols_per_sm     ! all colums that determine submatrix sm_id
+         DO j = this%coo_col_offsets(i), this%coo_col_offsets(i + 1) - 1  ! all blocks that are within this column
+            CALL nonzero_rows%insert(this%coo_rows(j))
+         ENDDO
+      ENDDO
+
+      first = 1
+      DO i = 1, nonzero_rows%elements
+         blkid = nonzero_rows%get(i)
+         IF (blkid .EQ. (sm_id - 1)*this%cols_per_sm + 1) THEN
+            ! We just found the nonzero row that corresponds to the first inducing column of our submatrix
+            ! Now add up block sizes to determine the last one as well
+            last = first - 1
+            DO j = i, nonzero_rows%elements
+               blkid = nonzero_rows%get(j)
+               last = last + this%col_blk_size(blkid)
+               IF (blkid .EQ. (sm_id)*this%cols_per_sm) EXIT
+            ENDDO
+            EXIT
+         ENDIF
+         first = first + this%col_blk_size(blkid)
+      ENDDO
+
+      CALL nonzero_rows%reset
+
+   END SUBROUTINE submatrix_get_relevant_sm_columns
 
 ! **************************************************************************************************
 !> \brief initialize submatrix dissection and communicate, needs to be called before constructing any submatrices.
