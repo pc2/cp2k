@@ -22,7 +22,8 @@ MODULE input_cp2k_ls
         ls_s_preconditioner_none, ls_s_sqrt_ns, ls_s_sqrt_proot, ls_scf_line_search_3point, &
         ls_scf_line_search_3point_2d, ls_scf_pexsi, ls_scf_sign, ls_scf_sign_ns, &
         ls_scf_sign_proot, ls_scf_sign_submatrix, ls_scf_submatrix_sign_direct, &
-        ls_scf_submatrix_sign_ns, ls_scf_tc2, ls_scf_trs4
+        ls_scf_submatrix_sign_ns, ls_scf_submatrix_sign_dir_mu_cpu, ls_scf_submatrix_sign_dir_mu_mem, &
+        ls_scf_submatrix_sign_gpu, ls_scf_submatrix_sign_fpga, ls_scf_tc2, ls_scf_trs4
    USE input_keyword_types,             ONLY: keyword_create,&
                                               keyword_release,&
                                               keyword_type
@@ -221,10 +222,15 @@ CONTAINS
                           description="Method used for the computation of the sign matrix of all submatrices.", &
                           usage="SUBMATRIX_SIGN_METHOD NEWTONSCHULZ", &
                           default_i_val=ls_scf_submatrix_sign_ns, &
-                          enum_c_vals=s2a("NEWTONSCHULZ", "DIRECT"), &
+                          enum_c_vals=s2a("NEWTONSCHULZ", "DIRECT", "DIR_MU_MEM", "DIR_MU_CPU", "GPU", "FPGA"), &
                           enum_desc=s2a("Newton-Schulz iteration.", &
-                                        "Directly calculate all eigenvalues."), &
-                          enum_i_vals=(/ls_scf_submatrix_sign_ns, ls_scf_submatrix_sign_direct/))
+                                        "Directly calculate all eigenvalues.", &
+                                        "Store decompositions to directly compute mu.", &
+                                        "Store parts of decompositions to directly compute mu.", &
+                                        "Use GPU accelerator.", &
+                                        "Use FPGA accelerator."), &
+                          enum_i_vals=(/ls_scf_submatrix_sign_ns, ls_scf_submatrix_sign_direct, ls_scf_submatrix_sign_dir_mu_mem, &
+                                        ls_scf_submatrix_sign_dir_mu_cpu, ls_scf_submatrix_sign_gpu, ls_scf_submatrix_sign_fpga/))
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

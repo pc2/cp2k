@@ -31,7 +31,8 @@ MODULE dm_ls_scf_create
         ls_s_inversion_sign_sqrt, ls_s_preconditioner_atomic, ls_s_preconditioner_molecular, &
         ls_s_preconditioner_none, ls_s_sqrt_ns, ls_s_sqrt_proot, ls_scf_pexsi, ls_scf_sign, &
         ls_scf_sign_ns, ls_scf_sign_proot, ls_scf_sign_submatrix, ls_scf_submatrix_sign_direct, &
-        ls_scf_submatrix_sign_ns, ls_scf_tc2, ls_scf_trs4
+        ls_scf_submatrix_sign_ns, ls_scf_submatrix_sign_dir_mu_cpu, ls_scf_submatrix_sign_dir_mu_mem, &
+        ls_scf_submatrix_sign_gpu, ls_scf_submatrix_sign_fpga, ls_scf_tc2, ls_scf_trs4
    USE input_enumeration_types,         ONLY: enum_i2c,&
                                               enumeration_type
    USE input_keyword_types,             ONLY: keyword_get,&
@@ -314,9 +315,12 @@ CONTAINS
 
       ! verify requirements for direct submatrix sign method
       IF (ls_scf_env%sign_method .EQ. ls_scf_sign_submatrix &
-          .AND. ls_scf_env%submatrix_sign_method .EQ. ls_scf_submatrix_sign_direct &
-          .AND. .NOT. ls_scf_env%sign_symmetric) &
-         CPABORT("DIRECT submatrix sign method requires SIGN_SYMMETRIC being set.")
+          .AND. ( &
+            ls_scf_env%submatrix_sign_method .EQ. ls_scf_submatrix_sign_direct &
+            .OR. ls_scf_env%submatrix_sign_method .EQ. ls_scf_submatrix_sign_dir_mu_cpu &
+            .OR. ls_scf_env%submatrix_sign_method .EQ. ls_scf_submatrix_sign_dir_mu_mem &
+          ) .AND. .NOT. ls_scf_env%sign_symmetric) &
+         CPABORT("chosen submatrix sign method requires SIGN_SYMMETRIC being set.")
 
       ! sign_symmetric requires computation of s_sqrt
       IF (ls_scf_env%sign_symmetric) ls_scf_env%use_s_sqrt = .TRUE.
@@ -408,6 +412,14 @@ CONTAINS
                   WRITE (unit_nr, '(T2,A,T61,A20)') "Submatrix sign method:", ADJUSTR("newton schulz")
                CASE (ls_scf_submatrix_sign_direct)
                   WRITE (unit_nr, '(T2,A,T61,A20)') "Submatrix sign method:", ADJUSTR("direct")
+               CASE (ls_scf_submatrix_sign_dir_mu_cpu)
+                  WRITE (unit_nr, '(T2,A,T61,A20)') "Submatrix sign method:", ADJUSTR("direct mu cpu-intensive")
+               CASE (ls_scf_submatrix_sign_dir_mu_mem)
+                  WRITE (unit_nr, '(T2,A,T61,A20)') "Submatrix sign method:", ADJUSTR("direct mu mem-intensive")
+               CASE (ls_scf_submatrix_sign_gpu)
+                  WRITE (unit_nr, '(T2,A,T61,A20)') "Submatrix sign method:", ADJUSTR("GPU")
+               CASE (ls_scf_submatrix_sign_fpga)
+                  WRITE (unit_nr, '(T2,A,T61,A20)') "Submatrix sign method:", ADJUSTR("FPGA")
                CASE DEFAULT
                   CPABORT("Unkown submatrix sign method.")
                END SELECT

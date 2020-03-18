@@ -28,11 +28,14 @@ MODULE dm_ls_scf_methods
    USE input_constants,                 ONLY: &
         ls_cluster_atomic, ls_s_preconditioner_atomic, ls_s_preconditioner_molecular, &
         ls_s_preconditioner_none, ls_s_sqrt_ns, ls_s_sqrt_proot, ls_scf_sign_ns, &
-        ls_scf_sign_proot, ls_scf_sign_submatrix, ls_scf_submatrix_sign_ns
+        ls_scf_sign_proot, ls_scf_sign_submatrix, ls_scf_submatrix_sign_ns, &
+        ls_scf_submatrix_sign_dir_mu_cpu, ls_scf_submatrix_sign_dir_mu_mem
    USE iterate_matrix,                  ONLY: invert_Hotelling,&
                                               matrix_sign_Newton_Schulz,&
                                               matrix_sign_proot,&
                                               matrix_sign_submatrix,&
+                                              matrix_sign_submatrix_dir_mu_cpu,&
+                                              matrix_sign_submatrix_dir_mu_mem,&
                                               matrix_sqrt_Newton_Schulz,&
                                               matrix_sqrt_proot
    USE kinds,                           ONLY: dp,&
@@ -432,7 +435,7 @@ CONTAINS
          CALL density_matrix_sign_fixed_mu(matrix_p, trace, mu, sign_method, sign_order, &
                                            matrix_ks, matrix_s, matrix_s_inv, threshold, &
                                            do_sign_symmetric, used_submatrix_sign_method, &
-                                           matrix_s_sqrt_inv)
+                                           nelectron, matrix_s_sqrt_inv)
          IF (unit_nr > 0) WRITE (unit_nr, '(T2,A,I2,1X,F13.9,1X,F15.9)') &
             "Density matrix:  iter, mu, trace error: ", iter, mu, trace - nelectron
 
@@ -470,6 +473,7 @@ CONTAINS
 !> \param threshold ...
 !> \param sign_symmetric ...
 !> \param submatrix_sign_method ...
+!> \param nelectron ...
 !> \param matrix_s_sqrt_inv ...
 !> \par History
 !>       2010.10 created [Joost VandeVondele]
@@ -477,7 +481,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE density_matrix_sign_fixed_mu(matrix_p, trace, mu, sign_method, sign_order, matrix_ks, &
                                            matrix_s, matrix_s_inv, threshold, sign_symmetric, submatrix_sign_method, &
-                                           matrix_s_sqrt_inv)
+                                           nelectron, matrix_s_sqrt_inv)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_p
       REAL(KIND=dp), INTENT(OUT)                         :: trace
@@ -487,13 +491,14 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: threshold
       LOGICAL                                            :: sign_symmetric
       INTEGER                                            :: submatrix_sign_method
+      INTEGER, INTENT(IN)                                :: nelectron
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: matrix_s_sqrt_inv
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'density_matrix_sign_fixed_mu', &
          routineP = moduleN//':'//routineN
 
       INTEGER                                            :: handle, unit_nr
-      REAL(KIND=dp)                                      :: frob_matrix
+      REAL(KIND=dp)                                      :: frob_matrix, evar
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_type) :: matrix_p_ud, matrix_sign, matrix_sinv_ks, matrix_ssqrtinv_ks_ssqrtinv, &
          matrix_ssqrtinv_ks_ssqrtinv2, matrix_tmp
@@ -528,7 +533,14 @@ CONTAINS
          CASE (ls_scf_sign_proot)
             CALL matrix_sign_proot(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order)
          CASE (ls_scf_sign_submatrix)
-            CALL matrix_sign_submatrix(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order, submatrix_sign_method)
+            SELECT CASE (submatrix_sign_method)
+            CASE (ls_scf_submatrix_sign_dir_mu_mem)
+              CALL matrix_sign_submatrix_dir_mu_mem(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron, threshold)
+            CASE (ls_scf_submatrix_sign_dir_mu_cpu)
+              CALL matrix_sign_submatrix_dir_mu_cpu(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron, threshold)
+            CASE DEFAULT
+              CALL matrix_sign_submatrix(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order, submatrix_sign_method)
+            END SELECT
          CASE DEFAULT
             CPABORT("Unkown sign method.")
          END SELECT
@@ -572,7 +584,6 @@ CONTAINS
                           0.0_dp, matrix_tmp, filter_eps=threshold)
       CALL dbcsr_add(matrix_tmp, matrix_p_ud, 1.0_dp, -1.0_dp)
       frob_matrix = dbcsr_frobenius_norm(matrix_tmp)
-      CALL dbcsr_release(matrix_tmp)
       IF (unit_nr > 0) WRITE (unit_nr, '(T2,A,F20.12)') "Deviation from idempotency: ", frob_matrix
 
       IF (sign_symmetric) THEN
@@ -589,6 +600,15 @@ CONTAINS
       CALL dbcsr_release(matrix_p_ud)
 
       CALL timestop(handle)
+
+      !compute energy
+      CALL dbcsr_multiply("N", "N", 1.0_dp, matrix_p, matrix_ks, &
+                            0.0_dp, matrix_tmp, filter_eps=threshold)
+      CALL dbcsr_trace(matrix_tmp, evar)
+      IF (unit_nr > 0) WRITE (unit_nr, '(T2,A,F20.12)') "Energy Tr(DK) ", evar
+
+      CALL dbcsr_release(matrix_tmp)
+
 
    END SUBROUTINE density_matrix_sign_fixed_mu
 
@@ -639,7 +659,7 @@ CONTAINS
       REAL(KIND=dp) :: current_threshold, delta_n, eps_max, eps_min, est_threshold, frob_id, &
          frob_x, gam, homo, lumo, max_eig, max_threshold, maxdev, maxev, min_eig, minev, mmin, mu, &
          mu_a, mu_b, mu_c, mu_fa, mu_fc, occ_matrix, scaled_homo_bound, scaled_lumo_bound, t1, t2, &
-         trace_fx, trace_gx, xi
+         trace_fx, trace_gx, xi, evar
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gamma_values
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_type)                                   :: matrix_k0, matrix_x, matrix_x_nosym, &
@@ -856,7 +876,7 @@ CONTAINS
 
       ! calculate the chemical potential by doing a bisection of fk(x0)-0.5, where fk is evaluated using the stored values for gamma
       ! E. Rubensson et al., Chem Phys Lett 432, 2006, 591-594
-      mu_a = 0.0_dp; mu_b = 1.0_dp; 
+      mu_a = 0.0_dp; mu_b = 1.0_dp;
       mu_fa = evaluate_trs4_polynomial(mu_a, gamma_values, i - 1) - 0.5_dp
       DO j = 1, 40
          mu_c = 0.5*(mu_a + mu_b)
@@ -886,9 +906,16 @@ CONTAINS
       ENDIF
 
       CALL dbcsr_release(matrix_x)
-      CALL dbcsr_release(matrix_x_nosym)
       CALL dbcsr_release(matrix_k0)
+
       CALL timestop(handle)
+
+      !compute energy
+      CALL dbcsr_multiply("N", "N", 1.0_dp, matrix_p, matrix_ks, &
+                            0.0_dp, matrix_x_nosym, filter_eps=threshold)
+      CALL dbcsr_trace(matrix_x_nosym, evar)
+      IF (unit_nr > 0) WRITE (unit_nr, '(T2,A,F20.12)') "Energy Tr(DK) ", evar
+      CALL dbcsr_release(matrix_x_nosym)
 
    END SUBROUTINE density_matrix_trs4
 
