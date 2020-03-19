@@ -1351,13 +1351,15 @@ CONTAINS
 !> \param matrix ...
 !> \param mu ...
 !> \param nelectron ...
+!> \param threshold ...
 !> \author Robert Schade, Michael Lass
 ! **************************************************************************************************
-   SUBROUTINE matrix_sign_submatrix_modmu2(matrix_sign, matrix, mu, nelectron)
+   SUBROUTINE matrix_sign_submatrix_modmu2(matrix_sign, matrix, mu, nelectron, threshold)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_sign, matrix
       REAL(KIND=dp), INTENT(INOUT)                       :: mu
       INTEGER, INTENT(IN)                                :: nelectron
+      REAL(KIND=dp), INTENT(IN)                          :: threshold
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'matrix_sign_submatrix_modmu2', &
                                      routineP = moduleN//':'//routineN
@@ -1370,8 +1372,9 @@ CONTAINS
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(submatrix_dissection_type)                    :: dissection
-      REAL(KIND=dp)                                      :: trace, increment, new_mu, modified_eigval, tmpsum
+      REAL(KIND=dp)                                      :: trace, increment, new_mu, modified_eigval, tmpsum, mu_low, mu_high
       TYPE(eigbuf), DIMENSION(:), ALLOCATABLE            :: eigbufs
+      LOGICAL                                            :: has_mu_low, has_mu_high
 
       REAL(KIND=dp), PARAMETER                           :: initial_increment = 0.01_dp
 
@@ -1389,7 +1392,6 @@ CONTAINS
 
       ALLOCATE (eigbufs(SIZE(my_sms)))
 
-      WRITE (unit_nr, '(T3,A,1X,E10.3)') "MU:", mu
       trace = 0.0_dp
 
 ! gfortran before 8.3 complains about internal symbols not being specified in
@@ -1409,7 +1411,6 @@ CONTAINS
          CALL dissection%generate_submatrix(my_sms(i), sm)
          sm_size = SIZE(sm, 1)
          ALLOCATE (sm_sign(sm_size, sm_size))
-         !PRINT *, "sm", my_sms(i), "size", sm_size
          CALL dense_matrix_sign_direct(sm_sign, sm, sm_size, eigvals=eigbufs(i)%eigvals, eigvecs=tmp)
          CALL dissection%copy_resultcol(my_sms(i), sm_sign)
          CALL dissection%get_relevant_sm_columns(my_sms(i), sm_firstcol, sm_lastcol)
@@ -1423,19 +1424,30 @@ CONTAINS
       !$OMP END DO
       !$OMP END PARALLEL
 
+      has_mu_low = .FALSE.
+      has_mu_high = .FALSE.
       increment = initial_increment
       new_mu = mu
-      DO i = 1, 10 !FIXME: define an parameter or something, check for convergence
+      DO i = 1, 30
          CALL mp_sum(trace, group)
-         IF (myrank .eq. 0) PRINT *, "mu:", new_mu, "creates trace error:", trace - nelectron
+         WRITE (unit_nr, '(T3,A,1X,F10.3,1X,A,1X,F10.3)') "mu:", new_mu, "trace error:", trace - nelectron
          IF (ABS(trace - nelectron) < 0.5_dp) EXIT
 
          IF (trace < nelectron) THEN
+            mu_low = new_mu
             new_mu = new_mu + increment
+            has_mu_low = .TRUE.
             increment = increment*2
          ELSE
+            mu_high = new_mu
             new_mu = new_mu - increment
+            has_mu_high = .TRUE.
             increment = increment*2
+         ENDIF
+
+         IF (has_mu_low .AND. has_mu_high) THEN
+            new_mu = (mu_low + mu_high)/2
+            IF (ABS(mu_high - mu_low) < threshold) EXIT
          ENDIF
 
          trace = 0
@@ -1454,7 +1466,6 @@ CONTAINS
          !$OMP DO SCHEDULE(GUIDED)
          DO j = 1, SIZE(my_sms)
             sm_size = SIZE(eigbufs(j)%eigvals)
-            !print *, "my", j, "global", my_sms(j), "should have size", sm_size
             ALLOCATE (mapped_eigvals(sm_size))
 
             DO k = 1, sm_size
@@ -1529,13 +1540,15 @@ CONTAINS
 !> \param matrix ...
 !> \param mu ...
 !> \param nelectron ...
+!> \param threshold ...
 !> \author Robert Schade, Michael Lass
 ! **************************************************************************************************
-   SUBROUTINE matrix_sign_submatrix_modmu(matrix_sign, matrix, mu, nelectron)
+   SUBROUTINE matrix_sign_submatrix_modmu(matrix_sign, matrix, mu, nelectron, threshold)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_sign, matrix
       REAL(KIND=dp), INTENT(INOUT)                       :: mu
       INTEGER, INTENT(IN)                                :: nelectron
+      REAL(KIND=dp), INTENT(IN)                          :: threshold
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'matrix_sign_submatrix_modmu', &
                                      routineP = moduleN//':'//routineN
@@ -1547,8 +1560,9 @@ CONTAINS
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(submatrix_dissection_type)                    :: dissection
-      REAL(KIND=dp)                                      :: trace, last_trace, increment, new_mu, modified_eigval
+      REAL(KIND=dp)                                      :: trace, last_trace, increment, new_mu, modified_eigval, mu_low, mu_high
       TYPE(eigbuf), DIMENSION(:), ALLOCATABLE            :: eigbufs
+      LOGICAL                                            :: has_mu_low, has_mu_high
 
       REAL(KIND=dp), PARAMETER                           :: initial_increment = 0.01_dp
 
@@ -1566,7 +1580,6 @@ CONTAINS
 
       ALLOCATE (eigbufs(SIZE(my_sms)))
 
-      WRITE (unit_nr, '(T3,A,1X,E10.3)') "MU:", mu
       trace = 0.0_dp
 
 ! gfortran before 8.3 complains about internal symbols not being specified in
@@ -1586,7 +1599,6 @@ CONTAINS
          CALL dissection%generate_submatrix(my_sms(i), sm)
          sm_size = SIZE(sm, 1)
          ALLOCATE (sm_sign(sm_size, sm_size))
-         !PRINT *, "sm", my_sms(i), "size", sm_size
          CALL dense_matrix_sign_direct(sm_sign, sm, sm_size, eigvals=eigbufs(i)%eigvals, eigvecs=eigbufs(i)%eigvecs)
          CALL dissection%get_relevant_sm_columns(my_sms(i), sm_firstcol, sm_lastcol)
          DO j = sm_firstcol, sm_lastcol
@@ -1599,21 +1611,30 @@ CONTAINS
 
       CALL mp_sum(trace, group)
 
+      ! FIXME: The order of operations is a bit off here. Cf modmu2 which does better.
+      has_mu_low = .FALSE.
+      has_mu_high = .FALSE.
       increment = initial_increment
       new_mu = mu
       last_trace = trace
-      DO i = 1, 10 !FIXME: define an parameter or something, check for convergence
-         ! OK, we can skip early if we are as close as possible to the exact result
-         ! smaller differences should be considered 'noise'
-         IF (myrank .eq. 0) PRINT *, "mu:", new_mu, "creates trace error:", last_trace - nelectron
-         IF (ABS(last_trace - nelectron) .GE. 0.5_dp) THEN
-            IF (last_trace < nelectron) THEN
-               new_mu = new_mu + increment
-               increment = increment*2
-            ELSE
-               new_mu = new_mu - increment
-               increment = increment*2
-            ENDIF
+      DO i = 1, 30
+         WRITE (unit_nr, '(T3,A,1X,F10.3,1X,A,1X,F10.3)') "mu:", new_mu, "trace error:", trace - nelectron
+
+         IF (trace < nelectron) THEN
+            mu_low = new_mu
+            new_mu = new_mu + increment
+            has_mu_low = .TRUE.
+            increment = increment*2
+         ELSE
+            mu_high = new_mu
+            new_mu = new_mu - increment
+            has_mu_high = .TRUE.
+            increment = increment*2
+         ENDIF
+
+         IF (has_mu_low .AND. has_mu_high) THEN
+            new_mu = (mu_low + mu_high)/2
+            IF (ABS(mu_high - mu_low) < threshold) EXIT
          ENDIF
 
          trace = 0
@@ -1631,7 +1652,6 @@ CONTAINS
          !$OMP DO SCHEDULE(GUIDED)
          DO j = 1, SIZE(my_sms)
             sm_size = SIZE(eigbufs(j)%eigvals)
-            !print *, "my", j, "global", my_sms(j), "should have size", sm_size
             ALLOCATE (sm_sign(sm_size, sm_size), tmp(sm_size, sm_size))
 
             sm_sign = 0
@@ -1654,7 +1674,6 @@ CONTAINS
                        sm_size)
 
             CALL dissection%get_relevant_sm_columns(my_sms(j), sm_firstcol, sm_lastcol)
-            !PRINT *, "rel cols", sm_firstcol, sm_lastcol
             DO k = sm_firstcol, sm_lastcol
                trace = trace - 0.5_dp*sm_sign(k, k) + 0.5_dp
             ENDDO

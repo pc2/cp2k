@@ -532,8 +532,8 @@ CONTAINS
             CALL matrix_sign_proot(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order)
          CASE (ls_scf_sign_submatrix)
             !CALL matrix_sign_submatrix(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order, submatrix_sign_method)
-            !CALL matrix_sign_submatrix_modmu(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron)
-            CALL matrix_sign_submatrix_modmu2(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron)
+            !CALL matrix_sign_submatrix_modmu(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron, threshold)
+            CALL matrix_sign_submatrix_modmu2(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron, threshold)
          CASE DEFAULT
             CPABORT("Unkown sign method.")
          END SELECT
