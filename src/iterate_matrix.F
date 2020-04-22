@@ -22,7 +22,7 @@ MODULE iterate_matrix
       dbcsr_gershgorin_norm, dbcsr_get_diag, dbcsr_get_info, dbcsr_get_matrix_type, &
       dbcsr_get_occupation, dbcsr_multiply, dbcsr_norm, dbcsr_norm_maxabsnorm, dbcsr_p_type, &
       dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_set_diag, dbcsr_trace, dbcsr_transposed, &
-      dbcsr_type, dbcsr_type_no_symmetry
+      dbcsr_type, dbcsr_type_no_symmetry,dbcsr_binary_write,dbcsr_get_block_p
    USE input_constants, ONLY: ls_scf_submatrix_sign_direct, &
                               ls_scf_submatrix_sign_ns, &
                               ls_scf_submatrix_sign_gpu, &
@@ -1318,7 +1318,7 @@ CONTAINS
 !> \author Robert Schade, Michael Lass
 ! **************************************************************************************************
    SUBROUTINE matrix_sign_submatrix(matrix_sign, matrix, threshold, sign_order, submatrix_sign_method)
-
+      use IFPORT
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_sign, matrix
       REAL(KIND=dp), INTENT(IN)                          :: threshold
       INTEGER, INTENT(IN), OPTIONAL                      :: sign_order
@@ -1339,6 +1339,12 @@ CONTAINS
       INTEGER :: ctr, sm_firstcol, sm_lastcol, j, k
       CHARACTER(LEN=255) :: sm_threading, s_omp_threads, s_mkl_threads
       REAL(KIND=dp) :: t1
+      logical :: found,result
+      character(len=100)       :: str
+      integer :: iatom,jatom,is,js,isum,jsum
+      INTEGER, DIMENSION(:), POINTER :: col_blk_size,row_blk_size
+      real(KIND=dp),DIMENSION(:), POINTER :: block
+      real(kind=dp),allocatable :: b2d(:,:)
 
       CALL timeset(routineN, handle)
 
@@ -1354,8 +1360,45 @@ CONTAINS
 
       t1 = omp_get_wtime()
 
-      CALL dbcsr_get_info(matrix=matrix, nblkcols_total=nblkcols, distribution=dist, group=group)
+      CALL dbcsr_get_info(matrix=matrix, nblkcols_total=nblkcols, distribution=dist, group=group,row_blk_size=row_blk_size,col_blk_size=col_blk_size)
       CALL dbcsr_distribution_get(dist=dist, mynode=myrank)
+      
+      !output matrix
+      print*,"writing matrix binary"
+      call dbcsr_binary_write(matrix,"matrix")
+      print*,"writing matrix binary done"
+      
+      print*,"writing matrix plain"
+      result=makedirqq("mat")
+      isum=0
+      do iatom=1,nblkcols
+        jsum=0
+        do jatom=1,nblkcols
+            is=row_blk_size(iatom)
+            js=col_blk_size(jatom)
+            call dbcsr_get_block_p(matrix=matrix,row=iatom,col=jatom,block=block,found=found)
+            if(found)then
+              allocate(b2d(is,js))
+              write(str,'(A,I0.8)')"mat/",iatom
+              result=makedirqq(trim(str))
+
+              write(str,'(A,I0.8,A,I0.8)')"mat/",iatom,"/",jatom
+              print*,str,is,js,isum,jsum
+              b2d=reshape(block,(/js,is/))
+              open(200, file=trim(str))
+              do i=1,is
+                do j=1,js
+                  write(200,*)i+isum,j+jsum,b2d(i,j)
+                enddo
+              enddo
+              close(200)
+              deallocate(b2d)
+            endif
+          jsum=jsum+js
+        enddo
+        isum=isum+is
+      enddo
+      print*,"writing matrix plain done"
 
       CALL dissection%init(matrix)
       CALL dissection%get_sm_ids_for_rank(myrank, my_sms)
