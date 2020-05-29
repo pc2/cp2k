@@ -20,7 +20,8 @@ MODULE dm_ls_scf_methods
         dbcsr_get_occupation, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
         dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, &
         dbcsr_put_block, dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_trace, dbcsr_type, &
-        dbcsr_type_no_symmetry, dbcsr_type_real_4
+        dbcsr_type_no_symmetry,dbcsr_type_real_4,dbcsr_binary_write,dbcsr_get_block_p,dbcsr_get_info, &
+        dbcsr_distribution_type,dbcsr_distribution_get
    USE dm_ls_scf_qs,                    ONLY: matrix_qs_to_ls
    USE dm_ls_scf_types,                 ONLY: ls_cluster_atomic,&
                                               ls_mstruct_type,&
@@ -33,7 +34,7 @@ MODULE dm_ls_scf_methods
                                               matrix_sign_Newton_Schulz,&
                                               matrix_sign_proot,&
                                               matrix_sign_submatrix,&
-                                              matrix_sign_submatrix_modmu2,&
+!                                              matrix_sign_submatrix_modmu2,&
                                               matrix_sqrt_Newton_Schulz,&
                                               matrix_sqrt_proot
    USE kinds,                           ONLY: dp,&
@@ -481,6 +482,7 @@ CONTAINS
                                            matrix_s, matrix_s_inv, threshold, sign_symmetric, submatrix_sign_method, &
                                            nelectron, matrix_s_sqrt_inv)
 
+     USE IFPORT,only:MAKEDIRQQ
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_p
       REAL(KIND=dp), INTENT(OUT)                         :: trace
       REAL(KIND=dp), INTENT(INOUT)                       :: mu
@@ -496,10 +498,18 @@ CONTAINS
          routineP = moduleN//':'//routineN
 
       INTEGER                                            :: handle, unit_nr
-      REAL(KIND=dp)                                      :: frob_matrix
+      REAL(KIND=dp)                                      :: frob_matrix,evar
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_type) :: matrix_p_ud, matrix_sign, matrix_sinv_ks, matrix_ssqrtinv_ks_ssqrtinv, &
          matrix_ssqrtinv_ks_ssqrtinv2, matrix_tmp
+      INTEGER, DIMENSION(:), POINTER                     :: col_blk_size,row_blk_size
+      real(KIND=dp),DIMENSION(:), POINTER    :: block
+      real(kind=8),allocatable    :: b2d(:,:)
+      LOGICAL(4) result,found
+      INTEGER                 :: isum,jsum,iatom,jatom,is,js,i,j,nblkcols,myrank,group
+      character(len=100)       :: str
+      TYPE(dbcsr_distribution_type)                      :: dist
+
 
       CALL timeset(routineN, handle)
 
@@ -525,15 +535,95 @@ CONTAINS
                              0.0_dp, matrix_ssqrtinv_ks_ssqrtinv, filter_eps=threshold)
          CALL dbcsr_add_on_diag(matrix_ssqrtinv_ks_ssqrtinv, -mu)
 
+         print*,"writing matrices binary"
+         call dbcsr_binary_write(matrix_ssqrtinv_ks_ssqrtinv,"matrix_ssqrtinv_ks_ssqrtinv_binary")
+         call dbcsr_binary_write(matrix_ks,"matrix_ks_binary")
+         print*,"writing matrices binary done"
+      
+         CALL dbcsr_get_info(matrix=matrix_s, distribution=dist, group=group)
+
+         CALL dbcsr_distribution_get(dist=dist, mynode=myrank)
+
+         print*,"writing matrices plain"
+          CALL dbcsr_get_info(matrix=matrix_ssqrtinv_ks_ssqrtinv,nblkcols_total=nblkcols,row_blk_size=row_blk_size,col_blk_size=col_blk_size)
+          result=makedirqq("matrix_ssqrtinv_ks_ssqrtinv")
+          isum=0
+          do iatom=1,nblkcols
+            jsum=0
+            do jatom=1,nblkcols
+              if(iatom.ge.jatom)then
+                is=row_blk_size(iatom)
+                js=col_blk_size(jatom)
+                call dbcsr_get_block_p(matrix=matrix_ssqrtinv_ks_ssqrtinv,row=iatom,col=jatom,block=block,found=found)
+                if(found)then
+                  allocate(b2d(is,js))
+
+                  write(myrank+100,'(A,I0.8,A,I0.8)')"block exists ",iatom," ",jatom
+
+                  write(str,'(A,I0.8)')"matrix_ssqrtinv_ks_ssqrtinv/",iatom
+                  result=makedirqq(trim(str))
+
+                  write(str,'(A,I0.8,A,I0.8)')"matrix_ssqrtinv_ks_ssqrtinv/",iatom,"/",jatom
+                  print*,str,is,js,isum,jsum
+                  b2d=reshape(block,(/js,is/))
+                  open(200, file=trim(str))
+                  do i=1,is
+                    do j=1,js
+                      write(200,*)i+isum,j+jsum,b2d(i,j)
+                    enddo
+                  enddo
+                  close(200)
+                  deallocate(b2d)
+                endif
+              endif
+              jsum=jsum+js
+            enddo
+            isum=isum+is
+          enddo
+          
+!          CALL dbcsr_get_info(matrix=matrix_ks,nblkcols_total=nblkcols,row_blk_size=row_blk_size,col_blk_size=col_blk_size)
+!          result=makedirqq("matrix_ks")
+!          isum=0
+!!          do iatom=1,nblkcols
+!            jsum=0
+!            do jatom=1,nblkcols
+!    !          if(iatom.ge.jatom)then
+!                is=row_blk_size(iatom)
+!                js=col_blk_size(jatom)
+!!                call dbcsr_get_block_p(matrix=matrix_ks,row=iatom,col=jatom,block=block,found=found)
+!                if(found)then
+!                  allocate(b2d(is,js))
+!                  write(str,'(A,I0.8)')"matrix_ks/",iatom
+!                  result=makedirqq(trim(str))
+!
+!                  write(str,'(A,I0.8,A,I0.8)')"matrix_ks/",iatom,"/",jatom
+!                  print*,str,is,js,isum,jsum
+!                  b2d=reshape(block,(/js,is/))
+!                  open(200, file=trim(str))
+!                  do i=1,is
+!                    do j=1,js
+!                      write(200,*)i+isum,j+jsum,b2d(i,j)
+!                    enddo
+!                  enddo
+!                  close(200)
+!                  deallocate(b2d)
+!                endif
+!    !          endif
+!              jsum=jsum+js
+!            enddo
+!            isum=isum+is
+!          enddo
+          print*,"writing matrices plain done"
+
          SELECT CASE (sign_method)
          CASE (ls_scf_sign_ns)
-            CALL matrix_sign_Newton_Schulz(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order)
+!            CALL matrix_sign_Newton_Schulz(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order)
          CASE (ls_scf_sign_proot)
-            CALL matrix_sign_proot(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order)
+!            CALL matrix_sign_proot(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order)
          CASE (ls_scf_sign_submatrix)
-            !CALL matrix_sign_submatrix(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order, submatrix_sign_method)
+!            CALL matrix_sign_submatrix(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, threshold, sign_order, submatrix_sign_method)
             !CALL matrix_sign_submatrix_modmu(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron, threshold)
-            CALL matrix_sign_submatrix_modmu2(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron, threshold)
+            !CALL matrix_sign_submatrix_modmu2(matrix_sign, matrix_ssqrtinv_ks_ssqrtinv, mu, nelectron, threshold)
          CASE DEFAULT
             CPABORT("Unkown sign method.")
          END SELECT
@@ -546,6 +636,82 @@ CONTAINS
          CALL dbcsr_multiply("N", "N", 1.0_dp, matrix_s_inv, matrix_ks, &
                              0.0_dp, matrix_sinv_ks, filter_eps=threshold)
          CALL dbcsr_add_on_diag(matrix_sinv_ks, -mu)
+      
+         !output matrix
+          print*,"writing matrices binary"
+          call dbcsr_binary_write(matrix_s,"matrix_s_binary")
+          call dbcsr_binary_write(matrix_ks,"matrix_ks_binary")
+          call dbcsr_binary_write(matrix_sinv_ks,"matrix_sinv_ks_binary")
+          print*,"writing matrices binary done"
+
+
+          print*,"writing matrices plain"
+!          CALL dbcsr_get_info(matrix=matrix_ks,nblkcols_total=nblkcols,row_blk_size=row_blk_size,col_blk_size=col_blk_size)
+!          result=makedirqq("matrix_ks")
+!          isum=0
+!          do iatom=1,nblkcols
+!            jsum=0
+!            do jatom=1,nblkcols
+!    !          if(iatom.ge.jatom)then
+!                is=row_blk_size(iatom)
+!                js=col_blk_size(jatom)
+!                call dbcsr_get_block_p(matrix=matrix_ks,row=iatom,col=jatom,block=block,found=found)
+!                if(found)then
+!                  allocate(b2d(is,js))
+!                  write(str,'(A,I0.8)')"matrix_ks/",iatom
+!                  result=makedirqq(trim(str))
+!
+!                  write(str,'(A,I0.8,A,I0.8)')"matrix_ks/",iatom,"/",jatom
+!                  print*,str,is,js,isum,jsum
+!                  b2d=reshape(block,(/js,is/))
+!                  open(200, file=trim(str))
+!                  do i=1,is
+!                    do j=1,js
+!                      write(200,*)i+isum,j+jsum,b2d(i,j)
+!!                    enddo
+!                  enddo
+!                  close(200)
+!                  deallocate(b2d)
+!                endif
+!    !          endif
+!              jsum=jsum+js
+!            enddo
+!            isum=isum+is
+!          enddo
+          
+          CALL dbcsr_get_info(matrix=matrix_sinv_ks,nblkcols_total=nblkcols,row_blk_size=row_blk_size,col_blk_size=col_blk_size)
+          result=makedirqq("matrix_sinv_ks")
+          isum=0
+          do iatom=1,nblkcols
+            jsum=0
+            do jatom=1,nblkcols
+    !          if(iatom.ge.jatom)then
+                is=row_blk_size(iatom)
+                js=col_blk_size(jatom)
+                call dbcsr_get_block_p(matrix=matrix_sinv_ks,row=iatom,col=jatom,block=block,found=found)
+                if(found)then
+                  allocate(b2d(is,js))
+                  write(str,'(A,I0.8)')"matrix_sinv_ks/",iatom
+                  result=makedirqq(trim(str))
+
+                  write(str,'(A,I0.8,A,I0.8)')"matrix_sinv_ks/",iatom,"/",jatom
+                  print*,str,is,js,isum,jsum
+                  b2d=reshape(block,(/js,is/))
+                  open(200, file=trim(str))
+                  do i=1,is
+                    do j=1,js
+                      write(200,*)i+isum,j+jsum,b2d(i,j)
+                    enddo
+                  enddo
+                  close(200)
+                  deallocate(b2d)
+                endif
+    !          endif
+              jsum=jsum+js
+            enddo
+            isum=isum+is
+          enddo
+          print*,"writing matrices plain done"
 
          ! compute sign(inv(S)*H-I*mu)
          SELECT CASE (sign_method)
@@ -577,8 +743,10 @@ CONTAINS
                           0.0_dp, matrix_tmp, filter_eps=threshold)
       CALL dbcsr_add(matrix_tmp, matrix_p_ud, 1.0_dp, -1.0_dp)
       frob_matrix = dbcsr_frobenius_norm(matrix_tmp)
-      CALL dbcsr_release(matrix_tmp)
       IF (unit_nr > 0) WRITE (unit_nr, '(T2,A,F20.12)') "Deviation from idempotency: ", frob_matrix
+      
+     
+
 
       IF (sign_symmetric) THEN
          CALL dbcsr_multiply("N", "N", 1.0_dp, matrix_s_sqrt_inv, matrix_p_ud, &
@@ -592,6 +760,17 @@ CONTAINS
                              0.0_dp, matrix_p, filter_eps=threshold)
       ENDIF
       CALL dbcsr_release(matrix_p_ud)
+        
+      !compute energy 
+      CALL dbcsr_multiply("N", "N", 1.0_dp, matrix_p, matrix_ks, &
+                            0.0_dp, matrix_tmp, filter_eps=threshold)
+      CALL dbcsr_trace(matrix_tmp, evar)
+      IF (unit_nr > 0) WRITE (unit_nr, '(T2,A,F20.12)') "Energy Tr(DK) ", evar
+      
+      CALL dbcsr_release(matrix_tmp)
+
+
+      !FIXME was above
 
       CALL timestop(handle)
 

@@ -22,7 +22,7 @@ MODULE iterate_matrix
       dbcsr_gershgorin_norm, dbcsr_get_diag, dbcsr_get_info, dbcsr_get_matrix_type, &
       dbcsr_get_occupation, dbcsr_multiply, dbcsr_norm, dbcsr_norm_maxabsnorm, dbcsr_p_type, &
       dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_set_diag, dbcsr_trace, dbcsr_transposed, &
-      dbcsr_type, dbcsr_type_no_symmetry
+      dbcsr_type, dbcsr_type_no_symmetry,dbcsr_binary_write,dbcsr_get_block_p
    USE input_constants, ONLY: ls_scf_submatrix_sign_direct, &
                               ls_scf_submatrix_sign_ns
    USE kinds, ONLY: dp, &
@@ -33,6 +33,8 @@ MODULE iterate_matrix
    USE mathlib, ONLY: abnormal_value
    USE message_passing, ONLY: mp_sum
    USE submatrix_dissection, ONLY: submatrix_dissection_type
+   USE omp_lib, ONLY: omp_get_max_threads, omp_set_nested, omp_get_wtime
+!   USE mkl_service, ONLY: mkl_set_num_threads, mkl_set_dynamic
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -52,7 +54,7 @@ MODULE iterate_matrix
 
    PUBLIC :: invert_Hotelling, matrix_sign_Newton_Schulz, matrix_sqrt_Newton_Schulz, &
              matrix_sqrt_proot, matrix_sign_proot, matrix_sign_submatrix, &
-             matrix_sign_submatrix_modmu, matrix_sign_submatrix_modmu2, &
+             matrix_sign_submatrix_dir_mu_cpu, matrix_sign_submatrix_dir_mu_mem, &
              purify_mcweeny, invert_Taylor, determinant
 
 CONTAINS
@@ -1180,84 +1182,125 @@ CONTAINS
 
    END SUBROUTINE dense_matrix_sign_Newton_Schulz
 
+  SUBROUTINE sign_from_decomp(sm_sign, eigvecs, eigvals, N, mu_correction)
+     INTEGER                          :: N
+     REAL(KIND=dp), INTENT(IN)        :: mu_correction
+     REAL(KIND=dp), INTENT(INOUT)     :: sm_sign(N, N)
+     REAL(KIND=dp), INTENT(IN)        :: eigvals(N)
+     REAL(KIND=dp), INTENT(IN)        :: eigvecs(N, N)
+     INTEGER                          :: i
+     REAL(KIND=dp)                    :: tmp(N, N), modified_eigval
+
+     sm_sign = 0
+     DO i = 1, N
+        modified_eigval = eigvals(i) - mu_correction
+        IF (modified_eigval > 0) THEN
+           sm_sign(i, i) = 1.0
+        ELSE IF (modified_eigval < 0) THEN
+           sm_sign(i, i) = -1.0
+        ELSE
+           sm_sign(i, i) = 0.0
+        ENDIF
+     ENDDO
+
+     ! Create matrix with eigenvalues in {-1,0,1} and eigenvectors of sm:
+     ! sm_sign = eigvecs * sm_sign * eigvecs.T
+     CALL dgemm('N', 'N', N, N, N, 1.0_dp, eigvecs, N, sm_sign, N, 0.0_dp, tmp, N)
+     CALL dgemm('N', 'T', N, N, N, 1.0_dp, tmp, N, eigvecs, N, 0.0_dp, sm_sign, N)
+  END SUBROUTINE sign_from_decomp
+
+  SUBROUTINE decompose(sm, N, eigvals, eigvecs)
+     INTEGER, INTENT(IN)                                :: N
+     REAL(KIND=dp), INTENT(IN)                          :: sm(N, N)
+     REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
+        INTENT(OUT)                           :: eigvals
+     REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :), &
+        INTENT(OUT)                           :: eigvecs
+
+     INTEGER                                            :: info, liwork, lwork
+     INTEGER, ALLOCATABLE, DIMENSION(:)                 :: iwork
+     REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: work
+     REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: tmp
+
+     ALLOCATE (eigvecs(N, N), tmp(N, N))
+     ALLOCATE (eigvals(N))
+
+     ! symmetrize sm
+     eigvecs(:, :) = 0.5*(sm + TRANSPOSE(sm))
+
+     ! probe optimal sizes for WORK and IWORK
+     LWORK = -1
+     LIWORK = -1
+     ALLOCATE (WORK(1))
+     ALLOCATE (IWORK(1))
+     CALL dsyevd('V', 'U', N, eigvecs, N, eigvals, WORK, LWORK, IWORK, LIWORK, INFO)
+     LWORK = INT(WORK(1))
+     LIWORK = INT(IWORK(1))
+     DEALLOCATE (IWORK)
+     DEALLOCATE (WORK)
+
+     ! calculate eigenvalues and eigenvectors
+     ALLOCATE (WORK(LWORK))
+     ALLOCATE (IWORK(LIWORK))
+     CALL dsyevd('V', 'U', N, eigvecs, N, eigvals, WORK, LWORK, IWORK, LIWORK, INFO)
+     DEALLOCATE (IWORK)
+     DEALLOCATE (WORK)
+     IF (INFO .NE. 0) CPABORT("dsyevd did not succeed")
+
+     DEALLOCATE (tmp)
+ END SUBROUTINE decompose
+
+ FUNCTION trace_from_decomp(eigvals, eigvecs, firstcol, lastcol, mu_correction) result(trace)
+   REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), INTENT(IN)   :: eigvals
+   REAL(KIND=dp), ALLOCATABLE, DIMENSION(:,:), INTENT(IN) :: eigvecs
+   INTEGER, INTENT(IN)                                    :: firstcol, lastcol
+   REAL(KIND=dp), INTENT(IN)                              :: mu_correction
+   INTEGER                                                :: sm_size, i, j
+   REAL(KIND=dp)                                          :: trace, modified_eigval, tmpsum
+   REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)               :: mapped_eigvals
+
+   sm_size = SIZE(eigvals)
+   ALLOCATE(mapped_eigvals(sm_size))
+
+   DO i = 1, sm_size
+      modified_eigval = eigvals(i) - mu_correction
+      IF (modified_eigval > 0) THEN
+         mapped_eigvals(i) = 1.0
+      ELSE IF (modified_eigval < 0) THEN
+         mapped_eigvals(i) = -1.0
+      ELSE
+         mapped_eigvals(i) = 0.0
+      ENDIF
+   ENDDO
+
+   trace = 0.0_dp
+   DO i = firstcol, lastcol
+      tmpsum = 0.0_dp
+      DO j = 1, sm_size
+         tmpsum = tmpsum + (eigvecs(i, j)*mapped_eigvals(j)*eigvecs(i, j))
+      ENDDO
+      trace = trace - 0.5_dp*tmpsum + 0.5_dp
+   ENDDO
+ END FUNCTION trace_from_decomp
+
 ! **************************************************************************************************
 !> \brief Calculate the sign matrix by direct calculation of all eigenvalues and eigenvectors
 !> \param sm_sign ...
 !> \param sm ...
 !> \param N ...
-!> \param eigvals ...
-!> \param eigvecs ...
 !> \author Michael Lass, Robert Schade
 ! **************************************************************************************************
-   SUBROUTINE dense_matrix_sign_direct(sm_sign, sm, N, eigvals, eigvecs)
+   SUBROUTINE dense_matrix_sign_direct(sm_sign, sm, N)
       INTEGER, INTENT(IN)                                :: N
       REAL(KIND=dp), INTENT(IN)                          :: sm(N, N)
       REAL(KIND=dp), INTENT(INOUT)                       :: sm_sign(N, N)
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
-         INTENT(OUT), OPTIONAL                           :: eigvals
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :), &
-         INTENT(OUT), OPTIONAL                           :: eigvecs
 
-      INTEGER                                            :: i, info, liwork, lwork
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: iwork
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: W, work
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: tmp, U
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigvals
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: eigvecs
 
-      ALLOCATE (U(N, N), tmp(N, N))
-      ALLOCATE (W(N))
-
-      ! symmetrize sm
-      U(:, :) = 0.5*(sm + TRANSPOSE(sm))
-
-      ! probe optimal sizes for WORK and IWORK
-      LWORK = -1
-      LIWORK = -1
-      ALLOCATE (WORK(1))
-      ALLOCATE (IWORK(1))
-      CALL dsyevd('V', 'U', N, U, N, W, WORK, LWORK, IWORK, LIWORK, INFO)
-      LWORK = INT(WORK(1))
-      LIWORK = INT(IWORK(1))
-      DEALLOCATE (IWORK)
-      DEALLOCATE (WORK)
-
-      ! calculate eigenvalues and eigenvectors
-      ALLOCATE (WORK(LWORK))
-      ALLOCATE (IWORK(LIWORK))
-      CALL dsyevd('V', 'U', N, U, N, W, WORK, LWORK, IWORK, LIWORK, INFO)
-      DEALLOCATE (IWORK)
-      DEALLOCATE (WORK)
-
-      IF (INFO .NE. 0) CPABORT("dsyevd did not succeed")
-
-      ! Make result of eigendecomposition available to caller if requested
-      IF (PRESENT(eigvals)) THEN
-         ALLOCATE (eigvals(N))
-         eigvals(:) = W
-      ENDIF
-      IF (PRESENT(eigvecs)) THEN
-         ALLOCATE (eigvecs(N, N))
-         eigvecs(:, :) = U
-      ENDIF
-
-      sm_sign = 0
-      DO i = 1, N
-         IF (W(i) > 0) THEN
-            sm_sign(i, i) = 1.0
-         ELSE IF (W(i) < 0) THEN
-            sm_sign(i, i) = -1.0
-         ELSE
-            sm_sign(i, i) = 0.0
-         ENDIF
-      ENDDO
-
-      ! Create matrix with eigenvalues in {-1,0,1} and eigenvectors of sm:
-      ! sm_sign = U * sm_sign * U.T
-      CALL dgemm('N', 'N', N, N, N, 1.0_dp, U, N, sm_sign, N, 0.0_dp, tmp, N)
-      CALL dgemm('N', 'T', N, N, N, 1.0_dp, tmp, N, U, N, 0.0_dp, sm_sign, N)
-
-      DEALLOCATE (W)
-      DEALLOCATE (tmp)
-      DEALLOCATE (U)
+      CALL decompose(sm, N, eigvals, eigvecs)
+      CALL sign_from_decomp(sm_sign, eigvecs, eigvals, N, 0.0_dp)
+      DEALLOCATE(eigvals, eigvecs)
    END SUBROUTINE dense_matrix_sign_direct
 
 ! **************************************************************************************************
@@ -1273,6 +1316,7 @@ CONTAINS
 !> \author Robert Schade, Michael Lass
 ! **************************************************************************************************
    SUBROUTINE matrix_sign_submatrix(matrix_sign, matrix, threshold, sign_order, submatrix_sign_method)
+     USE IFPORT
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_sign, matrix
       REAL(KIND=dp), INTENT(IN)                          :: threshold
@@ -1283,12 +1327,24 @@ CONTAINS
                                      routineP = moduleN//':'//routineN
 
       INTEGER                                            :: group, handle, i, myrank, nblkcols, &
-                                                            order, sm_size, unit_nr
+                                                            order, sm_size, unit_nr, omp_threads, &
+                                                            mkl_threads
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: my_sms
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: sm, sm_sign
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(submatrix_dissection_type)                    :: dissection
+
+      INTEGER :: ctr, sm_firstcol, sm_lastcol,  k
+      CHARACTER(LEN=255) :: sm_threading, s_omp_threads, s_mkl_threads
+      REAL(KIND=dp) :: t1
+      logical :: found
+      character(len=100)       :: str
+      integer :: iatom,jatom,is,js,j,isum,jsum
+      INTEGER, DIMENSION(:), POINTER :: col_blk_size,row_blk_size
+      real(KIND=dp),DIMENSION(:), POINTER :: block
+      real(kind=dp),allocatable :: b2d(:,:)
+      logical result
 
       CALL timeset(routineN, handle)
 
@@ -1302,11 +1358,78 @@ CONTAINS
          order = 2
       ENDIF
 
-      CALL dbcsr_get_info(matrix=matrix, nblkcols_total=nblkcols, distribution=dist, group=group)
+      t1 = omp_get_wtime()
+
+      CALL dbcsr_get_info(matrix=matrix, nblkcols_total=nblkcols, distribution=dist, group=group,row_blk_size=row_blk_size,col_blk_size=col_blk_size)
       CALL dbcsr_distribution_get(dist=dist, mynode=myrank)
+      
+!      !output matrix
+!      print*,"writing matrix binary"
+!      call dbcsr_binary_write(matrix,"matrix")
+!      print*,"writing matrix binary done"
+!      
+!      print*,"writing matrix plain"
+!      result=makedirqq("mat")
+!      isum=0
+!      do iatom=1,nblkcols
+!        jsum=0
+!        do jatom=1,nblkcols
+!            is=row_blk_size(iatom)
+!            js=col_blk_size(jatom)
+!            call dbcsr_get_block_p(matrix=matrix,row=iatom,col=jatom,block=block,found=found)
+!            if(found)then
+!              allocate(b2d(is,js))
+!              write(str,'(A,I0.8)')"mat/",iatom
+!              result=makedirqq(trim(str))
+!
+!              write(str,'(A,I0.8,A,I0.8)')"mat/",iatom,"/",jatom
+!              print*,str,is,js,isum,jsum
+!              b2d=reshape(block,(/js,is/))
+!              open(200, file=trim(str))
+!              do i=1,is
+!                do j=1,js
+!                  write(200,*)i+isum,j+jsum,b2d(i,j)
+!                enddo
+!              enddo
+!              close(200)
+!              deallocate(b2d)
+!            endif
+!          jsum=jsum+js
+!        enddo
+!        isum=isum+is
+!      enddo
+!      print*,"writing matrix plain done"
 
       CALL dissection%init(matrix)
       CALL dissection%get_sm_ids_for_rank(myrank, my_sms)
+
+!      CALL get_environment_variable("SM_THREADING", sm_threading)
+!
+!      IF (TRIM(sm_threading) .eq. 'MKL') THEN
+!         omp_threads = 1
+!         mkl_threads = omp_get_max_threads()
+!      ELSE IF (TRIM(sm_threading) .eq. 'SM') THEN
+!         omp_threads = omp_get_max_threads()
+!         mkl_threads = 1
+!      ELSE IF (TRIM(sm_threading) .eq. 'HYBRID') THEN
+!         omp_threads = MAX(MIN(omp_get_max_threads(), SIZE(my_sms)),1)
+!         mkl_threads = omp_get_max_threads() / omp_threads
+!      ELSE IF (TRIM(sm_threading) .eq. 'CUSTOM') THEN
+!         CALL get_environment_variable("SM_OMP_THREADS", s_omp_threads)
+!         CALL get_environment_variable("SM_MKL_THREADS", s_mkl_threads)
+!         READ (s_omp_threads, '(i)') omp_threads
+!         READ (s_mkl_threads, '(i)') mkl_threads
+!         omp_threads = MAX(omp_threads,1)
+!         mkl_threads = MAX(mkl_threads,1)
+!      ELSE
+!         CPABORT("Unknown value for SM_THREADING")
+!      ENDIF
+!
+!      WRITE (unit_nr, *) "Threads(OMP/MKL): ", omp_threads, "/", mkl_threads
+!
+!      CALL mkl_set_dynamic(0)
+!      CALL omp_set_nested(1)
+!      CALL mkl_set_num_threads(mkl_threads)
 
 ! gfortran before 8.3 complains about internal symbols not being specified in
 ! any data clause when using DEFAULT(NONE) and OOP procedures are called from
@@ -1316,19 +1439,41 @@ CONTAINS
 #else
       !$OMP PARALLEL DEFAULT(NONE) &
 #endif
-      !$OMP          PRIVATE(sm, sm_sign, sm_size) &
-      !$OMP          SHARED(dissection, myrank, my_sms, order, submatrix_sign_method, threshold, unit_nr)
+      !$OMP          PRIVATE(sm, sm_sign, sm_size, ctr, j, k, sm_firstcol, sm_lastcol) &
+      !$OMP          SHARED(dissection, myrank, my_sms, order, submatrix_sign_method, threshold, unit_nr) &
+      !$OMP          NUM_THREADS(omp_threads)
       !$OMP DO SCHEDULE(GUIDED)
       DO i = 1, SIZE(my_sms)
-         WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "processing submatrix", my_sms(i)
          CALL dissection%generate_submatrix(my_sms(i), sm)
          sm_size = SIZE(sm, 1)
+
+         WRITE (unit_nr, *) "Rank", myrank, "processing submatrix", my_sms(i), "size", sm_size
+
+         CALL dissection%get_relevant_sm_columns(my_sms(i), sm_firstcol, sm_lastcol)
+
+         IF (0 .eq. 1) THEN
+           DO j = sm_firstcol, sm_lastcol
+              ctr = 0
+              DO k = 1, sm_size
+                 IF (sm(k, j) .GT. threshold) ctr = ctr + 1
+              ENDDO
+              WRITE (unit_nr, *) "Potential sub-submatrix", 1 + j - sm_firstcol, "of size", ctr
+           ENDDO
+         ENDIF
+
          ALLOCATE (sm_sign(sm_size, sm_size))
          SELECT CASE (submatrix_sign_method)
          CASE (ls_scf_submatrix_sign_ns)
             CALL dense_matrix_sign_Newton_Schulz(sm_sign, sm, my_sms(i), threshold, order)
          CASE (ls_scf_submatrix_sign_direct)
             CALL dense_matrix_sign_direct(sm_sign, sm, sm_size)
+! FIXME: Uncomment when functions are available
+!         CASE (ls_scf_submatrix_sign_gpu)
+!             CPABORT("GPU backend not implemented yet")
+!            CALL dense_matrix_sign_gpu(sm_sign, sm, sm_size, threshold, order)
+!         CASE (ls_scf_submatrix_sign_fpga)
+!             CPABORT("FPGA backend not implemented yet")
+!            CALL dense_matrix_sign_fpga(sm_sign, sm, sm_size, threshold, order)
          CASE DEFAULT
             CPABORT("Unkown submatrix sign method.")
          END SELECT
@@ -1338,8 +1483,14 @@ CONTAINS
       !$OMP END DO
       !$OMP END PARALLEL
 
+      CALL mkl_set_dynamic(1)
+      CALL omp_set_nested(0)
+
       CALL dissection%communicate_results(matrix_sign)
       CALL dissection%final
+
+      t1 = omp_get_wtime() - t1
+      WRITE (unit_nr, *) "matrix_sign_submatrix took ", t1
 
       CALL timestop(handle)
 
@@ -1354,18 +1505,19 @@ CONTAINS
 !> \param threshold ...
 !> \author Robert Schade, Michael Lass
 ! **************************************************************************************************
-   SUBROUTINE matrix_sign_submatrix_modmu2(matrix_sign, matrix, mu, nelectron, threshold)
+   SUBROUTINE matrix_sign_submatrix_dir_mu_cpu(matrix_sign, matrix, mu, nelectron, threshold)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_sign, matrix
       REAL(KIND=dp), INTENT(INOUT)                       :: mu
       INTEGER, INTENT(IN)                                :: nelectron
       REAL(KIND=dp), INTENT(IN)                          :: threshold
 
-      CHARACTER(LEN=*), PARAMETER :: routineN = 'matrix_sign_submatrix_modmu2', &
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'matrix_sign_submatrix_dir_mu_cpu', &
                                      routineP = moduleN//':'//routineN
 
       INTEGER                                            :: group, handle, i, j, k, l, myrank, nblkcols, &
-                                                            sm_size, unit_nr, sm_firstcol, sm_lastcol
+                                                            sm_size, unit_nr, sm_firstcol, sm_lastcol, omp_threads, &
+                                                            mkl_threads
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: my_sms
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mapped_eigvals
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: sm, sm_sign, tmp
@@ -1376,9 +1528,15 @@ CONTAINS
       TYPE(eigbuf), DIMENSION(:), ALLOCATABLE            :: eigbufs
       LOGICAL                                            :: has_mu_low, has_mu_high
 
+      INTEGER :: ctr
+      CHARACTER(LEN=255) :: sm_threading, s_omp_threads, s_mkl_threads
+      REAL(KIND=dp) :: t1
+
       REAL(KIND=dp), PARAMETER                           :: initial_increment = 0.01_dp
 
       CALL timeset(routineN, handle)
+
+      t1 = omp_get_wtime()
 
       ! print output on all ranks
       logger => cp_get_default_logger()
@@ -1392,6 +1550,34 @@ CONTAINS
 
       ALLOCATE (eigbufs(SIZE(my_sms)))
 
+      CALL get_environment_variable("SM_THREADING", sm_threading)
+
+      IF (TRIM(sm_threading) .eq. 'MKL') THEN
+         omp_threads = 1
+         mkl_threads = omp_get_max_threads()
+      ELSE IF (TRIM(sm_threading) .eq. 'SM') THEN
+         omp_threads = omp_get_max_threads()
+         mkl_threads = 1
+      ELSE IF (TRIM(sm_threading) .eq. 'HYBRID') THEN
+         omp_threads = MAX(MIN(omp_get_max_threads(), SIZE(my_sms)),1)
+         mkl_threads = omp_get_max_threads() / omp_threads
+      ELSE IF (TRIM(sm_threading) .eq. 'CUSTOM') THEN
+         CALL get_environment_variable("SM_OMP_THREADS", s_omp_threads)
+         CALL get_environment_variable("SM_MKL_THREADS", s_mkl_threads)
+         READ (s_omp_threads, '(i)') omp_threads
+         READ (s_mkl_threads, '(i)') mkl_threads
+         omp_threads = MAX(omp_threads,1)
+         mkl_threads = MAX(mkl_threads,1)
+      ELSE
+         CPABORT("Unknown value for SM_THREADING")
+      ENDIF
+
+      WRITE (unit_nr, *) "Threads(OMP/MKL): ", omp_threads, "/", mkl_threads
+
+      CALL mkl_set_dynamic(0)
+      CALL omp_set_nested(1)
+      CALL mkl_set_num_threads(mkl_threads)
+
       trace = 0.0_dp
 
 ! gfortran before 8.3 complains about internal symbols not being specified in
@@ -1402,24 +1588,38 @@ CONTAINS
 #else
       !$OMP PARALLEL DEFAULT(NONE) &
 #endif
-      !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j, tmp) &
-      !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs) &
-      !$OMP          REDUCTION(+:trace)
+      !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j, tmp, ctr) &
+      !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs, threshold) &
+      !$OMP          REDUCTION(+:trace) &
+      !$OMP          NUM_THREADS(omp_threads)
       !$OMP DO SCHEDULE(GUIDED)
       DO i = 1, SIZE(my_sms)
-         WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "processing submatrix", my_sms(i)
          CALL dissection%generate_submatrix(my_sms(i), sm)
          sm_size = SIZE(sm, 1)
-         ALLOCATE (sm_sign(sm_size, sm_size))
-         CALL dense_matrix_sign_direct(sm_sign, sm, sm_size, eigvals=eigbufs(i)%eigvals, eigvecs=tmp)
-         CALL dissection%copy_resultcol(my_sms(i), sm_sign)
+         WRITE (unit_nr, *) "Rank", myrank, "processing submatrix", my_sms(i), "size", sm_size
+
          CALL dissection%get_relevant_sm_columns(my_sms(i), sm_firstcol, sm_lastcol)
+
+         IF (0 .eq. 1) THEN
+           DO j = sm_firstcol, sm_lastcol
+              ctr = 0
+              DO k = 1, sm_size
+                 IF (sm(k, j) .GT. threshold) ctr = ctr + 1
+              ENDDO
+              WRITE (unit_nr, *) "Potential sub-submatrix", 1 + j - sm_firstcol, "of size", ctr
+           ENDDO
+         ENDIF
+
+         CALL decompose(sm, sm_size, eigvals=eigbufs(i)%eigvals, eigvecs=tmp)
          ALLOCATE (eigbufs(i)%eigvecs(sm_firstcol:sm_lastcol, 1:sm_size))
          eigbufs(i)%eigvecs(:, :) = tmp(sm_firstcol:sm_lastcol, 1:sm_size)
-         DO j = sm_firstcol, sm_lastcol
-            trace = trace - 0.5_dp*sm_sign(j, j) + 0.5_dp
-         ENDDO
+
+         ALLOCATE (sm_sign(sm_size, sm_size))
+         CALL sign_from_decomp(sm_sign, tmp, eigbufs(i)%eigvals, sm_size, 0.0_dp)
+         CALL dissection%copy_resultcol(my_sms(i), sm_sign)
          DEALLOCATE (sm, sm_sign, tmp)
+
+         trace = trace + trace_from_decomp(eigbufs(i)%eigvals, eigbufs(i)%eigvecs, sm_firstcol, sm_lastcol, 0.0_dp)
       ENDDO
       !$OMP END DO
       !$OMP END PARALLEL
@@ -1466,30 +1666,8 @@ CONTAINS
          !$OMP DO SCHEDULE(GUIDED)
          DO j = 1, SIZE(my_sms)
             sm_size = SIZE(eigbufs(j)%eigvals)
-            ALLOCATE (mapped_eigvals(sm_size))
-
-            DO k = 1, sm_size
-               modified_eigval = eigbufs(j)%eigvals(k) + mu - new_mu
-               IF (modified_eigval > 0) THEN
-                  mapped_eigvals(k) = 1.0
-               ELSE IF (modified_eigval < 0) THEN
-                  mapped_eigvals(k) = -1.0
-               ELSE
-                  mapped_eigvals(k) = 0.0
-               ENDIF
-            ENDDO
-
             CALL dissection%get_relevant_sm_columns(my_sms(j), sm_firstcol, sm_lastcol)
-
-            DO k = sm_firstcol, sm_lastcol
-               tmpsum = 0.0_dp
-               DO l = 1, sm_size
-                  tmpsum = tmpsum + (eigbufs(j)%eigvecs(k, l)*mapped_eigvals(l)*eigbufs(j)%eigvecs(k, l))
-               ENDDO
-               trace = trace - 0.5_dp*tmpsum + 0.5_dp
-            ENDDO
-
-            DEALLOCATE (mapped_eigvals)
+            trace = trace + trace_from_decomp(eigbufs(j)%eigvals, eigbufs(j)%eigvecs, sm_firstcol, sm_lastcol, new_mu - mu)
          ENDDO
          !$OMP END DO
          !$OMP END PARALLEL
@@ -1497,6 +1675,7 @@ CONTAINS
 
       DEALLOCATE (eigbufs)
 
+      ! Recalculate sign matrix if mu has been changed
       IF (mu .NE. new_mu) THEN
 ! gfortran before 8.3 complains about internal symbols not being specified in
 ! any data clause when using DEFAULT(NONE) and OOP procedures are called from
@@ -1508,10 +1687,11 @@ CONTAINS
 #endif
          !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j) &
          !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs, mu, new_mu) &
-         !$OMP          REDUCTION(+:trace)
+         !$OMP          REDUCTION(+:trace) &
+         !$OMP          NUM_THREADS(omp_threads)
          !$OMP DO SCHEDULE(GUIDED)
          DO i = 1, SIZE(my_sms)
-            WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "processing submatrix", my_sms(i)
+            WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "reprocessing submatrix", my_sms(i)
             CALL dissection%generate_submatrix(my_sms(i), sm)
             sm_size = SIZE(sm, 1)
             DO j = 1, sm_size
@@ -1527,12 +1707,18 @@ CONTAINS
          mu = new_mu
       ENDIF
 
+      CALL mkl_set_dynamic(1)
+      CALL omp_set_nested(0)
+
       CALL dissection%communicate_results(matrix_sign)
       CALL dissection%final
 
+      t1 = omp_get_wtime() - t1
+      WRITE (unit_nr, *) "matrix_sign_submatrix_dir_mu_cpu took ", t1
+
       CALL timestop(handle)
 
-   END SUBROUTINE matrix_sign_submatrix_modmu2
+   END SUBROUTINE matrix_sign_submatrix_dir_mu_cpu
 
 ! **************************************************************************************************
 !> \brief Submatrix method with internal adjustment of chemical potential
@@ -1543,30 +1729,38 @@ CONTAINS
 !> \param threshold ...
 !> \author Robert Schade, Michael Lass
 ! **************************************************************************************************
-   SUBROUTINE matrix_sign_submatrix_modmu(matrix_sign, matrix, mu, nelectron, threshold)
+   SUBROUTINE matrix_sign_submatrix_dir_mu_mem(matrix_sign, matrix, mu, nelectron, threshold)
 
       TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_sign, matrix
       REAL(KIND=dp), INTENT(INOUT)                       :: mu
       INTEGER, INTENT(IN)                                :: nelectron
       REAL(KIND=dp), INTENT(IN)                          :: threshold
 
-      CHARACTER(LEN=*), PARAMETER :: routineN = 'matrix_sign_submatrix_modmu', &
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'matrix_sign_submatrix_dir_mu_mem', &
                                      routineP = moduleN//':'//routineN
 
-      INTEGER                                            :: group, handle, i, j, k, myrank, nblkcols, &
-                                                            sm_size, unit_nr, sm_firstcol, sm_lastcol
+      INTEGER                                            :: group, handle, i, j, k, l, myrank, nblkcols, &
+                                                            sm_size, unit_nr, sm_firstcol, sm_lastcol, ctr, omp_threads, &
+                                                            mkl_threads
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: my_sms
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mapped_eigvals
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: sm, sm_sign, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(submatrix_dissection_type)                    :: dissection
-      REAL(KIND=dp)                                      :: trace, last_trace, increment, new_mu, modified_eigval, mu_low, mu_high
+      REAL(KIND=dp)                                      :: trace, increment, new_mu, modified_eigval, mu_low, &
+                                                            mu_high, tmpsum
       TYPE(eigbuf), DIMENSION(:), ALLOCATABLE            :: eigbufs
       LOGICAL                                            :: has_mu_low, has_mu_high
 
       REAL(KIND=dp), PARAMETER                           :: initial_increment = 0.01_dp
 
+      CHARACTER(LEN=255) :: sm_threading, s_omp_threads, s_mkl_threads
+      REAL(KIND=dp) :: t1
+
       CALL timeset(routineN, handle)
+
+      t1 = omp_get_wtime()
 
       ! print output on all ranks
       logger => cp_get_default_logger()
@@ -1580,6 +1774,34 @@ CONTAINS
 
       ALLOCATE (eigbufs(SIZE(my_sms)))
 
+      CALL get_environment_variable("SM_THREADING", sm_threading)
+
+      IF (TRIM(sm_threading) .eq. 'MKL') THEN
+         omp_threads = 1
+         mkl_threads = omp_get_max_threads()
+      ELSE IF (TRIM(sm_threading) .eq. 'SM') THEN
+         omp_threads = omp_get_max_threads()
+         mkl_threads = 1
+      ELSE IF (TRIM(sm_threading) .eq. 'HYBRID') THEN
+         omp_threads = MAX(MIN(omp_get_max_threads(), SIZE(my_sms)),1)
+         mkl_threads = omp_get_max_threads() / omp_threads
+      ELSE IF (TRIM(sm_threading) .eq. 'CUSTOM') THEN
+         CALL get_environment_variable("SM_OMP_THREADS", s_omp_threads)
+         CALL get_environment_variable("SM_MKL_THREADS", s_mkl_threads)
+         READ (s_omp_threads, '(i)') omp_threads
+         READ (s_mkl_threads, '(i)') mkl_threads
+         omp_threads = MAX(omp_threads,1)
+         mkl_threads = MAX(mkl_threads,1)
+      ELSE
+         CPABORT("Unknown value for SM_THREADING")
+      ENDIF
+
+      WRITE (unit_nr, *) "Threads(OMP/MKL): ", omp_threads, "/", mkl_threads
+
+      CALL mkl_set_dynamic(0)
+      CALL omp_set_nested(1)
+      CALL mkl_set_num_threads(mkl_threads)
+
       trace = 0.0_dp
 
 ! gfortran before 8.3 complains about internal symbols not being specified in
@@ -1590,35 +1812,43 @@ CONTAINS
 #else
       !$OMP PARALLEL DEFAULT(NONE) &
 #endif
-      !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j) &
-      !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs) &
-      !$OMP          REDUCTION(+:trace)
+      !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j, tmp, ctr) &
+      !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs, threshold) &
+      !$OMP          REDUCTION(+:trace) &
+      !$OMP          NUM_THREADS(omp_threads)
       !$OMP DO SCHEDULE(GUIDED)
       DO i = 1, SIZE(my_sms)
-         WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "processing submatrix", my_sms(i)
          CALL dissection%generate_submatrix(my_sms(i), sm)
          sm_size = SIZE(sm, 1)
-         ALLOCATE (sm_sign(sm_size, sm_size))
-         CALL dense_matrix_sign_direct(sm_sign, sm, sm_size, eigvals=eigbufs(i)%eigvals, eigvecs=eigbufs(i)%eigvecs)
+         WRITE (unit_nr, *) "Rank", myrank, "processing submatrix", my_sms(i), "size", sm_size
+
          CALL dissection%get_relevant_sm_columns(my_sms(i), sm_firstcol, sm_lastcol)
-         DO j = sm_firstcol, sm_lastcol
-            trace = trace - 0.5_dp*sm_sign(j, j) + 0.5_dp
-         ENDDO
-         DEALLOCATE (sm, sm_sign)
+
+         IF (0 .eq. 1) THEN
+           DO j = sm_firstcol, sm_lastcol
+              ctr = 0
+              DO k = 1, sm_size
+                 IF (sm(k, j) .GT. threshold) ctr = ctr + 1
+              ENDDO
+              WRITE (unit_nr, *) "Potential sub-submatrix", 1 + j - sm_firstcol, "of size", ctr
+           ENDDO
+         ENDIF
+
+         CALL decompose(sm, sm_size, eigvals=eigbufs(i)%eigvals, eigvecs=eigbufs(i)%eigvecs)
+         DEALLOCATE (sm)
+         trace = trace + trace_from_decomp(eigbufs(i)%eigvals, eigbufs(i)%eigvecs, sm_firstcol, sm_lastcol, 0.0_dp)
       ENDDO
       !$OMP END DO
       !$OMP END PARALLEL
 
-      CALL mp_sum(trace, group)
-
-      ! FIXME: The order of operations is a bit off here. Cf modmu2 which does better.
       has_mu_low = .FALSE.
       has_mu_high = .FALSE.
       increment = initial_increment
       new_mu = mu
-      last_trace = trace
       DO i = 1, 30
+         CALL mp_sum(trace, group)
          WRITE (unit_nr, '(T3,A,1X,F10.3,1X,A,1X,F10.3)') "mu:", new_mu, "trace error:", trace - nelectron
+         IF (ABS(trace - nelectron) < 0.5_dp) EXIT
 
          IF (trace < nelectron) THEN
             mu_low = new_mu
@@ -1646,64 +1876,60 @@ CONTAINS
 #else
          !$OMP PARALLEL DEFAULT(NONE) &
 #endif
-         !$OMP          PRIVATE(i, k, sm_sign, tmp, sm_size, sm_firstcol, sm_lastcol, modified_eigval) &
-         !$OMP          SHARED(dissection, my_sms, unit_nr, eigbufs, mu, new_mu, nelectron, last_trace) &
+         !$OMP          PRIVATE(i, k, l, sm_sign, tmp, sm_size, sm_firstcol, sm_lastcol, modified_eigval, tmpsum, &
+         !$OMP                  mapped_eigvals) &
+         !$OMP          SHARED(dissection, my_sms, unit_nr, eigbufs, mu, new_mu, nelectron) &
          !$OMP          REDUCTION(+:trace)
          !$OMP DO SCHEDULE(GUIDED)
          DO j = 1, SIZE(my_sms)
             sm_size = SIZE(eigbufs(j)%eigvals)
-            ALLOCATE (sm_sign(sm_size, sm_size), tmp(sm_size, sm_size))
-
-            sm_sign = 0
-            DO k = 1, sm_size
-               modified_eigval = eigbufs(j)%eigvals(k) + mu - new_mu
-               IF (modified_eigval > 0) THEN
-                  sm_sign(k, k) = 1.0
-               ELSE IF (modified_eigval < 0) THEN
-                  sm_sign(k, k) = -1.0
-               ELSE
-                  sm_sign(k, k) = 0.0
-               ENDIF
-            ENDDO
-
-            ! Create matrix with eigenvalues in {-1,0,1} and eigenvectors of sm:
-            ! sm_sign = U * sm_sign * U.T
-            CALL dgemm('N', 'N', sm_size, sm_size, sm_size, 1.0_dp, eigbufs(j)%eigvecs, sm_size, sm_sign, sm_size, 0.0_dp, tmp, &
-                       sm_size)
-            CALL dgemm('N', 'T', sm_size, sm_size, sm_size, 1.0_dp, tmp, sm_size, eigbufs(j)%eigvecs, sm_size, 0.0_dp, sm_sign, &
-                       sm_size)
-
             CALL dissection%get_relevant_sm_columns(my_sms(j), sm_firstcol, sm_lastcol)
-            DO k = sm_firstcol, sm_lastcol
-               trace = trace - 0.5_dp*sm_sign(k, k) + 0.5_dp
-            ENDDO
-
-            IF (ABS(last_trace - nelectron) < 0.5_dp) THEN
-               CALL dissection%copy_resultcol(my_sms(j), sm_sign)
-            ENDIF
-
-            DEALLOCATE (sm_sign, tmp)
+            trace = trace + trace_from_decomp(eigbufs(j)%eigvals, eigbufs(j)%eigvecs, sm_firstcol, sm_lastcol, new_mu - mu)
          ENDDO
          !$OMP END DO
          !$OMP END PARALLEL
-
-         IF (ABS(last_trace - nelectron) < 0.5_dp) EXIT
-
-         CALL mp_sum(trace, group)
-         last_trace = trace
-
       ENDDO
 
-      mu = new_mu
+      ! Finalize sign matrix
+! gfortran before 8.3 complains about internal symbols not being specified in
+! any data clause when using DEFAULT(NONE) and OOP procedures are called from
+! within the parallel region.
+#if __GNUC__ < 8 || (__GNUC__ == 8 && (__GNUC_MINOR__ < 3))
+       !$OMP PARALLEL DEFAULT(SHARED) &
+#else
+       !$OMP PARALLEL DEFAULT(NONE) &
+#endif
+       !$OMP          PRIVATE(sm, sm_sign, sm_size, sm_firstcol, sm_lastcol, j) &
+       !$OMP          SHARED(dissection, myrank, my_sms, unit_nr, eigbufs, mu, new_mu) &
+       !$OMP          REDUCTION(+:trace) &
+       !$OMP          NUM_THREADS(omp_threads)
+       !$OMP DO SCHEDULE(GUIDED)
+       DO i = 1, SIZE(my_sms)
+          WRITE (unit_nr, '(T3,A,1X,I4,1X,A,1X,I6)') "Rank", myrank, "finalizing submatrix", my_sms(i)
+          sm_size = SIZE(eigbufs(i)%eigvals)
+          ALLOCATE (sm_sign(sm_size, sm_size))
+          CALL sign_from_decomp(sm_sign, eigbufs(i)%eigvecs, eigbufs(i)%eigvals, sm_size, new_mu - mu)
+          CALL dissection%copy_resultcol(my_sms(i), sm_sign)
+          DEALLOCATE (sm_sign)
+       ENDDO
+       !$OMP END DO
+       !$OMP END PARALLEL
+       mu = new_mu
 
-      DEALLOCATE (eigbufs)
+       DEALLOCATE (eigbufs)
+
+      CALL mkl_set_dynamic(1)
+      CALL omp_set_nested(0)
 
       CALL dissection%communicate_results(matrix_sign)
       CALL dissection%final
 
+      t1 = omp_get_wtime() - t1
+      WRITE (unit_nr, *) "matrix_sign_submatrix_dir_mu_mem took ", t1
+
       CALL timestop(handle)
 
-   END SUBROUTINE matrix_sign_submatrix_modmu
+   END SUBROUTINE matrix_sign_submatrix_dir_mu_mem
 
 ! **************************************************************************************************
 !> \brief compute the sqrt of a matrix via the sign function and the corresponding Newton-Schulz iterations
