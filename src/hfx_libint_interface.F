@@ -94,6 +94,8 @@ CONTAINS
          tmp, W(3), Zeta, ZetaInv, ZetapEtaInv
       REAL(KIND=dp), DIMENSION(prim_data_f_size)         :: F, Fm
 
+      print*,"build_quartet_data_screen",potential_parameter%potential_type
+
       Zeta = Zeta_A + Zeta_B
       ZetaInv = 1.0_dp/Zeta
       Eta = Zeta_C + Zeta_D
@@ -1309,6 +1311,8 @@ CONTAINS
 
       INTEGER                                            :: a_mysize(1), i, m_max, mysize, perm_case
 
+      print*,"evaluate_eri_screen",potential_parameter%potential_type,n_a, n_b, n_c, n_d
+
       m_max = n_a + n_b + n_c + n_d
       mysize = nco(n_a)*nco(n_b)*nco(n_c)*nco(n_d)
       a_mysize = mysize
@@ -1491,6 +1495,8 @@ CONTAINS
                                                             P(3), Q(3), Rho, RhoInv, W(3), &
                                                             ZetapEtaInv
       REAL(KIND=dp), DIMENSION(prim_data_f_size)         :: F
+      
+      !print*,"evaluate_eri",n_a, n_b, n_c, n_d
 
       m_max = n_a + n_b + n_c + n_d
       mysize = ncoa*ncob*ncoc*ncod
@@ -1946,6 +1952,7 @@ CONTAINS
                                                             Q(3), W(3)
       INTEGER, INTENT(IN)                                :: m_max
       REAL(KIND=dp), DIMENSION(:)                        :: F
+      !print*,"build_quartet_data"
 
       CALL cp_libint_set_params_eri(libint, A, B, C, D, ZetaInv, EtaInv, ZetapEtaInv, Rho, P, Q, W, m_max, F)
    END SUBROUTINE build_quartet_data

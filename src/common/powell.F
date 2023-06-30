@@ -52,11 +52,12 @@ CONTAINS
       REAL(dp), DIMENSION(*)                             :: x
       TYPE(opt_state_type)                               :: optstate
 
-      CHARACTER(len=*), PARAMETER                        :: routineN = 'powell_optimize'
+      !CHARACTER(len=*), PARAMETER                        :: routineN = 'powell_optimize'
 
-      INTEGER                                            :: handle, npt
+!      INTEGER                                            :: handle
+      INTEGER                                            :: npt
 
-      CALL timeset(routineN, handle)
+      !CALL timeset(routineN, handle)
 
       SELECT CASE (optstate%state)
       CASE (0)
@@ -95,7 +96,7 @@ CONTAINS
          CPABORT("")
       END SELECT
 
-      CALL timestop(handle)
+      !CALL timestop(handle)
 
    END SUBROUTINE powell_optimize
 !******************************************************************************

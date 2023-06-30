@@ -199,6 +199,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 !$OMP END MASTER
 !$OMP BARRIER
+      print*,"begin hfx_load_balance"
 
       log10_eps_schwarz = LOG10(eps_schwarz)
       log_2 = LOG10(2.0_dp)
@@ -208,6 +209,7 @@ CONTAINS
       natom = SIZE(particle_set)
 
       block_size = load_balance_parameter%block_size
+      print*,"block_size",block_size
       ALLOCATE (set_list_ij((max_set*block_size)**2))
       ALLOCATE (set_list_kl((max_set*block_size)**2))
 
@@ -244,6 +246,7 @@ CONTAINS
          DO i = 1, nblocks
             total_block_self_cost = total_block_self_cost + blocks_guess(i)%cost
          END DO
+         print*,"total_block_self_cost before opt",total_block_self_cost
 
          CALL mp_sum(total_block_self_cost, para_env%group)
 
@@ -318,6 +321,8 @@ CONTAINS
          ! ** count number of non empty blocks on each node
          non_empty_blocks = 0
          DO atom_block = 1, nblocks
+            print*,"blocks after optimize",atom_block,tmp_blocks(atom_block)%istart,tmp_blocks(atom_block)%iend,&
+              tmp_blocks(atom_block)%cost
             IF (tmp_blocks(atom_block)%istart == 0) CYCLE
             non_empty_blocks = non_empty_blocks + 1
          END DO
@@ -331,7 +336,10 @@ CONTAINS
          total_blocks = 0
          DO i = 1, ncpu
             total_blocks = total_blocks + rcount(i)
+            print*,"rcount",i,rcount(i)
          END DO
+         print*,"total_blocks",total_blocks
+
 
          ! ** calculate offsets
          ALLOCATE (rdispl(ncpu))
@@ -361,11 +369,14 @@ CONTAINS
          ! ** Gather all three arrays
          CALL mp_allgather(buffer_in, buffer_out, rcount, rdispl, para_env%group)
 
+         total_block_self_cost = 0
          DO i = 1, nblocks
             tmp_blocks2(i)%istart = INT(buffer_out((i - 1)*3 + 1))
             tmp_blocks2(i)%iend = INT(buffer_out((i - 1)*3 + 2))
             tmp_blocks2(i)%cost = buffer_out((i - 1)*3 + 3)
+            total_block_self_cost = total_block_self_cost + tmp_blocks2(i)%cost
          END DO
+         print*,"total_block_self_cost after opt",total_block_self_cost
 
          ! ** Now we sort the blocks
          ALLOCATE (to_be_sorted(nblocks))
@@ -565,6 +576,9 @@ CONTAINS
          global_quartet_counter = 0
          local_quartet_counter = 0
          last_bin_needs_to_be_filled = .FALSE.
+         print*,"nblocks",nblocks
+         print*,"n_processes",n_processes
+
          DO atom_block = my_process_id, INT(nblocks, KIND=int_8)**4 - 1, n_processes
             latom_block = INT(MODULO(atom_block, INT(nblocks, KIND=int_8))) + 1
             tmp_block = atom_block/nblocks
@@ -852,6 +866,7 @@ CONTAINS
       CALL timestop(handle)
 !$OMP END MASTER
 !$OMP BARRIER
+print*,"end hfx_load_balance"
    END SUBROUTINE hfx_load_balance
 
 ! **************************************************************************************************
@@ -2315,6 +2330,7 @@ CONTAINS
                                               cell, &
                                               do_p_screening, map_atom_to_kind_atom, eval_type, &
                                               log10_eps_schwarz, log_2, coeffs_kind_max0, use_virial, atomic_pair_list)
+         print*,"init_blocks",my_cpu_rank,i,iatom_start,iatom_end,blocks(i)%cost
 
       END DO
    END SUBROUTINE init_blocks

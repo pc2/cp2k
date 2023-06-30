@@ -65,7 +65,7 @@ MODULE hfx_energy_potential
       hfx_general_type, hfx_init_container, hfx_load_balance_type, hfx_memory_type, hfx_p_kind, &
       hfx_pgf_list, hfx_pgf_product_list, hfx_potential_type, hfx_reset_memory_usage_counter, &
       hfx_screen_coeff_type, hfx_screening_type, hfx_task_list_type, hfx_type, init_t_c_g0_lmax, &
-      log_zero, pair_list_type, pair_set_list_type
+      log_zero, pair_list_type, pair_set_list_type, hfx_chunk_type, hfx_queue_type, hfx_chunk_request_type
    USE input_constants, ONLY: do_potential_mix_cl_trunc, &
                               do_potential_truncated, &
                               hfx_do_eval_energy
@@ -82,7 +82,12 @@ MODULE hfx_energy_potential
    USE mathconstants, ONLY: fac
    USE message_passing, ONLY: mp_max, &
                               mp_sum, &
-                              mp_sync
+                              mp_sync, &
+                              mp_send,&
+                              mp_isend,&
+                              mp_recv,&
+                              mp_test,&
+                              mp_irecv
    USE orbital_pointers, ONLY: nco, &
                                ncoset, &
                                nso
@@ -160,7 +165,7 @@ CONTAINS
                  i_set_list_ij_start, i_set_list_ij_stop, i_set_list_kl, i_set_list_kl_start, &
                  i_set_list_kl_stop, i_thread, iatom, iatom_block, iatom_end, iatom_start, ikind, img, &
                  iset, iw, j, jatom, jatom_block, jatom_end, jatom_start, jkind, jset, katom, katom_block, &
-                 katom_end
+                 katom_end, k, l
       INTEGER :: katom_start, kind_kind_idx, kkind, kset, l_max, latom, latom_block, latom_end, &
                  latom_start, lkind, lset, ma, max_am, max_pgf, max_set, mb, my_bin_id, my_bin_size, &
                  my_thread_id, n_threads, natom, nbits, ncob, ncos_max, nints, nkimages, nkind, &
@@ -230,24 +235,46 @@ CONTAINS
       TYPE(hfx_p_kind), DIMENSION(:), POINTER            :: shm_initial_p
       TYPE(hfx_pgf_list), ALLOCATABLE, DIMENSION(:)      :: pgf_list_ij, pgf_list_kl
       TYPE(hfx_pgf_product_list), ALLOCATABLE, &
-         DIMENSION(:)                                    :: pgf_product_list
+        DIMENSION(:)                                    :: pgf_product_list
       TYPE(hfx_potential_type)                           :: potential_parameter
       TYPE(hfx_screen_coeff_type), DIMENSION(:, :), &
-         POINTER                                         :: screen_coeffs_kind, tmp_R_1, tmp_R_2, &
-                                                            tmp_screen_pgf1, tmp_screen_pgf2
+        POINTER                                         :: screen_coeffs_kind, tmp_R_1, tmp_R_2, &
+        tmp_screen_pgf1, tmp_screen_pgf2
       TYPE(hfx_screen_coeff_type), &
-         DIMENSION(:, :, :, :), POINTER                  :: screen_coeffs_set
+        DIMENSION(:, :, :, :), POINTER                  :: screen_coeffs_set
       TYPE(hfx_screen_coeff_type), &
-         DIMENSION(:, :, :, :, :, :), POINTER            :: radii_pgf, screen_coeffs_pgf
+        DIMENSION(:, :, :, :, :, :), POINTER            :: radii_pgf, screen_coeffs_pgf
       TYPE(hfx_screening_type)                           :: screening_parameter
       TYPE(hfx_task_list_type), DIMENSION(:), POINTER    :: shm_task_list, tmp_task_list
       TYPE(hfx_type), POINTER                            :: actual_x_data, shm_master_x_data
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(pair_list_type)                               :: list_ij, list_kl
       TYPE(pair_set_list_type), ALLOCATABLE, &
-         DIMENSION(:)                                    :: set_list_ij, set_list_kl
+        DIMENSION(:)                                    :: set_list_ij, set_list_kl
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
+
+      INTEGER                                            :: outerl_a,outerl_b,outerl_c,outerl_d,maxl,maxl_loop,iquartet,ichunk
+      INTEGER                                            :: la,lb,lc,ld,irank,nrank,nquartets,tag,src
+      !      LOGICAL,parameter                                  :: Tglobalload=.false.
+      LOGICAL,parameter                                  :: Tglobalload=.true.
+      integer,parameter                                  :: qperchunk=100000
+!      LOGICAL                                            :: Tbunch_up_ls=tglobalload
+      integer(int_8),DIMENSION(:,:,:,:),ALLOCATABLE      :: QCOUNTER
+      integer(int_8),DIMENSION(:,:,:,:),ALLOCATABLE             :: l_atom_block
+      integer,DIMENSION(:,:,:,:),ALLOCATABLE             :: l_set_list_ij,l_set_list_kl
+      LOGICAL                                            :: tquartet_generated,completed
+      type(hfx_queue_type),DIMENSION(:,:,:,:),allocatable     :: chunk_queue
+      type(hfx_chunk_type)                               :: chunk
+      integer,DIMENSION(:),allocatable                   :: mpi_req
+      integer,DIMENSION(:),allocatable                   :: mpi_req1
+      integer,DIMENSION(:),allocatable                   :: mpi_req2
+      integer,DIMENSION(:),allocatable                   :: mpi_req3
+      integer,DIMENSION(:),allocatable                   :: mpi_req4
+      integer,DIMENSION(:),allocatable                   :: tmpmeta,endmsg
+      type(hfx_chunk_request_type),DIMENSION(:),pointer      :: chunk_req
+
+      
 
       NULLIFY (dft_control, matrix_ks_aux_fit_hfx)
 
@@ -296,6 +323,13 @@ CONTAINS
       DO ikind = 1, nkind
          l_max = MAX(l_max, MAXVAL(x_data(1, 1)%basis_parameter(ikind)%lmax))
       END DO
+      maxl=l_max
+      maxl_loop=maxl
+      print*,"l_max",l_max
+      print*,"maxl",maxl
+      allocate(Qcounter(0:maxl,0:maxl,0:maxl,0:maxl))
+      qcounter(0:maxl,0:maxl,0:maxl,0:maxl)=0
+
       l_max = 4*l_max
       CALL init_md_ftable(l_max)
 
@@ -325,7 +359,9 @@ CONTAINS
       shm_neris_disk = 0
       shm_stor_count_max_val = 0
 
-!$OMP PARALLEL DEFAULT(NONE) SHARED(qs_env,&
+!      FIXME
+!!$OMP PARALLEL DEFAULT(NONE) SHARED(qs_env,&
+!$OMP PARALLEL DEFAULT(shared) SHARED(qs_env,&
 !$OMP                                  x_data,&
 !$OMP                                  ks_matrix,&
 !$OMP                                  ehfx,&
@@ -376,7 +412,8 @@ CONTAINS
 !$OMP                                  shm_pmax_block,&
 !$OMP                                  shm_atomic_pair_list,&
 !$OMP                                  shm_mem_compression_counter,&
-!$OMP                                  do_print_load_balance_info) &
+!$OMP                                  do_print_load_balance_info, &
+!$OMP                                  maxl,maxl_loop,qcounter) &
 !$OMP PRIVATE(ln_10,i_thread,actual_x_data,do_periodic,screening_parameter,potential_parameter,&
 !$OMP         general_parameter,load_balance_parameter,memory_parameter,cache_size,bits_max_val,&
 !$OMP         basis_parameter,basis_info,treat_lsd_in_core,ncpu,n_processes,neris_total,neris_incore,&
@@ -406,7 +443,7 @@ CONTAINS
 !$OMP         tmp_screen_pgf1,tmp_screen_pgf2,cartesian_estimate,bintime_stop,iw,memsize_after,storage_counter_integrals,&
 !$OMP         stor_count_int_disk,stor_count_max_val,ene_x_aa,ene_x_bb,mb_size_p,mb_size_f,mb_size_buffers,afac,ene_x_aa_diag,&
 !$OMP         ene_x_bb_diag,act_atomic_block_offset,act_set_offset,j,handle_dist_ks,tmp_i8,tmp_i4,dft_control,&
-!$OMP         etmp,nkimages,img,bin,eps_scaling_str,eps_schwarz_min_str)
+!$OMP         etmp,nkimages,img,bin,eps_scaling_str,eps_schwarz_min_str) 
 
       ln_10 = LOG(10.0_dp)
       i_thread = 0
@@ -925,6 +962,7 @@ CONTAINS
       ELSE
          my_bin_size = 1
       END IF
+      print*,"my_bin_size",my_bin_size
       !! We do not need the containers if MAX_MEM = 0
       IF (.NOT. memory_parameter%do_all_on_the_fly) THEN
          !! IF new md step -> reinitialize containers
@@ -1082,7 +1120,1197 @@ CONTAINS
 
       my_bin_size = SIZE(actual_x_data%distribution_energy)
       nblocks = load_balance_parameter%nblocks
+      print*,"nblocks",nblocks
+      iw=6
+      CALL collect_load_balance_info(para_env, actual_x_data, iw, n_threads, i_thread, &
+                                        hfx_do_eval_energy)
+      if(tglobalload)then
 
+      do_it = .TRUE.
+      bin = 0
+         IF (.NOT. do_dynamic_load_balancing) THEN
+            bin = bin + 1
+            IF (bin > my_bin_size) THEN
+               do_it = .FALSE.
+               bins_left = .FALSE.
+            ELSE
+               do_it = .TRUE.
+               bins_left = .TRUE.
+               distribution_energy => actual_x_data%distribution_energy(bin)
+            END IF
+         ELSE
+!$OMP CRITICAL(hfxenergy_critical)
+            shm_task_counter = shm_task_counter + 1
+            IF (shm_task_counter <= shm_total_bins) THEN
+               my_thread_id = shm_task_list(shm_task_counter)%thread_id
+               my_bin_id = shm_task_list(shm_task_counter)%bin_id
+               IF (.NOT. memory_parameter%do_all_on_the_fly) THEN
+                  maxval_cache => x_data(irep, my_thread_id)%store_ints%maxval_cache(my_bin_id)
+                  maxval_container => x_data(irep, my_thread_id)%store_ints%maxval_container(my_bin_id)
+                  integral_caches => x_data(irep, my_thread_id)%store_ints%integral_caches(:, my_bin_id)
+                  integral_containers => x_data(irep, my_thread_id)%store_ints%integral_containers(:, my_bin_id)
+               END IF
+               distribution_energy => x_data(irep, my_thread_id)%distribution_energy(my_bin_id)
+               do_it = .TRUE.
+               bins_left = .TRUE.
+               IF (my_geo_change) THEN
+                  distribution_energy%ram_counter = HUGE(distribution_energy%ram_counter)
+               END IF
+               counter = 0_Int_8
+            ELSE
+               do_it = .FALSE.
+               bins_left = .FALSE.
+            END IF
+!$OMP END CRITICAL(hfxenergy_critical)
+         END IF
+
+!$OMP MASTER
+         CALL timeset(routineN//"_bin", handle_bin)
+!$OMP END MASTER
+        bintime_start = m_walltime()
+
+        if(para_env%mepos.eq.0)then
+          allocate(l_atom_block(0:maxl_loop,0:maxl_loop,0:maxl_loop,0:maxl_loop))
+          l_atom_block(:,:,:,:)=0
+          allocate(l_set_list_ij(0:maxl_loop,0:maxl_loop,0:maxl_loop,0:maxl_loop))
+          l_set_list_ij(:,:,:,:)=-1
+          allocate(l_set_list_kl(0:maxl_loop,0:maxl_loop,0:maxl_loop,0:maxl_loop))
+          l_set_list_kl(:,:,:,:)=-1
+
+          allocate(chunk_queue(0:maxl_loop,0:maxl_loop,0:maxl_loop,0:maxl_loop))
+          !init queues
+          do outerl_a=0,maxl_loop
+          do outerl_b=0,maxl_loop      
+          do outerl_c=0,maxl_loop           
+          do outerl_d=0,maxl_loop           
+            chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nused=0
+            chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nmax=100
+            chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks_left=.true.
+            allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nmax))
+          enddo
+          enddo
+          enddo
+          enddo
+
+          !fill chunk queue
+          do outerl_a=0,maxl_loop
+          do outerl_b=0,maxl_loop      
+          do outerl_c=0,maxl_loop           
+          do outerl_d=0,maxl_loop           
+          do ichunk=1,chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nmax
+            if(.not.chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks_left)then
+              exit
+            endif
+
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets=0
+          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%atom_block(qperchunk))
+          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(qperchunk))
+          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(qperchunk))
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nused=ichunk
+          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(5))
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(1)=outerl_a
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(2)=outerl_b
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(3)=outerl_c
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(4)=outerl_d
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(5)=0
+
+          !generate work chunk
+          do iquartet=1,qperchunk
+            tquartet_generated=.false.
+            my_istart=l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)
+
+            DO atom_block = my_istart, nblocks**4-1
+              l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)=atom_block
+
+              latom_block = INT(MODULO(atom_block, nblocks)) + 1
+              tmp_block = atom_block/nblocks
+              katom_block = INT(MODULO(tmp_block, nblocks)) + 1
+              IF (latom_block < katom_block) then
+                l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                CYCLE
+              endif
+              tmp_block = tmp_block/nblocks
+              jatom_block = INT(MODULO(tmp_block, nblocks)) + 1
+              tmp_block = tmp_block/nblocks
+              iatom_block = INT(MODULO(tmp_block, nblocks)) + 1
+              IF (jatom_block < iatom_block) then
+                l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                CYCLE
+              endif
+              
+              iatom_start = actual_x_data%blocks(iatom_block)%istart
+              iatom_end = actual_x_data%blocks(iatom_block)%iend
+              jatom_start = actual_x_data%blocks(jatom_block)%istart
+              jatom_end = actual_x_data%blocks(jatom_block)%iend
+              katom_start = actual_x_data%blocks(katom_block)%istart
+              katom_end = actual_x_data%blocks(katom_block)%iend
+              latom_start = actual_x_data%blocks(latom_block)%istart
+              latom_end = actual_x_data%blocks(latom_block)%iend
+
+              pmax_blocks = MAX(shm_pmax_block(katom_block, iatom_block), &
+                                shm_pmax_block(latom_block, jatom_block), &
+                                shm_pmax_block(latom_block, iatom_block), &
+                                shm_pmax_block(katom_block, jatom_block))
+
+              IF (2.0_dp*coeffs_kind_max0 + pmax_blocks < log10_eps_schwarz) then
+                l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                CYCLE
+              endif
+
+              CALL build_pair_list(natom, list_ij, set_list_ij, iatom_start, iatom_end, &
+                                   jatom_start, jatom_end, &
+                                   kind_of, basis_parameter, particle_set, &
+                                   do_periodic, screen_coeffs_set, screen_coeffs_kind, &
+                                   coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
+                                   shm_atomic_pair_list)
+
+              CALL build_pair_list(natom, list_kl, set_list_kl, katom_start, katom_end, &
+                                   latom_start, latom_end, &
+                                   kind_of, basis_parameter, particle_set, &
+                                   do_periodic, screen_coeffs_set, screen_coeffs_kind, &
+                                   coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
+                                   shm_atomic_pair_list)
+
+              CPASSERT(list_ij%n_element.eq.1)
+              !DO i_list_ij = 1, list_ij%n_element
+              i_list_ij = 1
+                
+                iatom = list_ij%elements(i_list_ij)%pair(1)
+                jatom = list_ij%elements(i_list_ij)%pair(2)
+                i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
+                i_set_list_ij_stop = list_ij%elements(i_list_ij)%set_bounds(2)
+                ikind = list_ij%elements(i_list_ij)%kind_pair(1)
+                jkind = list_ij%elements(i_list_ij)%kind_pair(2)
+                ra = list_ij%elements(i_list_ij)%r1
+                rb = list_ij%elements(i_list_ij)%r2
+                rab2 = list_ij%elements(i_list_ij)%dist2
+                
+                la_max => basis_parameter(ikind)%lmax
+                la_min => basis_parameter(ikind)%lmin
+                npgfa => basis_parameter(ikind)%npgf
+                nseta = basis_parameter(ikind)%nset
+                zeta => basis_parameter(ikind)%zet
+                nsgfa => basis_parameter(ikind)%nsgf
+                sphi_a_ext => basis_parameter(ikind)%sphi_ext(:, :, :, :)
+                nsgfl_a => basis_parameter(ikind)%nsgfl
+                sphi_a_u1 = UBOUND(sphi_a_ext, 1)
+                sphi_a_u2 = UBOUND(sphi_a_ext, 2)
+                sphi_a_u3 = UBOUND(sphi_a_ext, 3)
+
+                lb_max => basis_parameter(jkind)%lmax
+                lb_min => basis_parameter(jkind)%lmin
+                npgfb => basis_parameter(jkind)%npgf
+                nsetb = basis_parameter(jkind)%nset
+                zetb => basis_parameter(jkind)%zet
+                nsgfb => basis_parameter(jkind)%nsgf
+                sphi_b_ext => basis_parameter(jkind)%sphi_ext(:, :, :, :)
+                nsgfl_b => basis_parameter(jkind)%nsgfl
+                sphi_b_u1 = UBOUND(sphi_b_ext, 1)
+                sphi_b_u2 = UBOUND(sphi_b_ext, 2)
+                sphi_b_u3 = UBOUND(sphi_b_ext, 3)
+                
+                CPASSERT(list_kl%n_element.eq.1)
+                !DO i_list_kl = 1, list_kl%n_element
+                i_list_kl = 1
+                  katom = list_kl%elements(i_list_kl)%pair(1)
+                  latom = list_kl%elements(i_list_kl)%pair(2)
+
+                  IF (.NOT. (katom + latom <= iatom + jatom)) then
+                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    CYCLE
+                  endif
+                  IF (((iatom + jatom) .EQ. (katom + latom)) .AND. (katom < iatom))then
+                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    CYCLE
+                  endif
+                  i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
+                  i_set_list_kl_stop = list_kl%elements(i_list_kl)%set_bounds(2)
+                  kkind = list_kl%elements(i_list_kl)%kind_pair(1)
+                  lkind = list_kl%elements(i_list_kl)%kind_pair(2)
+                  rc = list_kl%elements(i_list_kl)%r1
+                  rd = list_kl%elements(i_list_kl)%r2
+                  rcd2 = list_kl%elements(i_list_kl)%dist2
+
+                  IF (do_p_screening) THEN
+                     pmax_atom = MAX(shm_pmax_atom(katom, iatom), &
+                                     shm_pmax_atom(latom, jatom), &
+                                     shm_pmax_atom(latom, iatom), &
+                                     shm_pmax_atom(katom, jatom))
+                  ELSE
+                     pmax_atom = 0.0_dp
+                  END IF
+
+                  screen_kind_ij = screen_coeffs_kind(jkind, ikind)%x(1)*rab2 + &
+                                   screen_coeffs_kind(jkind, ikind)%x(2)
+                  screen_kind_kl = screen_coeffs_kind(lkind, kkind)%x(1)*rcd2 + &
+                                   screen_coeffs_kind(lkind, kkind)%x(2)
+
+                  IF (screen_kind_ij + screen_kind_kl + pmax_atom < log10_eps_schwarz) then
+                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    CYCLE
+                  endif
+
+                  !! we want to be consistent with the KS matrix. If none of the atomic indices
+                  !! is associated cycle
+                  IF (.NOT. (shm_is_assoc_atomic_block(latom, iatom) >= 1 .AND. &
+                             shm_is_assoc_atomic_block(katom, iatom) >= 1 .AND. &
+                             shm_is_assoc_atomic_block(katom, jatom) >= 1 .AND. &
+                             shm_is_assoc_atomic_block(latom, jatom) >= 1)) then
+                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    cycle
+                  endif
+
+                  !! calculate symmetry_factor according to degeneracy of atomic quartet
+                  symm_fac = 0.5_dp
+                  IF (iatom == jatom) symm_fac = symm_fac*2.0_dp
+                  IF (katom == latom) symm_fac = symm_fac*2.0_dp
+                  IF (iatom == katom .AND. jatom == latom .AND. iatom /= jatom .AND. katom /= latom) symm_fac = symm_fac*2.0_dp
+                  IF (iatom == katom .AND. iatom == jatom .AND. katom == latom) symm_fac = symm_fac*2.0_dp
+                  symm_fac = 1.0_dp/symm_fac
+
+                  lc_max => basis_parameter(kkind)%lmax
+                  lc_min => basis_parameter(kkind)%lmin
+                  npgfc => basis_parameter(kkind)%npgf
+                  zetc => basis_parameter(kkind)%zet
+                  nsgfc => basis_parameter(kkind)%nsgf
+                  sphi_c_ext => basis_parameter(kkind)%sphi_ext(:, :, :, :)
+                  nsgfl_c => basis_parameter(kkind)%nsgfl
+                  sphi_c_u1 = UBOUND(sphi_c_ext, 1)
+                  sphi_c_u2 = UBOUND(sphi_c_ext, 2)
+                  sphi_c_u3 = UBOUND(sphi_c_ext, 3)
+
+                  ld_max => basis_parameter(lkind)%lmax
+                  ld_min => basis_parameter(lkind)%lmin
+                  npgfd => basis_parameter(lkind)%npgf
+                  zetd => basis_parameter(lkind)%zet
+                  nsgfd => basis_parameter(lkind)%nsgf
+                  sphi_d_ext => basis_parameter(lkind)%sphi_ext(:, :, :, :)
+                  nsgfl_d => basis_parameter(lkind)%nsgfl
+                  sphi_d_u1 = UBOUND(sphi_d_ext, 1)
+                  sphi_d_u2 = UBOUND(sphi_d_ext, 2)
+                  sphi_d_u3 = UBOUND(sphi_d_ext, 3)
+
+                  atomic_offset_bd = shm_atomic_block_offset(jatom, latom)
+                  atomic_offset_bc = shm_atomic_block_offset(jatom, katom)
+                  atomic_offset_ad = shm_atomic_block_offset(iatom, latom)
+                  atomic_offset_ac = shm_atomic_block_offset(iatom, katom)
+
+                  IF (jatom < latom) THEN
+                     offset_bd_set => shm_set_offset(:, :, lkind, jkind)
+                  ELSE
+                     offset_bd_set => shm_set_offset(:, :, jkind, lkind)
+                  END IF
+                  IF (jatom < katom) THEN
+                     offset_bc_set => shm_set_offset(:, :, kkind, jkind)
+                  ELSE
+                     offset_bc_set => shm_set_offset(:, :, jkind, kkind)
+                  END IF
+                  IF (iatom < latom) THEN
+                     offset_ad_set => shm_set_offset(:, :, lkind, ikind)
+                  ELSE
+                     offset_ad_set => shm_set_offset(:, :, ikind, lkind)
+                  END IF
+                  IF (iatom < katom) THEN
+                     offset_ac_set => shm_set_offset(:, :, kkind, ikind)
+                  ELSE
+                     offset_ac_set => shm_set_offset(:, :, ikind, kkind)
+                  END IF
+
+                  IF (do_p_screening) THEN
+                     swap_id = 0
+                     kind_kind_idx = INT(get_1D_idx(kkind, ikind, INT(nkind, int_8)))
+                     IF (ikind >= kkind) THEN
+                        ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom))
+                     ELSE
+                        ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom))
+                        swap_id = swap_id + 1
+                     END IF
+                     kind_kind_idx = INT(get_1D_idx(lkind, jkind, INT(nkind, int_8)))
+                     IF (jkind >= lkind) THEN
+                        ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom))
+                     ELSE
+                        ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom))
+                        swap_id = swap_id + 2
+                     END IF
+                     kind_kind_idx = INT(get_1D_idx(lkind, ikind, INT(nkind, int_8)))
+                     IF (ikind >= lkind) THEN
+                        ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom))
+                     ELSE
+                        ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom))
+                        swap_id = swap_id + 4
+                     END IF
+                     kind_kind_idx = INT(get_1D_idx(kkind, jkind, INT(nkind, int_8)))
+                     IF (jkind >= kkind) THEN
+                        ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom))
+                     ELSE
+                        ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom))
+                        swap_id = swap_id + 8
+                     END IF
+                  END IF
+                   
+
+  !                if(l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d).gt.list_ij%elements(i_list_ij)%set_bounds(2))then
+  !                  !no more elements, advance atom-block
+  !                  !l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)=l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)+1
+  !                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+  !                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+  !                  !print*,"atom_block cycle8",atom_block
+  !                  !cycle
+  !                endif
+
+                  if(l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d).eq.-1)then
+                    !starting new list_ij, thus restart start
+                    i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
+                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                  else
+                    i_set_list_ij_start = l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)
+                  endif
+
+                  DO i_set_list_ij = i_set_list_ij_start, i_set_list_ij_stop
+                    iset = set_list_ij(i_set_list_ij)%pair(1)
+                    jset = set_list_ij(i_set_list_ij)%pair(2)
+     if(outerl_a.ne.la_min(iset).or.outerl_a.ne.la_max(iset).or.outerl_b.ne.lb_min(jset).or.outerl_b.ne.lb_max(jset))then
+                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                      cycle
+                    endif
+
+                    ncob = npgfb(jset)*ncoset(lb_max(jset))
+                    max_val1 = screen_coeffs_set(jset, iset, jkind, ikind)%x(1)*rab2 + &
+                                screen_coeffs_set(jset, iset, jkind, ikind)%x(2)
+
+                    IF (max_val1 + screen_kind_kl + pmax_atom < log10_eps_schwarz) then
+                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                      CYCLE
+                    endif
+
+                    sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
+                    sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
+                  
+                    if(l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d).gt.list_kl%elements(i_list_kl)%set_bounds(2))then
+                      !no more elements, advance list_ij
+                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                      cycle
+                    endif
+
+                    if(l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d).eq.-1)then
+                      !starting new list_kl, thus restart start
+                      i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
+                    else
+                      i_set_list_kl_start = l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)
+                    endif
+                    
+                    DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
+                      kset = set_list_kl(i_set_list_kl)%pair(1)
+                      lset = set_list_kl(i_set_list_kl)%pair(2)
+                      if(outerl_c.ne.lc_min(kset)) cycle
+                      if(outerl_c.ne.lc_max(kset)) cycle
+                      if(outerl_d.ne.ld_min(lset)) cycle
+                      if(outerl_d.ne.ld_max(lset)) cycle
+
+                      max_val2_set = (screen_coeffs_set(lset, kset, lkind, kkind)%x(1)*rcd2 + &
+                                      screen_coeffs_set(lset, kset, lkind, kkind)%x(2))
+                      max_val2 = max_val1 + max_val2_set
+
+                      !! Near field screening
+                      IF (max_val2 + pmax_atom < log10_eps_schwarz) CYCLE
+                      sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
+                      sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
+                      !! get max_vals if we screen on initial density
+                      IF (do_p_screening) THEN
+                         CALL get_pmax_val(ptr_p_1, ptr_p_2, ptr_p_3, ptr_p_4, &
+                                           iset, jset, kset, lset, &
+                                           pmax_entry, swap_id)
+                      ELSE
+                         pmax_entry = 0.0_dp
+                      END IF
+                      log10_pmax = pmax_entry
+                      max_val2 = max_val2 + log10_pmax
+                      IF (max_val2 < log10_eps_schwarz) CYCLE
+                      pmax_entry = EXP(log10_pmax*ln_10)
+                      tquartet_generated=.True.
+                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_kl+1
+                      l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_ij
+                      l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)=atom_block
+                      !put in chunk
+                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets=iquartet
+                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%atom_block(iquartet)=&
+                          atom_block
+                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(iquartet)=&
+                          i_set_list_ij
+                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(iquartet)=&
+                          i_set_list_kl
+                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%sent=.false.
+                      exit
+                    enddo
+                    if(tquartet_generated)exit
+                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                    !l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_kl+1
+                  enddo
+                  if(tquartet_generated)exit
+                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                  !l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_ij+1
+                  !l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+  !              enddo
+  !              if(tquartet_generated)exit
+  !            enddo
+  !            if(tquartet_generated)exit
+            enddo ! atom_block
+            if(.not.tquartet_generated)then
+              chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks_left=.false.
+              exit
+            endif
+  !          print*,"quartet",outerl_a,outerl_b,outerl_c,outerl_d,&
+  !                  l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d),&
+  !                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d),&
+  !                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)
+
+          enddo !quartets_per_chunk
+          enddo !ichunk
+          enddo !ld
+          enddo !lc
+          enddo !lb
+          enddo !la
+
+          !chunk statistics
+          
+          do outerl_a=0,maxl_loop
+          do outerl_b=0,maxl_loop      
+          do outerl_c=0,maxl_loop           
+          do outerl_d=0,maxl_loop           
+          iquartet=0
+          do ichunk=1,chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nused
+            iquartet=iquartet+chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets
+            print*,"chunk",outerl_a,outerl_b,outerl_c,outerl_d,ichunk,&
+              chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets
+  !          if(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets.ge.1)then
+  !            print*,"first element",&
+  !                    chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%atom_block(1),&
+  !                    chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(1),&
+  !                    chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(1)
+  !          endif
+          enddo
+            print*,"chunk sum",outerl_a,outerl_b,outerl_c,outerl_d,ichunk,iquartet
+          enddo
+          enddo
+          enddo
+          enddo
+          !wait for chunk requests
+          nrank = para_env%num_pe
+          allocate(mpi_req(nrank))
+          allocate(mpi_req1(nrank))
+          allocate(mpi_req2(nrank))
+          allocate(mpi_req3(nrank))
+          allocate(mpi_req4(nrank))
+          allocate(endmsg(nrank))
+          endmsg(:)=0
+          allocate(chunk_req(nrank))
+          allocate(tmpmeta(5))
+
+          do irank=1,nrank-1
+            allocate(chunk_req(irank)%data(4))
+            chunk_req(irank)%src=irank
+            CALL mp_irecv(msgout=chunk_req(irank)%data,source=chunk_req(irank)%src,comm=para_env%group,request=mpi_req(irank),tag=0)
+          enddo
+          do while (.true.)
+            if(sum(endmsg).eq.nrank-1)exit
+            do irank=1,nrank-1
+              call mp_test(mpi_req(irank),completed)
+              if(completed)then
+                print*,"got request from",irank,chunk_req(irank)%src,chunk_req(irank)%data
+                !reply to chunk request
+                if(chunk_req(irank)%data(1).eq.-1.and.chunk_req(irank)%data(2).eq.-1.and.chunk_req(irank)%data(3).eq.-1.and. &
+                  chunk_req(irank)%data(4).eq.-1)then
+                  !find open chunk
+                  completed=.true.
+                  do la=0,maxl_loop
+                  do lb=0,maxl_loop
+                  do lc=0,maxl_loop
+                  do ld=0,maxl_loop
+                    do ichunk=1,chunk_queue(la,lb,lc,ld)%nused
+                      if(.not.chunk_queue(la,lb,lc,ld)%chunks(ichunk)%sent.and.&
+                        chunk_queue(la,lb,lc,ld)%chunks(ichunk)%nquartets.gt.0)then
+                        completed=.false.
+                        exit
+                      endif
+                    enddo
+                    if(.not.completed)exit
+                  enddo
+                  if(.not.completed)exit
+                  enddo
+                  if(.not.completed)exit
+                  enddo
+                  if(.not.completed)exit
+                  enddo
+                else
+                  print*,"client preference not implmented"
+                  stop
+                endif
+    
+                if(.not.completed)then
+                  print*,"sending chunk",la,lb,lc,ld,ichunk,chunk_queue(la,lb,lc,ld)%chunks(ichunk)%nquartets,"to",irank
+                  chunk_queue(la,lb,lc,ld)%chunks(ichunk)%sent=.true.
+                  chunk_queue(la,lb,lc,ld)%chunks(ichunk)%meta(5)=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%nquartets
+                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%meta,&
+                    dest=irank,comm=para_env%group,request=mpi_req1(irank),tag=1)
+                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%atom_block,&
+                    dest=irank,comm=para_env%group,request=mpi_req2(irank),tag=2)
+                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%index_ij,&
+                    dest=irank,comm=para_env%group,request=mpi_req3(irank),tag=3)
+                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%index_kl,&
+                    dest=irank,comm=para_env%group,request=mpi_req4(irank),tag=4)
+                else
+                  !send message that we are out of work
+                  print*,"sending endmsg to",irank
+                  tmpmeta(1)=-1
+                  CALL mp_isend(msgin=tmpmeta,dest=irank,comm=para_env%group,request=mpi_req1(irank),tag=1)
+                  endmsg(irank)=1
+                endif
+
+                CALL mp_irecv(msgout=chunk_req(irank)%data,source=irank,comm=para_env%group,request=mpi_req(irank),tag=0)
+              endif
+            enddo
+          enddo
+
+        else 
+          !mepos!=0
+          !request chunk
+          allocate(chunk_req(1))
+          allocate(chunk_req(1)%data(4))
+          
+          allocate(chunk%atom_block(qperchunk))
+          allocate(chunk%index_ij(qperchunk))
+          allocate(chunk%index_kl(qperchunk))
+          allocate(chunk%meta(5))
+          
+          do while (.true.)
+            !values of -1 mean that there is no preference
+            chunk_req(1)%data(1)=-1
+            chunk_req(1)%data(2)=-1
+            chunk_req(1)%data(3)=-1
+            chunk_req(1)%data(4)=-1
+            print*,"requesting chunk",para_env%mepos,chunk_req(1)%data
+            CALL mp_send(msg=chunk_req(1)%data,dest=0,gid=para_env%group,tag=0)
+            
+            tag=1
+            src=0
+            CALL mp_recv(msg=chunk%meta,source=src,gid=para_env%group,tag=tag)
+            print*,"chunk%meta",src,tag,chunk%meta
+            
+            !exit if no more chunks for this 
+            if(chunk%meta(1).eq.-1)then
+              print*,"got endmsg"
+              exit
+            endif
+
+            outerl_a=chunk%meta(1)
+            outerl_b=chunk%meta(2)
+            outerl_c=chunk%meta(3)
+            outerl_d=chunk%meta(4)
+            chunk%nquartets=chunk%meta(5)
+
+            tag=2
+            src=0
+            CALL mp_recv(msg=chunk%atom_block,source=src,gid=para_env%group,tag=tag)
+            print*,"chunk%atom_block",src,tag
+            tag=3
+            src=0
+            CALL mp_recv(msg=chunk%index_ij,source=src,gid=para_env%group,tag=tag)
+            print*,"chunk%index_ij",src,tag
+            tag=4
+            src=0
+            CALL mp_recv(msg=chunk%index_kl,source=src,gid=para_env%group,tag=tag)
+            print*,"chunk%index_kl",src,tag
+            
+            !compute chunk
+            do iquartet=1,chunk%nquartets
+            atom_block=chunk%atom_block(iquartet)
+            latom_block = INT(MODULO(atom_block, nblocks)) + 1
+            tmp_block = atom_block/nblocks
+            katom_block = INT(MODULO(tmp_block, nblocks)) + 1
+            IF (latom_block < katom_block) CYCLE
+            tmp_block = tmp_block/nblocks
+            jatom_block = INT(MODULO(tmp_block, nblocks)) + 1
+            tmp_block = tmp_block/nblocks
+            iatom_block = INT(MODULO(tmp_block, nblocks)) + 1
+            IF (jatom_block < iatom_block) CYCLE
+
+            iatom_start = actual_x_data%blocks(iatom_block)%istart
+            iatom_end = actual_x_data%blocks(iatom_block)%iend
+            jatom_start = actual_x_data%blocks(jatom_block)%istart
+            jatom_end = actual_x_data%blocks(jatom_block)%iend
+            katom_start = actual_x_data%blocks(katom_block)%istart
+            katom_end = actual_x_data%blocks(katom_block)%iend
+            latom_start = actual_x_data%blocks(latom_block)%istart
+            latom_end = actual_x_data%blocks(latom_block)%iend
+
+            pmax_blocks = MAX(shm_pmax_block(katom_block, iatom_block), &
+                              shm_pmax_block(latom_block, jatom_block), &
+                              shm_pmax_block(latom_block, iatom_block), &
+                              shm_pmax_block(katom_block, jatom_block))
+
+            IF (2.0_dp*coeffs_kind_max0 + pmax_blocks < log10_eps_schwarz) CYCLE
+
+            CALL build_pair_list(natom, list_ij, set_list_ij, iatom_start, iatom_end, &
+                                 jatom_start, jatom_end, &
+                                 kind_of, basis_parameter, particle_set, &
+                                 do_periodic, screen_coeffs_set, screen_coeffs_kind, &
+                                 coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
+                                 shm_atomic_pair_list)
+
+            CALL build_pair_list(natom, list_kl, set_list_kl, katom_start, katom_end, &
+                                 latom_start, latom_end, &
+                                 kind_of, basis_parameter, particle_set, &
+                                 do_periodic, screen_coeffs_set, screen_coeffs_kind, &
+                                 coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
+                                 shm_atomic_pair_list)
+            DO i_list_ij = 1, list_ij%n_element
+               iatom = list_ij%elements(i_list_ij)%pair(1)
+               jatom = list_ij%elements(i_list_ij)%pair(2)
+               i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
+               i_set_list_ij_stop = list_ij%elements(i_list_ij)%set_bounds(2)
+               ikind = list_ij%elements(i_list_ij)%kind_pair(1)
+               jkind = list_ij%elements(i_list_ij)%kind_pair(2)
+               ra = list_ij%elements(i_list_ij)%r1
+               rb = list_ij%elements(i_list_ij)%r2
+               rab2 = list_ij%elements(i_list_ij)%dist2
+
+               la_max => basis_parameter(ikind)%lmax
+               la_min => basis_parameter(ikind)%lmin
+               npgfa => basis_parameter(ikind)%npgf
+               nseta = basis_parameter(ikind)%nset
+               zeta => basis_parameter(ikind)%zet
+               nsgfa => basis_parameter(ikind)%nsgf
+               sphi_a_ext => basis_parameter(ikind)%sphi_ext(:, :, :, :)
+               nsgfl_a => basis_parameter(ikind)%nsgfl
+               sphi_a_u1 = UBOUND(sphi_a_ext, 1)
+               sphi_a_u2 = UBOUND(sphi_a_ext, 2)
+               sphi_a_u3 = UBOUND(sphi_a_ext, 3)
+
+               lb_max => basis_parameter(jkind)%lmax
+               lb_min => basis_parameter(jkind)%lmin
+               npgfb => basis_parameter(jkind)%npgf
+               nsetb = basis_parameter(jkind)%nset
+               zetb => basis_parameter(jkind)%zet
+               nsgfb => basis_parameter(jkind)%nsgf
+               sphi_b_ext => basis_parameter(jkind)%sphi_ext(:, :, :, :)
+               nsgfl_b => basis_parameter(jkind)%nsgfl
+               sphi_b_u1 = UBOUND(sphi_b_ext, 1)
+               sphi_b_u2 = UBOUND(sphi_b_ext, 2)
+               sphi_b_u3 = UBOUND(sphi_b_ext, 3)
+                 
+               DO i_list_kl = 1, list_kl%n_element
+                  katom = list_kl%elements(i_list_kl)%pair(1)
+                  latom = list_kl%elements(i_list_kl)%pair(2)
+
+                  IF (.NOT. (katom + latom <= iatom + jatom)) CYCLE
+                  IF (((iatom + jatom) .EQ. (katom + latom)) .AND. (katom < iatom)) CYCLE
+                  i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
+                  i_set_list_kl_stop = list_kl%elements(i_list_kl)%set_bounds(2)
+                  kkind = list_kl%elements(i_list_kl)%kind_pair(1)
+                  lkind = list_kl%elements(i_list_kl)%kind_pair(2)
+                  rc = list_kl%elements(i_list_kl)%r1
+                  rd = list_kl%elements(i_list_kl)%r2
+                  rcd2 = list_kl%elements(i_list_kl)%dist2
+
+                  IF (do_p_screening) THEN
+                     pmax_atom = MAX(shm_pmax_atom(katom, iatom), &
+                                     shm_pmax_atom(latom, jatom), &
+                                     shm_pmax_atom(latom, iatom), &
+                                     shm_pmax_atom(katom, jatom))
+                  ELSE
+                     pmax_atom = 0.0_dp
+                  END IF
+
+                  screen_kind_ij = screen_coeffs_kind(jkind, ikind)%x(1)*rab2 + &
+                                   screen_coeffs_kind(jkind, ikind)%x(2)
+                  screen_kind_kl = screen_coeffs_kind(lkind, kkind)%x(1)*rcd2 + &
+                                   screen_coeffs_kind(lkind, kkind)%x(2)
+
+                  IF (screen_kind_ij + screen_kind_kl + pmax_atom < log10_eps_schwarz) CYCLE
+
+                  !! we want to be consistent with the KS matrix. If none of the atomic indices
+                  !! is associated cycle
+                  IF (.NOT. (shm_is_assoc_atomic_block(latom, iatom) >= 1 .AND. &
+                             shm_is_assoc_atomic_block(katom, iatom) >= 1 .AND. &
+                             shm_is_assoc_atomic_block(katom, jatom) >= 1 .AND. &
+                             shm_is_assoc_atomic_block(latom, jatom) >= 1)) CYCLE
+
+                  !! calculate symmetry_factor according to degeneracy of atomic quartet
+                  symm_fac = 0.5_dp
+                  IF (iatom == jatom) symm_fac = symm_fac*2.0_dp
+                  IF (katom == latom) symm_fac = symm_fac*2.0_dp
+                  IF (iatom == katom .AND. jatom == latom .AND. iatom /= jatom .AND. katom /= latom) symm_fac = symm_fac*2.0_dp
+                  IF (iatom == katom .AND. iatom == jatom .AND. katom == latom) symm_fac = symm_fac*2.0_dp
+                  symm_fac = 1.0_dp/symm_fac
+
+                  lc_max => basis_parameter(kkind)%lmax
+                  lc_min => basis_parameter(kkind)%lmin
+                  npgfc => basis_parameter(kkind)%npgf
+                  zetc => basis_parameter(kkind)%zet
+                  nsgfc => basis_parameter(kkind)%nsgf
+                  sphi_c_ext => basis_parameter(kkind)%sphi_ext(:, :, :, :)
+                  nsgfl_c => basis_parameter(kkind)%nsgfl
+                  sphi_c_u1 = UBOUND(sphi_c_ext, 1)
+                  sphi_c_u2 = UBOUND(sphi_c_ext, 2)
+                  sphi_c_u3 = UBOUND(sphi_c_ext, 3)
+
+                  ld_max => basis_parameter(lkind)%lmax
+                  ld_min => basis_parameter(lkind)%lmin
+                  npgfd => basis_parameter(lkind)%npgf
+                  zetd => basis_parameter(lkind)%zet
+                  nsgfd => basis_parameter(lkind)%nsgf
+                  sphi_d_ext => basis_parameter(lkind)%sphi_ext(:, :, :, :)
+                  nsgfl_d => basis_parameter(lkind)%nsgfl
+                  sphi_d_u1 = UBOUND(sphi_d_ext, 1)
+                  sphi_d_u2 = UBOUND(sphi_d_ext, 2)
+                  sphi_d_u3 = UBOUND(sphi_d_ext, 3)
+
+                  atomic_offset_bd = shm_atomic_block_offset(jatom, latom)
+                  atomic_offset_bc = shm_atomic_block_offset(jatom, katom)
+                  atomic_offset_ad = shm_atomic_block_offset(iatom, latom)
+                  atomic_offset_ac = shm_atomic_block_offset(iatom, katom)
+
+                  IF (jatom < latom) THEN
+                     offset_bd_set => shm_set_offset(:, :, lkind, jkind)
+                  ELSE
+                     offset_bd_set => shm_set_offset(:, :, jkind, lkind)
+                  END IF
+                  IF (jatom < katom) THEN
+                     offset_bc_set => shm_set_offset(:, :, kkind, jkind)
+                  ELSE
+                     offset_bc_set => shm_set_offset(:, :, jkind, kkind)
+                  END IF
+                  IF (iatom < latom) THEN
+                     offset_ad_set => shm_set_offset(:, :, lkind, ikind)
+                  ELSE
+                     offset_ad_set => shm_set_offset(:, :, ikind, lkind)
+                  END IF
+                  IF (iatom < katom) THEN
+                     offset_ac_set => shm_set_offset(:, :, kkind, ikind)
+                  ELSE
+                     offset_ac_set => shm_set_offset(:, :, ikind, kkind)
+                  END IF
+
+                  IF (do_p_screening) THEN
+                     swap_id = 0
+                     kind_kind_idx = INT(get_1D_idx(kkind, ikind, INT(nkind, int_8)))
+                     IF (ikind >= kkind) THEN
+                        ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom))
+                     ELSE
+                        ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom))
+                        swap_id = swap_id + 1
+                     END IF
+                     kind_kind_idx = INT(get_1D_idx(lkind, jkind, INT(nkind, int_8)))
+                     IF (jkind >= lkind) THEN
+                        ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom))
+                     ELSE
+                        ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom))
+                        swap_id = swap_id + 2
+                     END IF
+                     kind_kind_idx = INT(get_1D_idx(lkind, ikind, INT(nkind, int_8)))
+                     IF (ikind >= lkind) THEN
+                        ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom))
+                     ELSE
+                        ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(iatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(latom))
+                        swap_id = swap_id + 4
+                     END IF
+                     kind_kind_idx = INT(get_1D_idx(kkind, jkind, INT(nkind, int_8)))
+                     IF (jkind >= kkind) THEN
+                        ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom))
+                     ELSE
+                        ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                       actual_x_data%map_atom_to_kind_atom(jatom), &
+                                                                       actual_x_data%map_atom_to_kind_atom(katom))
+                        swap_id = swap_id + 8
+                     END IF
+                  END IF
+
+                  !FIXME MEMORY COMPRESSION STUFF
+
+                  !DO i_set_list_ij = i_set_list_ij_start, i_set_list_ij_stop
+                  !i_set_list_ij =chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(iquartet)
+                  i_set_list_ij =chunk%index_ij(iquartet)
+                   iset = set_list_ij(i_set_list_ij)%pair(1)
+                   jset = set_list_ij(i_set_list_ij)%pair(2)
+
+                   ncob = npgfb(jset)*ncoset(lb_max(jset))
+                   max_val1 = screen_coeffs_set(jset, iset, jkind, ikind)%x(1)*rab2 + &
+                              screen_coeffs_set(jset, iset, jkind, ikind)%x(2)
+
+                   IF (max_val1 + screen_kind_kl + pmax_atom < log10_eps_schwarz) CYCLE
+
+                   sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
+                   sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
+                   !DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
+                   !i_set_list_kl =chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(iquartet)
+                   i_set_list_kl =chunk%index_kl(iquartet)
+
+                    kset = set_list_kl(i_set_list_kl)%pair(1)
+                    lset = set_list_kl(i_set_list_kl)%pair(2)
+
+                    max_val2_set = (screen_coeffs_set(lset, kset, lkind, kkind)%x(1)*rcd2 + &
+                                    screen_coeffs_set(lset, kset, lkind, kkind)%x(2))
+                    max_val2 = max_val1 + max_val2_set
+
+                    !! Near field screening
+                    IF (max_val2 + pmax_atom < log10_eps_schwarz) CYCLE
+                    sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
+                    sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
+                    !! get max_vals if we screen on initial density
+                    IF (do_p_screening) THEN
+                       CALL get_pmax_val(ptr_p_1, ptr_p_2, ptr_p_3, ptr_p_4, &
+                                         iset, jset, kset, lset, &
+                                         pmax_entry, swap_id)
+                    ELSE
+                       pmax_entry = 0.0_dp
+                    END IF
+                    log10_pmax = pmax_entry
+                    max_val2 = max_val2 + log10_pmax
+                    IF (max_val2 < log10_eps_schwarz) CYCLE
+                    pmax_entry = EXP(log10_pmax*ln_10)
+                    
+  !                        if(Tbunch_up_ls)then
+  !                          if(outerl_a.ne.la_min(iset)) cycle
+  !                          if(outerl_a.ne.la_max(iset)) cycle
+  !                          if(outerl_b.ne.lb_min(jset)) cycle
+  !                          if(outerl_b.ne.lb_max(jset)) cycle
+  !                          if(outerl_c.ne.lc_min(kset)) cycle
+  !                          if(outerl_c.ne.lc_max(kset)) cycle
+  !                          if(outerl_d.ne.ld_min(lset)) cycle
+  !                          if(outerl_d.ne.ld_max(lset)) cycle
+  !                        endif
+
+                    !! store current number of integrals, update total number and number of integrals in buffer
+                    current_counter = nsgfa(iset)*nsgfb(jset)*nsgfc(kset)*nsgfd(lset)
+                    IF (buffer_overflow) THEN
+                       neris_onthefly = neris_onthefly + current_counter
+                    END IF
+  !$OMP ATOMIC                         
+                    qcounter(la_min(iset),lb_min(jset),lc_min(kset),ld_min(lset))= &
+                    qcounter(la_min(iset),lb_min(jset),lc_min(kset),ld_min(lset))+1
+
+  !                  !! Get integrals from buffer and update Kohn-Sham matrix
+  !                  IF (.NOT. buffer_overflow .AND. .NOT. my_geo_change) THEN
+  !                     nints = current_counter
+  !                     IF (.NOT. use_disk_storage) THEN
+  !                        CALL hfx_get_single_cache_element( &
+  !                           estimate_to_store_int, 6, &
+  !                           maxval_cache, maxval_container, memory_parameter%actual_memory_usage, &
+  !                           use_disk_storage)
+  !                     ELSE
+  !                        CALL hfx_get_single_cache_element( &
+  !                           estimate_to_store_int, 6, &
+  !                           maxval_cache_disk, maxval_container_disk, memory_parameter%actual_memory_usage_disk, &
+  !                           use_disk_storage)
+  !                     END IF
+  !                     spherical_estimate = SET_EXPONENT(1.0_dp, estimate_to_store_int + 1)
+  !                     IF (spherical_estimate*pmax_entry < eps_schwarz) CYCLE
+  !                     nbits = EXPONENT(ANINT(spherical_estimate*pmax_entry/eps_storage)) + 1
+  !                     buffer_left = nints
+  !                     buffer_start = 1
+  !                     IF (.NOT. use_disk_storage) THEN
+  !                        neris_incore = neris_incore + INT(nints, int_8)
+  !                     ELSE
+  !                        neris_disk = neris_disk + INT(nints, int_8)
+  !                     END IF
+  !                     DO WHILE (buffer_left > 0)
+  !                        buffer_size = MIN(buffer_left, cache_size)
+  !                        IF (.NOT. use_disk_storage) THEN
+  !                           CALL hfx_get_mult_cache_elements(primitive_integrals(buffer_start), &
+  !                                                            buffer_size, nbits, &
+  !                                                            integral_caches(nbits), &
+  !                                                            integral_containers(nbits), &
+  !                                                            eps_storage, pmax_entry, &
+  !                                                            memory_parameter%actual_memory_usage, &
+  !                                                            use_disk_storage)
+  !                        ELSE
+  !                           CALL hfx_get_mult_cache_elements(primitive_integrals(buffer_start), &
+  !                                                            buffer_size, nbits, &
+  !                                                            integral_caches_disk(nbits), &
+  !                                                            integral_containers_disk(nbits), &
+  !                                                            eps_storage, pmax_entry, &
+  !                                                            memory_parameter%actual_memory_usage_disk, &
+  !                                                            use_disk_storage)
+  !                        END IF
+  !                        buffer_left = buffer_left - buffer_size
+  !                        buffer_start = buffer_start + buffer_size
+  !                     END DO
+  !                  END IF
+                    !! Calculate integrals if we run out of buffer or the geometry did change
+                    IF (my_geo_change .OR. buffer_overflow) THEN
+                       max_contraction_val = max_contraction(iset, iatom)* &
+                                             max_contraction(jset, jatom)* &
+                                             max_contraction(kset, katom)* &
+                                             max_contraction(lset, latom)*pmax_entry
+                       tmp_R_1 => radii_pgf(:, :, jset, iset, jkind, ikind)
+                       tmp_R_2 => radii_pgf(:, :, lset, kset, lkind, kkind)
+                       tmp_screen_pgf1 => screen_coeffs_pgf(:, :, jset, iset, jkind, ikind)
+                       tmp_screen_pgf2 => screen_coeffs_pgf(:, :, lset, kset, lkind, kkind)
+
+
+                       CALL coulomb4(private_lib, ra, rb, rc, rd, npgfa(iset), npgfb(jset), npgfc(kset), npgfd(lset), &
+                                     la_min(iset), la_max(iset), lb_min(jset), lb_max(jset), &
+                                     lc_min(kset), lc_max(kset), ld_min(lset), ld_max(lset), &
+                                     nsgfa(iset), nsgfb(jset), nsgfc(kset), nsgfd(lset), &
+                                     sphi_a_u1, sphi_a_u2, sphi_a_u3, &
+                                     sphi_b_u1, sphi_b_u2, sphi_b_u3, &
+                                     sphi_c_u1, sphi_c_u2, sphi_c_u3, &
+                                     sphi_d_u1, sphi_d_u2, sphi_d_u3, &
+                                     zeta(1:npgfa(iset), iset), zetb(1:npgfb(jset), jset), &
+                                     zetc(1:npgfc(kset), kset), zetd(1:npgfd(lset), lset), &
+                                     primitive_integrals, &
+                                     potential_parameter, &
+                                     actual_x_data%neighbor_cells, screen_coeffs_set(jset, iset, jkind, ikind)%x, &
+                                     screen_coeffs_set(lset, kset, lkind, kkind)%x, eps_schwarz, &
+                                     max_contraction_val, cartesian_estimate, cell, neris_tmp, &
+                                     log10_pmax, log10_eps_schwarz, &
+                                     tmp_R_1, tmp_R_2, tmp_screen_pgf1, tmp_screen_pgf2, &
+                                     pgf_list_ij, pgf_list_kl, pgf_product_list, &
+                                     nsgfl_a(:, iset), nsgfl_b(:, jset), &
+                                     nsgfl_c(:, kset), nsgfl_d(:, lset), &
+                                     sphi_a_ext_set, &
+                                     sphi_b_ext_set, &
+                                     sphi_c_ext_set, &
+                                     sphi_d_ext_set, &
+                                     ee_work, ee_work2, ee_buffer1, ee_buffer2, ee_primitives_tmp, &
+                                     nimages, do_periodic, p_work)
+
+                       nints = nsgfa(iset)*nsgfb(jset)*nsgfc(kset)*nsgfd(lset)
+                       neris_total = neris_total + nints
+                       nprim_ints = nprim_ints + neris_tmp
+  !                           IF (cartesian_estimate == 0.0_dp) cartesian_estimate = TINY(cartesian_estimate)
+  !                           estimate_to_store_int = EXPONENT(cartesian_estimate)
+  !                           estimate_to_store_int = MAX(estimate_to_store_int, -15_int_8)
+  !                           cartesian_estimate = SET_EXPONENT(1.0_dp, estimate_to_store_int+1)
+  !                           IF (.NOT. buffer_overflow .AND. my_geo_change) THEN
+  !                              IF (cartesian_estimate < eps_schwarz) THEN
+  !                                 IF (.NOT. use_disk_storage) THEN
+  !                                    CALL hfx_add_single_cache_element( &
+  !                                       estimate_to_store_int, 6, &
+  !                                       maxval_cache, maxval_container, memory_parameter%actual_memory_usage, &
+  !                                       use_disk_storage, max_val_memory)
+  !                                 ELSE
+  !                                    CALL hfx_add_single_cache_element( &
+  !                                       estimate_to_store_int, 6, &
+  !                                       maxval_cache_disk, maxval_container_disk, memory_parameter%actual_memory_usage_disk, &
+  !                                       use_disk_storage)
+  !                                 END IF
+  !                              END IF
+  !                           END IF
+  !
+  !                           IF (cartesian_estimate < eps_schwarz) CYCLE
+
+                       !! Compress the array for storage
+                       spherical_estimate = 0.0_dp
+                       DO i = 1, nints
+                          spherical_estimate = MAX(spherical_estimate, ABS(primitive_integrals(i)))
+                       END DO
+
+                       IF (spherical_estimate == 0.0_dp) spherical_estimate = TINY(spherical_estimate)
+                       estimate_to_store_int = EXPONENT(spherical_estimate)
+                       estimate_to_store_int = MAX(estimate_to_store_int, -15_int_8)
+
+                       IF (.NOT. buffer_overflow .AND. my_geo_change) THEN
+                          IF (.NOT. use_disk_storage) THEN
+                             CALL hfx_add_single_cache_element( &
+                                estimate_to_store_int, 6, &
+                                maxval_cache, maxval_container, memory_parameter%actual_memory_usage, &
+                                use_disk_storage, max_val_memory)
+                          ELSE
+                             CALL hfx_add_single_cache_element( &
+                                estimate_to_store_int, 6, &
+                                maxval_cache_disk, maxval_container_disk, memory_parameter%actual_memory_usage_disk, &
+                                use_disk_storage)
+                          END IF
+                       END IF
+                       spherical_estimate = SET_EXPONENT(1.0_dp, estimate_to_store_int + 1)
+                       IF (spherical_estimate*pmax_entry < eps_schwarz) CYCLE
+                       IF (.NOT. buffer_overflow) THEN
+                          nbits = EXPONENT(ANINT(spherical_estimate*pmax_entry/eps_storage)) + 1
+
+                          ! In case of a tight eps_storage threshold the number of significant
+                          ! bits in the integer number NINT(value*pmax_entry/eps_storage) may
+                          ! exceed the width of the storage element. As the compression algorithm
+                          ! is designed for IEEE 754 double precision numbers, a 64-bit signed
+                          ! integer variable which is used to store the result of this float-to-
+                          ! integer conversion (we have no wish to use more memory for storing
+                          ! compressed ERIs than it is needed for uncompressed ERIs) may overflow.
+                          ! Abort with a meaningful message when it happens.
+                          !
+                          ! The magic number 63 stands for the number of magnitude bits
+                          ! (64 bits minus one sign bit).
+                          IF (nbits > 63) THEN
+                             WRITE (eps_schwarz_min_str, '(ES10.3E2)') &
+                                spherical_estimate*pmax_entry/ &
+                                (SET_EXPONENT(1.0_dp, 63)*memory_parameter%eps_storage_scaling)
+
+                             WRITE (eps_scaling_str, '(ES10.3E2)') &
+                                spherical_estimate*pmax_entry/(SET_EXPONENT(1.0_dp, 63)*eps_schwarz)
+
+                             CALL cp_abort(__LOCATION__, &
+                                           "Overflow during ERI's compression. Please use a larger "// &
+                                           "EPS_SCHWARZ threshold (above "//TRIM(ADJUSTL(eps_schwarz_min_str))// &
+                                           ") or increase the EPS_STORAGE_SCALING factor above "// &
+                                           TRIM(ADJUSTL(eps_scaling_str))//".")
+                          END IF
+
+                          buffer_left = nints
+                          buffer_start = 1
+                          IF (.NOT. use_disk_storage) THEN
+                             neris_incore = neris_incore + INT(nints, int_8)
+  !                                 neris_incore = neris_incore+nints
+                          ELSE
+                             neris_disk = neris_disk + INT(nints, int_8)
+  !                                 neris_disk = neris_disk+nints
+                          END IF
+                          DO WHILE (buffer_left > 0)
+                             buffer_size = MIN(buffer_left, CACHE_SIZE)
+                             IF (.NOT. use_disk_storage) THEN
+                                CALL hfx_add_mult_cache_elements(primitive_integrals(buffer_start), &
+                                                                 buffer_size, nbits, &
+                                                                 integral_caches(nbits), &
+                                                                 integral_containers(nbits), &
+                                                                 eps_storage, pmax_entry, &
+                                                                 memory_parameter%actual_memory_usage, &
+                                                                 use_disk_storage)
+                             ELSE
+                                CALL hfx_add_mult_cache_elements(primitive_integrals(buffer_start), &
+                                                                 buffer_size, nbits, &
+                                                                 integral_caches_disk(nbits), &
+                                                                 integral_containers_disk(nbits), &
+                                                                 eps_storage, pmax_entry, &
+                                                                 memory_parameter%actual_memory_usage_disk, &
+                                                                 use_disk_storage)
+                             END IF
+                             buffer_left = buffer_left - buffer_size
+                             buffer_start = buffer_start + buffer_size
+                          END DO
+                       ELSE
+                          !! In order to be consistent with in-core part, round all the eris wrt. eps_schwarz
+                          DO i = 1, nints
+                             primitive_integrals(i) = primitive_integrals(i)*pmax_entry
+                             IF (ABS(primitive_integrals(i)) > eps_storage) THEN
+                                primitive_integrals(i) = ANINT(primitive_integrals(i)/eps_storage, dp)*eps_storage/pmax_entry
+                             ELSE
+                                primitive_integrals(i) = 0.0_dp
+                             END IF
+                          END DO
+                       END IF
+                    END IF
+                    !!!  DEBUG, print out primitive integrals and indices. Only works serial no OMP  !!!
+                    IF (.FALSE.) THEN
+                       CALL print_integrals( &
+                          iatom, jatom, katom, latom, shm_set_offset, shm_atomic_block_offset, &
+                          iset, jset, kset, lset, nsgfa(iset), nsgfb(jset), nsgfc(kset), nsgfd(lset), primitive_integrals)
+                    END IF
+                    IF (.NOT. is_anti_symmetric) THEN
+                       !! Update Kohn-Sham matrix
+                       CALL update_fock_matrix( &
+                          nsgfa(iset), nsgfb(jset), nsgfc(kset), nsgfd(lset), &
+                          fac, symm_fac, full_density_alpha(:, 1), full_ks_alpha(:, 1), &
+                          primitive_integrals, pbd_buf, pbc_buf, pad_buf, pac_buf, kbd_buf, &
+                          kbc_buf, kad_buf, kac_buf, iatom, jatom, katom, latom, &
+                          iset, jset, kset, lset, offset_bd_set, offset_bc_set, offset_ad_set, offset_ac_set, &
+                          atomic_offset_bd, atomic_offset_bc, atomic_offset_ad, atomic_offset_ac)
+                       IF (.NOT. treat_lsd_in_core) THEN
+                          IF (nspins == 2) THEN
+                             CALL update_fock_matrix( &
+                                nsgfa(iset), nsgfb(jset), nsgfc(kset), nsgfd(lset), &
+                                fac, symm_fac, full_density_beta(:, 1), full_ks_beta(:, 1), &
+                                primitive_integrals, pbd_buf, pbc_buf, pad_buf, pac_buf, kbd_buf, &
+                                kbc_buf, kad_buf, kac_buf, iatom, jatom, katom, latom, &
+                                iset, jset, kset, lset, offset_bd_set, offset_bc_set, offset_ad_set, offset_ac_set, &
+                                atomic_offset_bd, atomic_offset_bc, atomic_offset_ad, atomic_offset_ac)
+                          END IF
+                       END IF
+                    ELSE
+                       !! Update Kohn-Sham matrix
+                       CALL update_fock_matrix_as( &
+                          nsgfa(iset), nsgfb(jset), nsgfc(kset), nsgfd(lset), &
+                          fac, symm_fac, full_density_alpha(:, 1), full_ks_alpha(:, 1), &
+                          primitive_integrals, pbd_buf, pbc_buf, pad_buf, pac_buf, kbd_buf, &
+                          kbc_buf, kad_buf, kac_buf, iatom, jatom, katom, latom, &
+                          iset, jset, kset, lset, offset_bd_set, offset_bc_set, offset_ad_set, offset_ac_set, &
+                          atomic_offset_bd, atomic_offset_bc, atomic_offset_ad, atomic_offset_ac)
+                       IF (.NOT. treat_lsd_in_core) THEN
+                          IF (nspins == 2) THEN
+                             CALL update_fock_matrix_as( &
+                                nsgfa(iset), nsgfb(jset), nsgfc(kset), nsgfd(lset), &
+                                fac, symm_fac, full_density_beta(:, 1), full_ks_beta(:, 1), &
+                                primitive_integrals, pbd_buf, pbc_buf, pad_buf, pac_buf, kbd_buf, &
+                                kbc_buf, kad_buf, kac_buf, iatom, jatom, katom, latom, &
+                                iset, jset, kset, lset, offset_bd_set, offset_bc_set, offset_ad_set, offset_ac_set, &
+                                atomic_offset_bd, atomic_offset_bc, atomic_offset_ad, atomic_offset_ac)
+                          END IF
+                       END IF
+                    END IF
+  !               END DO ! i_set_list_kl
+  !            END DO ! i_set_list_ij
+          enddo
+          enddo
+          enddo
+          enddo
+        endif
+        CALL mp_sync(para_env%group)
+
+                  !! At this stage, check for memory used in compression
+
+!                  IF (do_disk_storage) THEN
+!                     buffer_overflow = .TRUE.
+!                  END IF
+!               END DO !i_list_ij
+!            END DO !i_list_kl
+!         END DO atomic_blocks2
+!         bintime_stop = m_walltime()
+!         IF (my_geo_change) THEN
+!            distribution_energy%time_first_scf = bintime_stop - bintime_start
+!         ELSE
+!            distribution_energy%time_other_scf = &
+!               distribution_energy%time_other_scf + bintime_stop - bintime_start
+!         END IF
+!$OMP MASTER
+         CALL timestop(handle_bin)
+!$OMP END MASTER
+
+      else !tglobalload
       bins_left = .TRUE.
       do_it = .TRUE.
       bin = 0
@@ -1130,6 +2358,7 @@ CONTAINS
          bintime_start = m_walltime()
          my_istart = distribution_energy%istart
          my_current_counter = 0
+
          IF (distribution_energy%number_of_atom_quartets == 0 .OR. &
              my_istart == -1_int_8) my_istart = nblocks**4
          atomic_blocks: DO atom_block = my_istart, nblocks**4 - 1, n_processes
@@ -1517,6 +2746,13 @@ CONTAINS
                            tmp_R_2 => radii_pgf(:, :, lset, kset, lkind, kkind)
                            tmp_screen_pgf1 => screen_coeffs_pgf(:, :, jset, iset, jkind, ikind)
                            tmp_screen_pgf2 => screen_coeffs_pgf(:, :, lset, kset, lkind, kkind)
+!$OMP ATOMIC                         
+                        qcounter(la_min(iset),lb_min(jset),lc_min(kset),ld_min(lset))= &
+                        qcounter(la_min(iset),lb_min(jset),lc_min(kset),ld_min(lset))+1
+!                        print*,"coulomb4 l=",la_min(iset),la_max(iset),lb_min(jset),lb_max(jset), &
+!                          lc_min(kset),lc_max(kset),ld_min(lset),ld_max(lset),maxl,&
+!                          atom_block,i_set_list_ij,i_set_list_kl
+
 
                            CALL coulomb4(private_lib, ra, rb, rc, rd, npgfa(iset), npgfb(jset), npgfc(kset), npgfd(lset), &
                                          la_min(iset), la_max(iset), lb_min(jset), lb_max(jset), &
@@ -1733,6 +2969,7 @@ CONTAINS
          CALL timestop(handle_bin)
 !$OMP END MASTER
       END DO !bin
+      endif !tglobalload
 
 !$OMP MASTER
       logger => cp_get_default_logger()
@@ -1804,6 +3041,17 @@ CONTAINS
       actual_x_data%memory_parameter%final_comp_counter_energy = shm_mem_compression_counter
 
 !$OMP MASTER
+
+      do i=0,size(qcounter,1)-1
+        do j=0,size(qcounter,2)-1
+          do k=0,size(qcounter,3)-1
+            do l=0,size(qcounter,4)-1
+              print*,"QCOUNTER",para_env%mepos,i,j,k,l,QCOUNTER(I,J,K,L)
+            enddo
+          enddo
+        enddo
+      enddo
+
       !! Calculate the exchange energies from the Kohn-Sham matrix. Before we can go on, we have to symmetrize.
       ene_x_aa = 0.0_dp
       ene_x_bb = 0.0_dp

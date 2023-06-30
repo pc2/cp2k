@@ -107,7 +107,7 @@ MODULE hfx_types
              alloc_containers, dealloc_containers, hfx_task_list_type, init_t_c_g0_lmax, &
              hfx_create_neighbor_cells, hfx_create_basis_types, hfx_release_basis_types, &
              hfx_ri_type, hfx_compression_type, block_ind_type, hfx_ri_init, hfx_ri_release, &
-             compare_hfx_sections
+             compare_hfx_sections, hfx_chunk_type,hfx_queue_type,hfx_chunk_request_type
 
 #define CACHE_SIZE 1024
 #define BITS_MAX_VAL 6
@@ -143,6 +143,23 @@ MODULE hfx_types
       REAL(dp)                                 :: scale_gaussian !! scaling factor for mixed potential
       REAL(dp)                                 :: cutoff_radius !! cutoff radius if cutoff potential in use
       CHARACTER(default_path_length)           :: filename
+   END TYPE
+   TYPE hfx_chunk_type
+      INTEGER                                  :: nquartets
+      integer(int_8),pointer,dimension(:)      :: atom_block
+      integer,pointer,dimension(:)             :: index_ij,index_kl
+      integer,dimension(:),pointer             :: meta
+      logical                                  :: sent                              
+   END TYPE
+   TYPE hfx_queue_type
+      logical                                  :: chunks_left
+      INTEGER                                  :: nmax
+      INTEGER                                  :: nused
+      type(hfx_chunk_type),pointer,dimension(:) :: chunks
+   END TYPE
+   TYPE hfx_chunk_request_type
+     integer :: src
+      integer,dimension(:),pointer :: data
    END TYPE
 
 ! **************************************************************************************************
@@ -1585,6 +1602,22 @@ CONTAINS
                                 set_radius=basis_parameter(ikind)%set_radius, &
                                 pgf_radius=basis_parameter(ikind)%pgf_radius, &
                                 kind_radius=basis_parameter(ikind)%kind_radius)
+        print*,"BASIS SET INFORMATION"
+        print*,"ikind",ikind
+        print*,"lmax",basis_parameter(ikind)%lmax
+        print*,"lmin",basis_parameter(ikind)%lmin
+        print*,"npgf",basis_parameter(ikind)%npgf
+        print*,"nset",basis_parameter(ikind)%nset
+        print*,"zet",basis_parameter(ikind)%zet
+        print*,"nsgf",basis_parameter(ikind)%nsgf
+        print*,"first_sgf",basis_parameter(ikind)%first_sgf
+        print*,"sphi",basis_parameter(ikind)%sphi
+        print*,"nsgf_total",basis_parameter(ikind)%nsgf_total
+        print*,"l",basis_parameter(ikind)%nl
+        print*,"nshell",basis_parameter(ikind)%nshell
+        print*,"set_radius",basis_parameter(ikind)%set_radius
+        print*,"pgf_radius",basis_parameter(ikind)%pgf_radius
+        print*,"kind_radius",basis_parameter(ikind)%kind_radius
       END DO
       DO ikind = 1, nkind
          ALLOCATE (basis_parameter(ikind)%nsgfl(0:basis_info%max_am, max_set))
