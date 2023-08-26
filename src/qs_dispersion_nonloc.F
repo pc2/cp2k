@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,7 +23,6 @@ MODULE qs_dispersion_nonloc
                                               cite_reference
    USE cp_files,                        ONLY: close_file,&
                                               open_file
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_constants,                 ONLY: vdw_nl_DRSLL,&
                                               vdw_nl_LMKLL,&
                                               vdw_nl_RVV10,&
@@ -31,8 +30,7 @@ MODULE qs_dispersion_nonloc
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: pi
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_grid_types,                   ONLY: HALFSPACE,&
                                               pw_grid_type
    USE pw_methods,                      ONLY: pw_axpy,&
@@ -71,7 +69,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_dispersion_nonloc_init(dispersion_env, para_env)
       TYPE(qs_dispersion_type), POINTER                  :: dispersion_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_dispersion_nonloc_init'
 
@@ -98,20 +96,20 @@ CONTAINS
       CASE (xc_vdw_fun_nonloc)
          ! setup information on non local functionals
          filename = dispersion_env%kernel_file_name
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             ! Read the kernel information from file "filename"
             CALL open_file(file_name=filename, unit_number=funit, file_form="FORMATTED")
             READ (funit, *) nqs, nr_points
             READ (funit, *) dispersion_env%r_max
          END IF
-         CALL mp_bcast(nqs, para_env%source, para_env%group)
-         CALL mp_bcast(nr_points, para_env%source, para_env%group)
-         CALL mp_bcast(dispersion_env%r_max, para_env%source, para_env%group)
+         CALL para_env%bcast(nqs)
+         CALL para_env%bcast(nr_points)
+         CALL para_env%bcast(dispersion_env%r_max)
          ALLOCATE (dispersion_env%q_mesh(nqs), dispersion_env%kernel(0:nr_points, nqs, nqs), &
                    dispersion_env%d2phi_dk2(0:nr_points, nqs, nqs))
          dispersion_env%nqs = nqs
          dispersion_env%nr_points = nr_points
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             !! Read in the values of the q points used to generate this kernel
             READ (funit, "(1p, 4e23.14)") dispersion_env%q_mesh
             !! For each pair of q values, read in the function phi_q1_q2(k).
@@ -135,9 +133,9 @@ CONTAINS
             END DO
             CALL close_file(unit_number=funit)
          END IF
-         CALL mp_bcast(dispersion_env%q_mesh, para_env%source, para_env%group)
-         CALL mp_bcast(dispersion_env%kernel, para_env%source, para_env%group)
-         CALL mp_bcast(dispersion_env%d2phi_dk2, para_env%source, para_env%group)
+         CALL para_env%bcast(dispersion_env%q_mesh)
+         CALL para_env%bcast(dispersion_env%kernel)
+         CALL para_env%bcast(dispersion_env%d2phi_dk2)
          ! 2nd derivates for interpolation
          ALLOCATE (dispersion_env%d2y_dx2(nqs, nqs))
          CALL initialize_spline_interpolation(dispersion_env%q_mesh, dispersion_env%d2y_dx2)
@@ -173,7 +171,7 @@ CONTAINS
       TYPE(qs_dispersion_type), POINTER                  :: dispersion_env
       LOGICAL, INTENT(IN)                                :: energy_only
       TYPE(pw_pool_type), POINTER                        :: pw_pool, xc_pw_pool
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(virial_type), OPTIONAL, POINTER               :: virial
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_dispersion_nonloc'
@@ -406,7 +404,7 @@ CONTAINS
       !! of SOLER equation 11.  Add the energy we find to the output variable etxc.
       !! --------------------------------------------------------------------------------------------------
       sumnp = np
-      CALL mp_sum(sumnp, para_env%group)
+      CALL para_env%sum(sumnp)
       IF (use_virial) THEN
          ! calculates kernel contribution to stress
          CALL vdW_energy(thetas_g, dispersion_env, Ec_nl, energy_only, virial)
@@ -426,7 +424,7 @@ CONTAINS
             Ec_nl = 0.5_dp*Ec_nl + beta*SUM(rho(:))*grid%vol/sumnp
          END SELECT
       END IF
-      CALL mp_sum(Ec_nl, para_env%group)
+      CALL para_env%sum(Ec_nl)
       IF (nl_type == vdw_nl_RVV10) Ec_nl = Ec_nl*dispersion_env%scale_rvv10
       edispersion = Ec_nl
 

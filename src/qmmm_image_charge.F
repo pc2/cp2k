@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -27,7 +27,6 @@ MODULE qmmm_image_charge
                                               cp_print_key_generate_filename,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE eri_mme_integrate,               ONLY: eri_mme_2c_integrate
    USE input_constants,                 ONLY: calc_always,&
                                               calc_once,&
@@ -41,11 +40,11 @@ MODULE qmmm_image_charge
                                               dp
    USE mathconstants,                   ONLY: pi
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
-   USE pw_methods,                      ONLY: pw_integral_ab,&
+   USE pw_methods,                      ONLY: pw_axpy,&
+                                              pw_integral_ab,&
                                               pw_scale,&
                                               pw_transfer,&
                                               pw_zero
@@ -66,10 +65,9 @@ MODULE qmmm_image_charge
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_integrate_potential,          ONLY: integrate_pgf_product
-   USE realspace_grid_types,            ONLY: pw2rs,&
-                                              realspace_grid_desc_type,&
+   USE realspace_grid_types,            ONLY: realspace_grid_desc_type,&
                                               realspace_grid_type,&
-                                              rs_pw_transfer
+                                              transfer_pw2rs
    USE util,                            ONLY: get_limit
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -355,8 +353,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3)                        :: ra
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: hab
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(realspace_grid_desc_type), POINTER            :: auxbas_rs_desc
       TYPE(realspace_grid_type), POINTER                 :: rs_v
@@ -370,7 +368,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env)
       CALL pw_env_get(pw_env=pw_env, auxbas_rs_desc=auxbas_rs_desc, &
                       auxbas_rs_grid=rs_v)
-      CALL rs_pw_transfer(rs_v, potential, pw2rs)
+      CALL transfer_pw2rs(rs_v, potential)
 
       CALL get_qs_env(qs_env=qs_env, &
                       cell=cell, &
@@ -435,7 +433,7 @@ CONTAINS
 
       END DO
 
-      CALL mp_sum(int_res, para_env%group)
+      CALL para_env%sum(int_res)
 
       DEALLOCATE (hab, cores)
 
@@ -471,8 +469,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3)                        :: force_a, force_b, ra
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: hab, pab
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(realspace_grid_desc_type), POINTER            :: auxbas_rs_desc
       TYPE(realspace_grid_type), POINTER                 :: rs_v
@@ -490,7 +488,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env)
       CALL pw_env_get(pw_env=pw_env, auxbas_rs_desc=auxbas_rs_desc, &
                       auxbas_rs_grid=rs_v)
-      CALL rs_pw_transfer(rs_v, potential, pw2rs)
+      CALL transfer_pw2rs(rs_v, potential)
 
       CALL get_qs_env(qs_env=qs_env, &
                       cell=cell, &
@@ -559,7 +557,7 @@ CONTAINS
 
       END DO
 
-      CALL mp_sum(forces, para_env%group)
+      CALL para_env%sum(forces)
 
       DEALLOCATE (hab, pab, cores)
 
@@ -707,7 +705,7 @@ CONTAINS
 
       INTEGER                                            :: handle, iatom, iatom_ref, natom
       REAL(KIND=dp), DIMENSION(:), POINTER               :: int_res
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -785,7 +783,7 @@ CONTAINS
       INTEGER                                            :: atom_a, handle, iatom, natom
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: zeta
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: ra
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
       NULLIFY (para_env)
@@ -824,7 +822,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: zeta, zetb
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: ra, rb
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: hab
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'integrate_s_mme'
 
@@ -853,7 +851,7 @@ CONTAINS
       END DO
 
       CALL cp_eri_mme_update_local_counts(param, para_env, G_count_2c=G_count, R_count_2c=R_count)
-      CALL mp_sum(hab, para_env%group)
+      CALL para_env%sum(hab)
       CALL timestop(handle)
 
    END SUBROUTINE integrate_s_mme
@@ -947,7 +945,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE add_image_pot_to_hartree_pot(v_hartree, v_metal, qs_env)
 
-      TYPE(pw_type), INTENT(IN)                          :: v_hartree, v_metal
+      TYPE(pw_type), INTENT(INOUT)                       :: v_hartree
+      TYPE(pw_type), INTENT(IN)                          :: v_metal
       TYPE(qs_environment_type), POINTER                 :: qs_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'add_image_pot_to_hartree_pot'
@@ -962,7 +961,7 @@ CONTAINS
       logger => cp_get_default_logger()
 
       !add image charge potential
-      v_hartree%cr3d = v_hartree%cr3d + v_metal%cr3d
+      CALL pw_axpy(v_metal, v_hartree)
 
       ! print info
       CALL get_qs_env(qs_env=qs_env, &
@@ -995,7 +994,7 @@ CONTAINS
       CHARACTER(LEN=default_path_length)                 :: filename
       INTEGER                                            :: handle, rst_unit
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: print_key, qmmm_section
 
       CALL timeset(routineN, handle)
@@ -1056,7 +1055,7 @@ CONTAINS
       INTEGER                                            :: handle, natom, output_unit, rst_unit
       LOGICAL                                            :: exist
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: qmmm_section
 
       CALL timeset(routineN, handle)
@@ -1083,7 +1082,7 @@ CONTAINS
       INQUIRE (FILE=image_filename, exist=exist)
 
       IF (exist) THEN
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             CALL open_file(file_name=image_filename, &
                            file_status="OLD", &
                            file_form="UNFORMATTED", &
@@ -1093,9 +1092,9 @@ CONTAINS
             READ (rst_unit) qs_env%image_matrix
          END IF
 
-         CALL mp_bcast(qs_env%image_matrix, para_env%source, para_env%group)
+         CALL para_env%bcast(qs_env%image_matrix)
 
-         IF (para_env%ionode) CALL close_file(unit_number=rst_unit)
+         IF (para_env%is_source()) CALL close_file(unit_number=rst_unit)
 
          output_unit = cp_print_key_unit_nr(logger, qmmm_section, &
                                             "QMMM%PRINT%PROGRAM_RUN_INFO", &

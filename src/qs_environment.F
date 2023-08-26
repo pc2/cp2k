@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -34,7 +34,6 @@ MODULE qs_environment
    USE cell_types,                      ONLY: cell_type
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_release,&
-                                              cp_blacs_env_retain,&
                                               cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type,&
                                               dftb_control_type,&
@@ -58,8 +57,6 @@ MODULE qs_environment
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_env,                     ONLY: cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_type
    USE cp_symmetry,                     ONLY: write_symmetry
    USE distribution_1d_types,           ONLY: distribution_1d_release,&
@@ -67,7 +64,8 @@ MODULE qs_environment
    USE distribution_methods,            ONLY: distribute_molecules_1d
    USE dm_ls_scf_create,                ONLY: ls_scf_create
    USE ec_env_types,                    ONLY: energy_correction_type
-   USE ec_environment,                  ONLY: ec_env_create
+   USE ec_environment,                  ONLY: ec_env_create,&
+                                              ec_write_input
    USE et_coupling_types,               ONLY: et_coupling_create
    USE ewald_environment_types,         ONLY: ewald_env_create,&
                                               ewald_env_get,&
@@ -121,6 +119,7 @@ MODULE qs_environment
    USE lri_environment_types,           ONLY: lri_environment_type
    USE machine,                         ONLY: m_flush
    USE mathconstants,                   ONLY: pi
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: molecule_kind_type,&
                                               write_molecule_kind_set
    USE molecule_types,                  ONLY: molecule_type
@@ -240,7 +239,7 @@ CONTAINS
                       qmmm, qmmm_env_qm, force_env_section, subsys_section, use_motion_section)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), OPTIONAL, POINTER         :: root_section
       TYPE(global_environment_type), OPTIONAL, POINTER   :: globenv
       TYPE(cp_subsys_type), OPTIONAL, POINTER            :: cp_subsys
@@ -252,7 +251,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: use_motion_section
 
       INTEGER                                            :: ikind, method_id, nelectron_total, nkind
-      LOGICAL :: do_admm_rpa, do_et, do_exx, do_hfx, do_kpoints, is_identical, is_semi, &
+      LOGICAL :: do_admm_rpa, do_ec_hfx, do_et, do_exx, do_hfx, do_kpoints, is_identical, is_semi, &
          mp2_present, my_qmmm, qmmm_decoupl, same_except_frac, silent, use_ref_cell
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rtmat
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -270,8 +269,9 @@ CONTAINS
       TYPE(qs_wf_history_type), POINTER                  :: wf_history
       TYPE(rel_control_type), POINTER                    :: rel_control
       TYPE(scf_control_type), POINTER                    :: scf_control
-      TYPE(section_vals_type), POINTER :: dft_section, ec_section, et_coupling_section, &
-         hfx_section, kpoint_section, mp2_section, rpa_hfx_section, transport_section
+      TYPE(section_vals_type), POINTER :: dft_section, ec_hfx_section, ec_section, &
+         et_coupling_section, hfx_section, kpoint_section, mp2_section, rpa_hfx_section, &
+         transport_section
 
       NULLIFY (my_cell, my_cell_ref, atomic_kind_set, particle_set, &
                qs_kind_set, kpoint_section, dft_section, ec_section, &
@@ -385,14 +385,9 @@ CONTAINS
       END IF
 
       ! more kpoint stuff
-      kpoints%para_env => para_env
-      CALL cp_para_env_retain(para_env)
-      CALL get_qs_env(qs_env=qs_env, blacs_env=blacs_env)
-      kpoints%blacs_env_all => blacs_env
-      CALL cp_blacs_env_retain(blacs_env)
-      CALL get_qs_env(qs_env=qs_env, do_kpoints=do_kpoints)
+      CALL get_qs_env(qs_env=qs_env, do_kpoints=do_kpoints, blacs_env=blacs_env)
       IF (do_kpoints) THEN
-         CALL kpoint_env_initialize(kpoints)
+         CALL kpoint_env_initialize(kpoints, para_env, blacs_env)
          CALL kpoint_initialize_mos(kpoints, qs_env%mos)
          CALL get_qs_env(qs_env=qs_env, wf_history=wf_history)
          CALL wfi_create_for_kp(wf_history)
@@ -447,9 +442,6 @@ CONTAINS
       END IF
 
       dft_section => section_vals_get_subs_vals(qs_env%input, "DFT")
-      CALL section_vals_val_get(dft_section, "ENERGY_CORRECTION%_SECTION_PARAMETERS_", &
-                                l_val=qs_env%energy_correction)
-      dft_section => section_vals_get_subs_vals(qs_env%input, "DFT")
       CALL section_vals_val_get(dft_section, "EXCITED_STATES%_SECTION_PARAMETERS_", &
                                 l_val=qs_env%excited_state)
       NULLIFY (exstate_env)
@@ -478,6 +470,46 @@ CONTAINS
       ec_section => section_vals_get_subs_vals(qs_env%input, "DFT%ENERGY_CORRECTION")
       CALL ec_env_create(qs_env, ec_env, dft_section, ec_section)
       CALL set_qs_env(qs_env, ec_env=ec_env)
+
+      IF (qs_env%energy_correction) THEN
+         ! Energy correction with Hartree-Fock exchange
+         ec_hfx_section => section_vals_get_subs_vals(ec_section, "XC%HF")
+         CALL section_vals_get(ec_hfx_section, explicit=do_ec_hfx)
+
+         IF (ec_env%do_ec_hfx) THEN
+
+            ! Hybrid functionals require same basis
+            IF (ec_env%basis_inconsistent) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "Energy correction methods with hybrid functionals:"// &
+                             "correction and ground state need to use the same basis."// &
+                             "Checked by comparing basis set names only.")
+            END IF
+
+            ! Similar to RPA_HFX we can check if HFX integrals from the qs_env can be reused
+            IF (ec_env%do_ec_admm .AND. .NOT. dft_control%do_admm) THEN
+               CALL cp_abort(__LOCATION__, "Need an ADMM input section for ADMM EC to work")
+            END IF
+
+            ec_env%reuse_hfx = .TRUE.
+            IF (.NOT. do_hfx) ec_env%reuse_hfx = .FALSE.
+            CALL compare_hfx_sections(hfx_section, ec_hfx_section, is_identical, same_except_frac)
+            IF (.NOT. (is_identical .OR. same_except_frac)) ec_env%reuse_hfx = .FALSE.
+            IF (dft_control%do_admm .AND. .NOT. ec_env%do_ec_admm) ec_env%reuse_hfx = .FALSE.
+
+            IF (.NOT. ec_env%reuse_hfx) THEN
+               CALL hfx_create(ec_env%x_data, para_env, ec_hfx_section, atomic_kind_set, &
+                               qs_kind_set, particle_set, dft_control, my_cell, do_exx=(.NOT. ec_env%do_ec_admm), &
+                               nelectron_total=nelectron_total)
+            ELSE
+               ec_env%x_data => qs_env%x_data
+            END IF
+         END IF
+
+         ! Print information of the EC section
+         CALL ec_write_input(ec_env)
+
+      END IF
 
       IF (dft_control%qs_control%do_almo_scf) THEN
          CALL almo_scf_env_create(qs_env)
@@ -514,7 +546,7 @@ CONTAINS
                              silent)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_subsys_type), POINTER                      :: subsys
       TYPE(cell_type), POINTER                           :: cell, cell_ref
       LOGICAL, INTENT(in)                                :: use_ref_cell
@@ -993,6 +1025,7 @@ CONTAINS
                   rcut = xtb_control%coulomb_sr_cut
                   fxx = 2.0_dp*xtb_control%coulomb_sr_eps*qs_kind%xtb_parameter%eta**2
                   fxx = 0.80_dp*(1.0_dp/fxx)**0.3333_dp
+                  rcut = MIN(rcut, xtb_control%coulomb_sr_cut)
                   qs_kind%xtb_parameter%rcut = MIN(rcut, fxx)
                END IF
             ELSE
@@ -1113,7 +1146,7 @@ CONTAINS
          IF (dft_control%qs_control%method_id /= do_method_gapw_xc) THEN
             CALL get_qs_env(qs_env=qs_env, local_rho_set=local_rho_set, natom=natom)
             !       *** Allocate and initialize the compensation density rho0 ***
-            CALL init_rho0(local_rho_set, qs_env, gapw_control, .FALSE.)
+            CALL init_rho0(local_rho_set, qs_env, gapw_control)
             !       *** Allocate and Initialize the local coulomb term ***
             CALL init_coulomb_local(qs_env%hartree_local, natom)
          END IF
@@ -1169,8 +1202,8 @@ CONTAINS
             CALL section_vals_val_get(se_section, "NEIGHBOR_LISTS%VERLET_SKIN", &
                                       r_val=verlet_skin)
             ALLOCATE (se_nonbond_env)
-            CALL fist_nonbond_env_create(se_nonbond_env, atomic_kind_set, &
-                                         do_nonbonded=.TRUE., verlet_skin=verlet_skin, ewald_rcut=ewald_rcut, &
+            CALL fist_nonbond_env_create(se_nonbond_env, atomic_kind_set, do_nonbonded=.TRUE., &
+                                         do_electrostatics=.TRUE., verlet_skin=verlet_skin, ewald_rcut=ewald_rcut, &
                                          ei_scale14=0.0_dp, vdw_scale14=0.0_dp, shift_cutoff=.FALSE.)
             ! Create and Setup NDDO multipole environment
             CALL nddo_mpole_setup(se_nddo_mpole, natom)
@@ -1543,6 +1576,18 @@ CONTAINS
                           "Try UKS instead of ROKS")
          END IF
       END IF
+      IF (dft_control%low_spin_roks) THEN
+         SELECT CASE (dft_control%qs_control%method_id)
+         CASE DEFAULT
+         CASE (do_method_xtb, do_method_dftb)
+            CALL cp_abort(__LOCATION__, &
+                          "xTB/DFTB methods are not compatible with low spin ROKS.")
+         CASE (do_method_rm1, do_method_am1, do_method_mndo, do_method_pm3, &
+               do_method_pm6, do_method_pm6fm, do_method_mndod, do_method_pnnl)
+            CALL cp_abort(__LOCATION__, &
+                          "SE methods are not compatible with low spin ROKS.")
+         END SELECT
+      END IF
 
       ! in principle the restricted calculation could be performed
       ! using just one set of MOs and special casing most of the code
@@ -1575,7 +1620,7 @@ CONTAINS
 
       CALL set_qs_env(qs_env, mos=mos)
 
-! allocate mos when switch_surf_dip is triggered [SGh]
+      ! allocate mos when switch_surf_dip is triggered [SGh]
       IF (dft_control%switch_surf_dip) THEN
          ALLOCATE (mos_last_converged(dft_control%nspins))
          DO ispin = 1, dft_control%nspins

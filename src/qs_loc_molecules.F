@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,12 +12,10 @@ MODULE qs_loc_molecules
    USE cell_types,                      ONLY: pbc
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE kinds,                           ONLY: dp
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_max,&
-                                              mp_minloc
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: get_molecule_kind,&
                                               molecule_kind_type
    USE molecule_types,                  ONLY: molecule_type
@@ -56,9 +54,9 @@ CONTAINS
       REAL(KIND=dp)                                      :: dr(3), mydist(2), ria(3)
       REAL(KIND=dp), POINTER                             :: distance(:), r(:, :)
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(distribution_1d_type), POINTER                :: local_molecules
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), POINTER                       :: particle_set(:)
 
       logger => cp_get_default_logger()
@@ -95,7 +93,7 @@ CONTAINS
       natom_loc = natom_max
       natom = natom_max
 
-      CALL mp_max(natom_max, para_env%group)
+      CALL para_env%max(natom_max)
 
       ALLOCATE (r(3, natom_max))
 
@@ -142,7 +140,7 @@ CONTAINS
          mydist(1) = distance(local_location)
          mydist(2) = para_env%mepos
 
-         CALL mp_minloc(mydist, para_env%group)
+         CALL para_env%minloc(mydist)
 
          IF (mydist(2) == para_env%mepos) THEN
             wfc_to_atom_map(istate) = local_location

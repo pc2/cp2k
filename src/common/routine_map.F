@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,7 +15,9 @@ MODULE routine_map
 
    #:call hash_map(prefix='routine_map', &
       key_type='CHARACTER(LEN=default_string_length)', &
-      value_type='INTEGER(kind=int_4)')
+      value_type='INTEGER(kind=int_4)', &
+      key_default_init=' = ""', &
+      value_default_init=' = 0_int_4')
    #:endcall hash_map
 
 ! **************************************************************************************************

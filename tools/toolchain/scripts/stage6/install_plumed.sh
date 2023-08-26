@@ -6,9 +6,9 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
-plumed_ver="2.8.0"
+plumed_ver="2.8.2"
 plumed_pkg="plumed-src-${plumed_ver}.tgz"
-plumed_sha256="c1fc97d60b8acb2583071e247d13307c89ea5c1be1fe630bcbeb33302f588d91"
+plumed_sha256="59469456565853ee0103d1834e0f2dad675becee5d40f2d71529ddfa6ce27618"
 
 source "${SCRIPT_DIR}"/common_vars.sh
 source "${SCRIPT_DIR}"/tool_kit.sh
@@ -51,7 +51,14 @@ case "$with_plumed" in
       [ -n "${MKL_LIBS}" ] && libs+="$(resolve_string "${MKL_LIBS}" "MPI")"
 
       # Patch to include <limits> explicitly as required by gcc >= 11.
-      sed -i '/^#include <algorithm>/a #include <limits>' ./src/lepton/Operation.h
+      case "$(uname -s)" in
+        Darwin)
+          gsed -i '/^#include <algorithm>/a #include <limits>' ./src/lepton/Operation.h
+          ;;
+        *)
+          sed -i '/^#include <algorithm>/a #include <limits>' ./src/lepton/Operation.h
+          ;;
+      esac
 
       ./configure \
         CXX="${MPICXX}" \
@@ -83,12 +90,19 @@ case "$with_plumed" in
 esac
 
 if [ "$with_plumed" != "__DONTUSE__" ]; then
-  PLUMED_LIBS='-lplumed -ldl -lstdc++ -lz -ldl'
+  # Prefer static library if available
+  if [ -f "${pkg_install_dir}/lib/libplumed.a" ]; then
+    PLUMED_LIBS="-l:libplumed.a -ldl -lstdc++ -lz -ldl"
+  else
+    PLUMED_LIBS="-lplumed -ldl -lstdc++ -lz -ldl"
+  fi
   if [ "$with_plumed" != "__SYSTEM__" ]; then
     cat << EOF > "${BUILDDIR}/setup_plumed"
 prepend_path LD_LIBRARY_PATH "$pkg_install_dir/lib"
 prepend_path LD_RUN_PATH "$pkg_install_dir/lib"
 prepend_path LIBRARY_PATH "$pkg_install_dir/lib"
+prepend_path PKG_CONFIG_PATH "$pkg_install_dir/lib/pkgconfig"
+prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
 EOF
     cat "${BUILDDIR}/setup_plumed" >> $SETUPFILE
   fi
@@ -99,6 +113,7 @@ export PLUMED_LIBS="${PLUMED_LIBS}"
 export CP_DFLAGS="\${CP_DFLAGS} IF_MPI(-D__PLUMED2|)"
 export CP_LDFLAGS="\${CP_LDFLAGS} IF_MPI(${PLUMED_LDFLAGS}|)"
 export CP_LIBS="IF_MPI(${PLUMED_LIBS}|) \${CP_LIBS}"
+export PLUMED_ROOT=${pkg_install_dir}
 EOF
 fi
 

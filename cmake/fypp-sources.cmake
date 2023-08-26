@@ -1,11 +1,13 @@
 #!-------------------------------------------------------------------------------------------------!
 #!   CP2K: A general program to perform molecular dynamics simulations                             !
-#!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                  !
+#!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                  !
 #!                                                                                                 !
 #!   SPDX-License-Identifier: GPL-2.0-or-later                                                     !
 #!-------------------------------------------------------------------------------------------------!
 
-add_custom_target(fypp) # common target for all fypp calls
+if(NOT TARGET fypp)
+  add_custom_target(fypp) # common target for all fypp calls
+endif()
 
 # Use a system-provided fypp if available, otherwise the bundled one
 find_program(
@@ -82,6 +84,7 @@ function(ADD_FYPP_SOURCES OUTVAR)
 
   # build a custom target to fypp seperately (required for example by the doc
   # target)
+
   add_custom_target("fypp_${OUTVAR}" DEPENDS ${outfiles})
   add_dependencies(fypp "fypp_${OUTVAR}")
 

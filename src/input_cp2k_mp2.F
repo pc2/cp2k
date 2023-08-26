@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -27,14 +27,15 @@ MODULE input_cp2k_mp2
    USE input_constants,                 ONLY: &
         do_eri_gpw, do_eri_mme, do_eri_os, do_potential_coulomb, do_potential_id, &
         do_potential_long, do_potential_mix_cl, do_potential_short, do_potential_truncated, &
-        do_potential_tshpsc, eri_default, gaussian, gw_gf_gamma, gw_gf_mic, gw_no_print_exx, &
-        gw_pade_approx, gw_print_exx, gw_read_exx, gw_skip_for_regtest, gw_two_pole_model, &
-        kp_weights_W_auto, kp_weights_W_tailored, kp_weights_W_uniform, mp2_method_direct, &
-        mp2_method_gpw, mp2_method_none, numerical, ot_precond_full_all, ot_precond_full_kinetic, &
+        do_potential_tshpsc, eri_default, gaussian, gw_no_print_exx, gw_pade_approx, gw_print_exx, &
+        gw_read_exx, gw_skip_for_regtest, gw_two_pole_model, kp_weights_W_auto, &
+        kp_weights_W_tailored, kp_weights_W_uniform, mp2_method_direct, mp2_method_gpw, &
+        mp2_method_none, numerical, ot_precond_full_all, ot_precond_full_kinetic, &
         ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
         ot_precond_s_inverse, ri_default, ri_rpa_g0w0_crossing_bisection, &
-        ri_rpa_g0w0_crossing_newton, ri_rpa_g0w0_crossing_z_shot, wfc_mm_style_gemm, &
-        wfc_mm_style_syrk, z_solver_cg, z_solver_pople, z_solver_richardson, z_solver_sd
+        ri_rpa_g0w0_crossing_newton, ri_rpa_g0w0_crossing_z_shot, soc_lda, soc_none, soc_pbe, &
+        wfc_mm_style_gemm, wfc_mm_style_syrk, z_solver_cg, z_solver_pople, z_solver_richardson, &
+        z_solver_sd
    USE input_cp2k_hfx,                  ONLY: create_hfx_section
    USE input_cp2k_kpoints,              ONLY: create_kpoint_set_section
    USE input_keyword_types,             ONLY: keyword_create,&
@@ -274,6 +275,18 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="NUMBER_INTEGRATION_GROUPS", &
+                          description="Sets the number of integration groups of the communication scheme in RI-MP2."// &
+                          "Integrals will be replicated such that each integration group has all integrals available. "// &
+                          "Must be a divisor of the number of subgroups (see GROUP_SIZE keyword in the WF_CORRELATION "// &
+                          "section. Smaller groups reduce the communication costs but increase the memory developments. "// &
+                          "If the provided value is non-positive or not a divisor of the number of subgroups, "// &
+                          "the number of integration groups is determined automatically (default).", &
+                          usage="NUMBER_INTEGRATION_GROUPS 2", &
+                          default_i_val=-1)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create( &
          keyword, __LOCATION__, &
          name="PRINT_DGEMM_INFO", &
@@ -471,7 +484,18 @@ CONTAINS
          "are calculated in batches of the size given by this keyword. Larger block sizes "// &
          "improve the performance but reduce the numerical accuracy. Recommended block sizes are multiples of the number of "// &
          "doubles per cache line (usually 8). Ignored with MP2 gradients. Set it to -1 to prevent blocking.", &
-         default_i_val=32)
+         default_i_val=-1)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, &
+         name="MAX_PARALLEL_COMM", &
+         description="Sets the maximum number of parallel communication steps of the non-blocking communication scheme. "// &
+         "The number of channels is determined from the available memory. If set to a value smaller than one, "// &
+         "CP2K will use all memory for communication. A value of one enforces the blocking communication scheme "// &
+         "increasing the communication costs.", &
+         default_i_val=2)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -780,6 +804,16 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="PRINT_SELF_ENERGY", &
+                          description="If true, print the self-energy for all levels for real energy "// &
+                          "together with the straight line to see the quasiparticle energy as intersection. "// &
+                          "In addition, prints the self-energy for imaginary frequencies together with the Pade fit.", &
+                          usage="SELF_ENERGY", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="RI_SIGMA_X", &
                           description="If true, the exchange self-energy is calculated approximatively with RI. "// &
                           "If false, the Hartree-Fock implementation in CP2K is used.", &
@@ -889,6 +923,41 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="REGULARIZATION_MINIMAX", &
+                          description="Tikhonov regularization for computing weights of the Fourier transform "// &
+                          "from imaginary time to imaginary frequency and vice versa. Needed for large minimax "// &
+                          "grids with 20 or more points and a small range.", &
+                          usage="REGULARIZATION_MINIMAX 1.0E-6", &
+                          default_r_val=0.0_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SOC", &
+                          description="Calculate the spin-orbit splitting of the eigenvalues/band structure "// &
+                          "using the spin-orbit part of the GTH pseudos parametrized in Hartwigsen, Goedecker, "// &
+                          "Hutter, Phys. Rev. B 58, 3641 (1998), Eq. 19, "// &
+                          "parameters in Table I.", &
+                          usage="SOC", &
+                          enum_c_vals=s2a("NONE", "LDA", "PBE"), &
+                          enum_i_vals=(/soc_none, soc_lda, soc_pbe/), &
+                          enum_desc=s2a("No SOC.", &
+                                        "Use parameters from LDA (PADE) pseudopotential.", &
+                                        "Use parameters from PBE pseudopotential."), &
+                          default_i_val=soc_none)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SOC_ENERGY_WINDOW", &
+                          description="For perturbative SOC calculation, only "// &
+                          "take frontier levels in an energy window "// &
+                          "[E_HOMO - SOC_ENERGY_WINDOW/2 , E_LUMO + SOC_ENERGY_WINDOW/2 "// &
+                          "into account for the diagonalization of H^GW,SOC.", &
+                          usage="SOC_ENERGY_WINDOW 20.0_eV", &
+                          default_r_val=cp_unit_to_cp2k(value=50.0_dp, unit_str="eV"), &
+                          unit_str="eV")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       ! here we generate a subsection for the periodic GW correction
       CALL create_periodic_gw_correction_section(subsection)
       CALL section_add_subsection(section, subsection)
@@ -904,13 +973,13 @@ CONTAINS
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
-      ! here we generate a subsection for additional printing
-      CALL create_print_section(subsection)
+      ! here we generate a subsection for calculating the GW band structures
+      CALL create_kpoint_set_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
-      ! here we generate a subsection for calculating the GW band structures
-      CALL create_kpoint_set_section(subsection)
+      ! here we generate a subsection for additional printing
+      CALL create_print_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
@@ -924,23 +993,54 @@ CONTAINS
       TYPE(section_type), POINTER                        :: section
 
       TYPE(keyword_type), POINTER                        :: keyword
+      TYPE(section_type), POINTER                        :: print_key
 
       CPASSERT(.NOT. ASSOCIATED(section))
+      NULLIFY (print_key, keyword)
       CALL section_create(section, __LOCATION__, name="PRINT", &
-                          description="Parameters for GW related output.", &
-                          n_keywords=1, n_subsections=0, repeats=.FALSE.)
+                          description="Section of possible print options specific for the GW code.", &
+                          n_keywords=0, n_subsections=1, repeats=.FALSE.)
 
-      NULLIFY (keyword)
+      CALL cp_print_key_section_create(print_key, __LOCATION__, "LOCAL_BANDGAP", &
+                                       description="Prints a local bandgap E_gap(r), derived from the local density of "// &
+                                       "states rho(r,E). Details and formulae in the SI of the periodic GW paper (2023).", &
+                                       print_level=high_print_level, add_last=add_last_numeric, &
+                                       filename="LOCAL_BANDGAP", &
+                                       common_iter_levels=3)
 
-      CALL keyword_create(keyword, __LOCATION__, name="SELF_ENERGY", &
-                          description="If true, print the self-energy for all levels for real energy "// &
-                          "together with the straight line to see the quasiparticle energy as intersection. "// &
-                          "In addition, prints the self-energy for imaginary frequencies together with the Pade fit.", &
-                          usage="SELF_ENERGY", &
-                          default_l_val=.FALSE., &
-                          lone_keyword_l_val=.TRUE.)
-      CALL section_add_keyword(section, keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="ENERGY_WINDOW", &
+                          description="Energy window in the LDOS for searching the gap.", &
+                          usage="ENERGY_WINDOW 6.0", &
+                          default_r_val=cp_unit_to_cp2k(value=6.0_dp, unit_str="eV"), &
+                          unit_str="eV")
+      CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="ENERGY_SPACING", &
+                          description="Energy spacing of the LDOS for searching the gap.", &
+                          usage="ENERGY_SPACING 0.03", &
+                          default_r_val=cp_unit_to_cp2k(value=0.03_dp, unit_str="eV"), &
+                          unit_str="eV")
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="LDOS_THRESHOLD_GAP", &
+                          description="Relative LDOS threshold that determines the local bandgap.", &
+                          usage="LDOS_THRESHOLD_GAP 0.1", &
+                          default_r_val=0.1_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="STRIDE", &
+                          description="The stride (X,Y,Z) used to write the cube file "// &
+                          "(larger values result in smaller cube files). You can provide 3 numbers (for X,Y,Z) or"// &
+                          " 1 number valid for all components.", &
+                          usage="STRIDE 2 2 2", n_var=-1, default_i_vals=(/2, 2, 2/), type_of_var=integer_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+
+      CALL section_add_subsection(section, print_key)
+      CALL section_release(print_key)
 
    END SUBROUTINE
 
@@ -1258,18 +1358,6 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create( &
-         keyword, __LOCATION__, name="REL_CUTOFFS_CHI_W", &
-         description="For periodic calculations, the irreducible density reponse chi^0(r,r') and the screened "// &
-         "Coulomb interaction W(r,r') is truncated "// &
-         "in real space. No truncation of chi^0(r,r') and W(r,r') for |r-r'| < cutoff_1*(smallest lattice vector length), "// &
-         "chi^0(r,r') is set to zero for |r-r'| > cutoff_2*(smallest lattice vector length). Smooth transition "// &
-         "in between. For cutoff_1 = 0.5, and cutoff_2 = 0.5, we have the minimum image convention (that is also default).", &
-         usage="REL_CUTOFFS_CHI cutoff_1 cutoff_2", &
-         n_var=2, type_of_var=real_t, default_r_vals=(/0.5_dp, 0.5_dp/))
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create( &
          keyword, __LOCATION__, &
          name="REGULARIZATION_RI", &
          description="Parameter to reduce the expansion coefficients in RI for periodic GW. Larger parameter "// &
@@ -1292,12 +1380,35 @@ CONTAINS
 
       CALL keyword_create( &
          keyword, __LOCATION__, &
+         name="EPS_EIGVAL_S_GAMMA", &
+         description="Parameter to reduce the expansion coefficients in RI for periodic GW. Removes all "// &
+         "eigenvectors and eigenvalues of M_PQ(k=0) that are smaller than EPS_EIGVAL_S. ", &
+         usage="EPS_EIGVAL_S 1.0E-3", &
+         default_r_val=0.0_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, &
          name="MAKE_CHI_POS_DEFINITE", &
          description="If true, makes eigenvalue decomposition of chi(iw,k) and removes negative "// &
          "eigenvalues. May increase computational cost significantly. Only recommended to try in case "// &
          "Cholesky decomposition of epsilon(iw,k) fails.", &
          usage="MAKE_CHI_POS_DEFINITE", &
          default_l_val=.TRUE., &
+         lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, &
+         name="MAKE_OVERLAP_MAT_AO_POS_DEFINITE", &
+         description="If true, makes eigenvalue decomposition of S_mu,nu(k) and removes negative "// &
+         "eigenvalues. Slightly increases computational cost. Only recommended to try in case "// &
+         "Cholesky decomposition of S_mu,nu(k) fails (error message: Cholesky decompose failed: "// &
+         "matrix is not positive definite or ill-conditioned; when calling create_kp_and_calc_kp_orbitals).", &
+         usage="MAKE_OVERLAP_MAT_AO_POS_DEFINITE", &
+         default_l_val=.FALSE., &
          lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -1355,22 +1466,6 @@ CONTAINS
          "the k-mesh for G. Example: factor 4, k-mesh for W: 4x4x1 -> k-mesh for G: 16x16x1 (z-dir. is "// &
          "non-periodic).", &
          default_i_val=1)
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      NULLIFY (keyword)
-      CALL keyword_create( &
-         keyword, __LOCATION__, &
-         name="GREENS_FUNCTION", &
-         description="Decides which scheme is used for the periodic Green's function "// &
-         "(only relevant for periodic GW calculations)."// &
-         "Both schemes are exact in the limit of large unit cells.", &
-         usage="GREENS_FUNCTION GAMMA", &
-         enum_c_vals=s2a("GAMMA", "MIC"), &
-         enum_i_vals=(/gw_gf_gamma, gw_gf_mic/), &
-         enum_desc=s2a("Use the Green's functions at the Gamma point. ", &
-                       "Use the minimum-image convention for the Green's function."), &
-         default_i_val=gw_gf_gamma)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

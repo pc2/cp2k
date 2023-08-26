@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,7 +16,6 @@ MODULE md_conserved_quantities
                                               get_atomic_kind
    USE barostat_utils,                  ONLY: get_baro_energies
    USE cell_types,                      ONLY: cell_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
@@ -36,7 +35,8 @@ MODULE md_conserved_quantities
    USE md_environment_types,            ONLY: get_md_env,&
                                               md_environment_type,&
                                               set_md_env
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE particle_list_types,             ONLY: particle_list_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: kelvin
@@ -90,7 +90,7 @@ CONTAINS
       INTEGER, POINTER                                   :: itimes
       LOGICAL                                            :: init
       REAL(KIND=dp), POINTER                             :: constant
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(simpar_type), POINTER                         :: simpar
 
       NULLIFY (itimes, para_env, simpar)
@@ -104,7 +104,7 @@ CONTAINS
                       simpar=simpar, &
                       para_env=para_env)
 
-      CALL get_part_ke(md_env, md_ener, tkind, tshell, para_env%group)
+      CALL get_part_ke(md_env, md_ener, tkind, tshell, para_env)
 
       IF (md_ener%nfree /= 0) THEN
          md_ener%temp_part = 2.0_dp*md_ener%ekin/REAL(simpar%nfree, KIND=dp)
@@ -247,7 +247,7 @@ CONTAINS
    SUBROUTINE get_econs_nve(md_env, md_ener, para_env)
       TYPE(md_environment_type), POINTER                 :: md_env
       TYPE(md_ener_type), INTENT(inout)                  :: md_ener
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(thermostat_type), POINTER                     :: thermostat_coeff, thermostat_shell
@@ -276,7 +276,7 @@ CONTAINS
    SUBROUTINE get_econs_nvt_adiabatic(md_env, md_ener, para_env)
       TYPE(md_environment_type), POINTER                 :: md_env
       TYPE(md_ener_type), INTENT(inout)                  :: md_ener
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(thermostat_type), POINTER                     :: thermostat_fast, thermostat_slow
@@ -307,7 +307,7 @@ CONTAINS
    SUBROUTINE get_econs_nvt(md_env, md_ener, para_env)
       TYPE(md_environment_type), POINTER                 :: md_env
       TYPE(md_ener_type), INTENT(inout)                  :: md_ener
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(thermostat_type), POINTER                     :: thermostat_coeff, thermostat_part, &
@@ -339,7 +339,7 @@ CONTAINS
    SUBROUTINE get_econs_npe(md_env, md_ener, para_env)
       TYPE(md_environment_type), POINTER                 :: md_env
       TYPE(md_ener_type), INTENT(inout)                  :: md_ener
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: nfree
       TYPE(cell_type), POINTER                           :: box
@@ -378,7 +378,7 @@ CONTAINS
    SUBROUTINE get_econs_npt(md_env, md_ener, para_env)
       TYPE(md_environment_type), POINTER                 :: md_env
       TYPE(md_ener_type), INTENT(inout)                  :: md_ener
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: nfree
       TYPE(cell_type), POINTER                           :: box
@@ -447,7 +447,8 @@ CONTAINS
       TYPE(md_environment_type), POINTER                 :: md_env
       TYPE(md_ener_type), POINTER                        :: md_ener
       LOGICAL, INTENT(IN)                                :: tkind, tshell
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
 
       INTEGER                                            :: i, iparticle, iparticle_kind, &
                                                             iparticle_local, nparticle_kind, &
@@ -563,13 +564,13 @@ CONTAINS
             END IF
          END DO ! iparticle_kind
          IF (tkind) THEN
-            CALL mp_sum(md_ener%ekin_kind, group)
-            CALL mp_sum(md_ener%nfree_kind, group)
-            CALL mp_sum(md_ener%ekin_shell_kind, group)
-            CALL mp_sum(md_ener%nfree_shell_kind, group)
+            CALL group%sum(md_ener%ekin_kind)
+            CALL group%sum(md_ener%nfree_kind)
+            CALL group%sum(md_ener%ekin_shell_kind)
+            CALL group%sum(md_ener%nfree_shell_kind)
          END IF
          ! sum all contributions to energy over calculated parts on all processors
-         CALL mp_sum(md_ener%ekin_shell, group)
+         CALL group%sum(md_ener%ekin_shell)
       ELSE
          DO iparticle_kind = 1, nparticle_kind
             atomic_kind => atomic_kind_set(iparticle_kind)
@@ -597,15 +598,15 @@ CONTAINS
             END DO
          END DO ! iparticle_kind
          IF (tkind) THEN
-            CALL mp_sum(md_ener%ekin_kind, group)
-            CALL mp_sum(md_ener%nfree_kind, group)
+            CALL group%sum(md_ener%ekin_kind)
+            CALL group%sum(md_ener%nfree_kind)
          END IF
       END IF
 
       ! sum all contributions to energy over calculated parts on all processors
-      CALL mp_sum(md_ener%ekin, group)
-      CALL mp_sum(md_ener%vcom, group)
-      CALL mp_sum(md_ener%total_mass, group)
+      CALL group%sum(md_ener%ekin)
+      CALL group%sum(md_ener%vcom)
+      CALL group%sum(md_ener%total_mass)
       md_ener%vcom = md_ener%vcom/md_ener%total_mass
       !
       ! Compute the QM/MM kinetic energy

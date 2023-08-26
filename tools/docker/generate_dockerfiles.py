@@ -7,6 +7,7 @@ from typing import Any
 import argparse
 import io
 
+
 # ======================================================================================
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -31,8 +32,16 @@ def main() -> None:
         f.write(toolchain_full(mpi_mode="openmpi", with_gcc="install"))
         f.write(regtest("psmp"))
 
+    with OutputFile(f"Dockerfile.test_fedora-psmp", args.check) as f:
+        f.write(toolchain_full(base_image="fedora:38") + regtest("psmp"))
+
     with OutputFile(f"Dockerfile.test_intel-psmp", args.check) as f:
-        f.write(toolchain_intel() + regtest("psmp"))
+        f.write(toolchain_intel() + regtest("psmp", intel=True))
+
+    with OutputFile(f"Dockerfile.prod_intel_psmp", args.check) as f:
+        f.write(
+            toolchain_intel() + production("psmp", "Linux-intel-x86_64", intel=True)
+        )
 
     with OutputFile(f"Dockerfile.test_nvhpc", args.check) as f:
         f.write(toolchain_nvhpc())
@@ -51,14 +60,15 @@ def main() -> None:
         with OutputFile(f"Dockerfile.test_coverage-{version}", args.check) as f:
             f.write(toolchain_full() + coverage(version))
 
-    for gcc_version in 7, 8, 9, 10, 11, 12:
+    for gcc_version in 8, 9, 10, 11, 12:
         with OutputFile(f"Dockerfile.test_gcc{gcc_version}", args.check) as f:
             img = "ubuntu:22.04" if gcc_version > 8 else "ubuntu:20.04"
             f.write(toolchain_ubuntu_nompi(base_image=img, gcc_version=gcc_version))
-            f.write(regtest("ssmp"))
+            # Skip some tests because of bug in LDA_C_PMGB06 functional in libxc <5.2.0.
+            f.write(regtest("ssmp", testopts="--skipdir=QS/regtest-rs-dhft"))
 
     with OutputFile("Dockerfile.test_i386", args.check) as f:
-        f.write(toolchain_ubuntu_nompi(base_image="i386/debian:11", libvori=False))
+        f.write(toolchain_ubuntu_nompi(base_image="i386/debian:12", libvori=False))
         f.write(regtest("ssmp"))
 
     with OutputFile("Dockerfile.test_arm64-psmp", args.check) as f:
@@ -110,15 +120,17 @@ def main() -> None:
         with OutputFile(f"Dockerfile.test_{name}", args.check) as f:
             f.write(toolchain_full() + test_3rd_party(name))
 
-    for name in "python", "doxygen":
+    for name in "misc", "doxygen":
         with OutputFile(f"Dockerfile.test_{name}", args.check) as f:
             f.write(test_without_build(name))
 
 
 # ======================================================================================
-def regtest(version: str, arch: str = "local", testopts: str = "") -> str:
+def regtest(
+    version: str, arch: str = "local", testopts: str = "", intel: bool = False
+) -> str:
     return (
-        install_cp2k(version=version, arch=arch)
+        install_cp2k(version=version, arch=arch, intel=intel)
         + rf"""
 # Run regression tests.
 ARG TESTOPTS="{testopts}"
@@ -193,15 +205,20 @@ RUN ./test_coverage.sh "{version}" 2>&1 | tee report.log
 # ======================================================================================
 def conventions() -> str:
     return (
-        install_cp2k(version="psmp", arch="local_warn")
-        + rf"""
+        rf"""
 # Run test for conventions.
-COPY ./arch/Linux-x86-64-gfortran.dumpast ./arch/
+WORKDIR /opt/cp2k
+COPY ./Makefile .
+COPY ./src ./src
+COPY ./exts ./exts
+COPY ./tools/build_utils ./tools/build_utils
 COPY ./tools/conventions ./tools/conventions
-WORKDIR ./tools/conventions
+COPY ./arch/Linux-x86-64-gfortran.dumpast ./arch/
 RUN /bin/bash -ec " \
+    ln -vs /opt/cp2k-toolchain/install/arch/local_warn.psmp ./arch/ && \
     source /opt/cp2k-toolchain/install/setup && \
-   ./test_conventions.sh |& tee report.log"
+    ./tools/conventions/test_conventions.sh |& tee report.log && \
+    rm -rf lib obj exe"
 """
         + print_cached_report()
     )
@@ -213,10 +230,11 @@ def manual() -> str:
         install_cp2k(version="psmp", arch="local", revision=True)
         + rf"""
 # Generate manual.
-COPY ./tools/manual ./tools/manual
+COPY ./docs ./docs
 COPY ./tools/input_editing ./tools/input_editing
 COPY ./tools/docker/scripts/test_manual.sh .
-RUN ./test_manual.sh 2>&1 | tee report.log
+ARG ADD_EDIT_LINKS=yes
+RUN ./test_manual.sh "${{ADD_EDIT_LINKS}}" 2>&1 | tee report.log
 """
         + print_cached_report()
     )
@@ -273,7 +291,10 @@ ARG GIT_COMMIT_SHA
 COPY ./src ./src
 COPY ./exts ./exts
 COPY ./data ./data
+COPY ./docs ./docs
 COPY ./tools ./tools
+COPY ./cmake ./cmake
+COPY ./CMakeLists.txt .
 COPY ./Makefile .
 RUN bash -c "if [ -n "${{GIT_COMMIT_SHA}}" ] ; then echo "git:\${{GIT_COMMIT_SHA::7}}" > REVISION; fi"
 
@@ -297,15 +318,15 @@ ENTRYPOINT []
 
 
 # ======================================================================================
-def production(version: str, arch: str = "local") -> str:
+def production(version: str, arch: str = "local", intel: bool = False) -> str:
     return (
-        install_cp2k(version=version, arch=arch, revision=True, prod=True)
+        install_cp2k(version=version, arch=arch, revision=True, prod=True, intel=intel)
         + rf"""
 # Run regression tests.
 ARG TESTOPTS
 RUN /bin/bash -c " \
     source /opt/cp2k-toolchain/install/setup && \
-    ./tools/regtesting/do_regtest.py '{arch}' '{version}' "${{TESTOPTS}}" |& tee regtests.log && \
+    ./tools/regtesting/do_regtest.py '{arch}' '{version}' --skipdir=UNIT/libcp2k_unittest "${{TESTOPTS}}" |& tee regtests.log && \
     rm -rf regtesting"
 
 # Setup entry point for production.
@@ -321,7 +342,11 @@ CMD ["cp2k", "--help"]
 
 # ======================================================================================
 def install_cp2k(
-    version: str, arch: str, revision: bool = False, prod: bool = False
+    version: str,
+    arch: str,
+    revision: bool = False,
+    prod: bool = False,
+    intel: bool = False,
 ) -> str:
     input_lines = []
     run_lines = []
@@ -344,6 +369,7 @@ def install_cp2k(
         run_lines.append(f"ln -vs {arch_file} ./arch/")
     else:
         input_lines.append(f"COPY ./arch/{arch}.{version} /opt/cp2k/arch/")
+        run_lines.append(f"ln -s /opt/cp2k-toolchain /opt/cp2k/tools/toolchain")
 
     run_lines.append("echo 'Compiling cp2k...'")
     run_lines.append("source /opt/cp2k-toolchain/install/setup")
@@ -353,12 +379,17 @@ def install_cp2k(
         run_lines.append(build_command)
         run_lines.append(f"ln -sf ./cp2k.{version} ./exe/{arch}/cp2k")
         run_lines.append(f"ln -sf ./cp2k_shell.{version} ./exe/{arch}/cp2k_shell")
+        run_lines.append(f"ln -sf ./graph.{version} ./exe/{arch}/graph")
+        run_lines.append(f"ln -sf ./dumpdcd.{version} ./exe/{arch}/dumpdcd")
+        run_lines.append(f"ln -sf ./xyz2dcd.{version} ./exe/{arch}/xyz2dcd")
+        # Remove libcp2k_unittest to reduce image size.
         run_lines.append(f"rm -rf lib obj exe/{arch}/libcp2k_unittest.{version}")
     else:
         run_lines.append(f"( {build_command} &> /dev/null || true )")
+        run_lines.append(f"rm -rf lib obj")
 
     # Ensure MPI is dynamically linked, which is needed e.g. for Shifter.
-    if version.startswith("p"):
+    if version.startswith("p") and not intel:
         binary = f"./exe/{arch}/cp2k.{version}"
         run_lines.append(f"( [ ! -f {binary} ] || ldd {binary} | grep -q libmpi )")
 
@@ -379,41 +410,22 @@ COPY ./tools/regtesting ./tools/regtesting
 
 # ======================================================================================
 def install_cp2k_cmake() -> str:
-    # TODO: This is a draft and does not yet actually work.
-
-    return rf"""
-
-COPY ./tools/build_utils/fypp /bin/fypp
-# temporary solution we build dbcsr without using the cloned repo. It will eventually be moved inside the toolchain
-COPY ./tools/docker/scripts/install_dbcsr.sh ./scripts/
-RUN  ./scripts/install_dbcsr.sh && rm -rf ./build
+    return (
+        rf"""
 
 # Install CP2K using CMake.
-
 WORKDIR /opt/cp2k
 COPY ./src ./src
 COPY ./exts ./exts
 COPY ./tools/build_utils ./tools/build_utils
 COPY ./cmake ./cmake
 COPY ./CMakeLists.txt .
-COPY ./cp2k.pc.in .
-WORKDIR ./build
-RUN /bin/bash -c " \
-    echo 'Compiling cp2k...' && \
-    ls /opt/cp2k-toolchain/install/scalapack-2.2.1 && \
-    ls /opt/cp2k-toolchain/install/fftw-3.3.10/lib && \
-    source /opt/cp2k-toolchain/install/setup && \
-    export PKG_CONFIG_PATH=/opt/cp2k-toolchain/install/libxsmm-1.17/lib:/opt/cp2k-toolchain/install/openblas-0.3.21/lib/pkgconfig:/opt/cp2k-toolchain/install/libxc-6.0.0/lib/pkgconfig:/opt/cp2k-toolchain/install/fftw-3.3.10/lib/pkgconfig:/opt/cp2k-toolchain/install/libint-v2.6.0-cp2k-lmax-5/lib/pkgconfig:/opt/cp2k-toolchain/install/plumed-2.8.0/lib/pkgconfig:/opt/cp2k-toolchain/install/superlu_dist-6.1.0/lib/pkgconfig && \
-    cmake -DCP2K_USE_COSMA=OFF -DCP2K_USE_LIBXSMM=NO -DSCALAPACK_ROOT=/opt/cp2k-toolchain/install/scalapack-2.2.1 -DCP2K_BLAS_VENDOR=OpenBLAS -DLibXC_ROOT=/opt/cp2k-toolchain/install/libxc-6.0.0 -DLibint2_ROOT=/opt/cp2k-toolchain/install/libint-v2.6.0-cp2k-lmax-5 -DDBCSR_ROOT=/opt/cp2k-toolchain/install/DBCSR-2.4.1 -DCP2K_USE_SPGLIB=ON -DCP2K_USE_LIBINT2=NO -DCP2K_USE_LIBXC=ON -DLibSPG_ROOT=/opt/cp2k-toolchain/install/spglib-1.16.2 .. && \
-    make -j"
-COPY ./data ./data
-COPY ./tests ./tests
-COPY ./tools/regtesting ./tools/regtesting
 
-RUN echo "\nSummary: Compilation works fine.\nStatus: OK\n"
-
-#EOF
+COPY ./tools/docker/scripts/test_cmake.sh .
+RUN ./test_cmake.sh 2>&1 | tee report.log
 """
+        + print_cached_report()
+    )
 
 
 # ======================================================================================
@@ -428,10 +440,10 @@ def toolchain_full(
 # ======================================================================================
 def toolchain_ubuntu_nompi(
     base_image: str = "ubuntu:22.04",
-    gcc_version: int = 10,
+    gcc_version: int = 12,
     libvori: bool = True,
 ) -> str:
-    return rf"""
+    output = rf"""
 FROM {base_image}
 
 # Install Ubuntu packages.
@@ -441,18 +453,24 @@ RUN export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true && \
     gcc-{gcc_version} \
     g++-{gcc_version} \
     gfortran-{gcc_version} \
-    fftw3-dev \
+    libfftw3-dev \
     libopenblas-dev \
     libgsl-dev \
     libhdf5-dev \
-   && rm -rf /var/lib/apt/lists/*
+"""
+    if gcc_version > 8:
+        output += "    libint2-dev \\\n"
+        output += "    libxc-dev \\\n"
+
+    output += rf"""   && rm -rf /var/lib/apt/lists/*
 
 # Create links in /usr/local/bin to overrule links in /usr/bin.
 RUN ln -sf /usr/bin/gcc-{gcc_version}      /usr/local/bin/gcc  && \
     ln -sf /usr/bin/g++-{gcc_version}      /usr/local/bin/g++  && \
     ln -sf /usr/bin/gfortran-{gcc_version} /usr/local/bin/gfortran
 
-""" + install_toolchain(
+"""
+    output += install_toolchain(
         base_image="ubuntu",
         mpi_mode="no",
         with_gcc="system",
@@ -461,31 +479,26 @@ RUN ln -sf /usr/bin/gcc-{gcc_version}      /usr/local/bin/gcc  && \
         with_openblas="system",
         with_gsl="system",
         with_hdf5="system",
-        with_libxc="install",
+        with_libint=("system" if gcc_version > 8 else "install"),
+        with_libxc=("system" if gcc_version > 8 else "install"),
         with_libxsmm="install",
-        with_libint="install",
         with_libvori=("install" if libvori else "no"),
     )
+    return output
 
 
 # ======================================================================================
 def toolchain_intel() -> str:
     return rf"""
-FROM intel/oneapi-hpckit:2022.2-devel-ubuntu20.04
-
-# Without this cp2k segfaults right after startup.
-# See https://github.com/cp2k/cp2k/issues/1936
-ENV I_MPI_FABRICS='shm'
+FROM intel/oneapi-hpckit:2023.2.1-devel-ubuntu22.04
 
 """ + install_toolchain(
         base_image="ubuntu",
-        with_intel="",
+        install_all="",
         with_intelmpi="",
-        with_libint="no",  # https://github.com/cp2k/cp2k/issues/1999
-        with_elpa="no",  # MPI does not provide a sufficient threading level for OpenMP.
-        with_quip="no",  # Intel compiler is currently not supported.
-        with_spfft="no",  # Spawns infinite chain of mpiicpc sub-processes.
-        with_sirius="no",  # Requires spfft.
+        with_mkl="",
+        with_libtorch="no",
+        with_sirius="no",
     )
 
 

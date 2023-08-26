@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -21,10 +21,6 @@
 MODULE cp_parser_types
    USE cp_files,                        ONLY: close_file,&
                                               open_file
-   USE cp_para_env,                     ONLY: cp_para_env_create,&
-                                              cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_buffer_types,          ONLY: buffer_type,&
                                               create_buffer_type,&
                                               release_buffer_type
@@ -40,7 +36,9 @@ MODULE cp_parser_types
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               max_line_length
-   USE message_passing,                 ONLY: mp_comm_self
+   USE message_passing,                 ONLY: mp_comm_self,&
+                                              mp_para_env_release,&
+                                              mp_para_env_type
    USE string_utilities,                ONLY: compress
 #include "../base/base_uses.f90"
 
@@ -77,25 +75,25 @@ MODULE cp_parser_types
 !> \author fawzi
 ! **************************************************************************************************
    TYPE cp_parser_type
-      CHARACTER(LEN=default_string_length)           :: end_section, start_section
-      CHARACTER(LEN=10)                              :: separators
-      CHARACTER(LEN=1)                               :: comment_character(2), &
-                                                        continuation_character, &
-                                                        quote_character, &
-                                                        section_character
-      CHARACTER(LEN=default_path_length)             :: input_file_name
-      CHARACTER(LEN=max_line_length)                 :: input_line
-      INTEGER                                        :: icol, icol1, icol2
-      INTEGER                                        :: input_unit, input_line_number
-      LOGICAL                                        :: first_separator, &
-                                                        apply_preprocessing, &
-                                                        parse_white_lines
-      CHARACTER(len=default_path_length), DIMENSION(:, :), POINTER :: initial_variables
-      TYPE(buffer_type), POINTER                     :: buffer
-      TYPE(status_type), POINTER                     :: status
-      TYPE(cp_para_env_type), POINTER                :: para_env
-      TYPE(inpp_type), POINTER                       :: inpp
-      TYPE(ilist_type), POINTER                      :: ilist
+      CHARACTER(LEN=default_string_length)           :: end_section = "", start_section = ""
+      CHARACTER(LEN=10)                              :: separators = ""
+      CHARACTER(LEN=1)                               :: comment_character(2) = "", &
+                                                        continuation_character = "", &
+                                                        quote_character = "", &
+                                                        section_character = ""
+      CHARACTER(LEN=default_path_length)             :: input_file_name = ""
+      CHARACTER(LEN=max_line_length)                 :: input_line = ""
+      INTEGER                                        :: icol = 0, icol1 = 0, icol2 = 0
+      INTEGER                                        :: input_unit = -1, input_line_number = 0
+      LOGICAL                                        :: first_separator = .TRUE., &
+                                                        apply_preprocessing = .FALSE., &
+                                                        parse_white_lines = .FALSE.
+      CHARACTER(len=default_path_length), DIMENSION(:, :), POINTER :: initial_variables => NULL()
+      TYPE(buffer_type), POINTER                     :: buffer => NULL()
+      TYPE(status_type), POINTER                     :: status => NULL()
+      TYPE(mp_para_env_type), POINTER                :: para_env => NULL()
+      TYPE(inpp_type), POINTER                       :: inpp => NULL()
+      TYPE(ilist_type), POINTER                      :: ilist => NULL()
    END TYPE cp_parser_type
 
 CONTAINS
@@ -113,7 +111,7 @@ CONTAINS
       IF (parser%input_unit >= 0) THEN
          CALL close_file(unit_number=parser%input_unit)
       END IF
-      CALL cp_para_env_release(parser%para_env)
+      CALL mp_para_env_release(parser%para_env)
       CALL release_inpp_type(parser%inpp)
       CALL release_ilist_type(parser%ilist)
       CALL release_buffer_type(parser%buffer)
@@ -149,17 +147,13 @@ CONTAINS
       TYPE(cp_parser_type), INTENT(OUT)                  :: parser
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: file_name
       INTEGER, INTENT(in), OPTIONAL                      :: unit_nr
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: end_section_label, separator_chars
       CHARACTER(LEN=1), INTENT(IN), OPTIONAL             :: comment_char, continuation_char, &
                                                             quote_char, section_char
       LOGICAL, INTENT(IN), OPTIONAL                      :: parse_white_lines
       CHARACTER(len=*), DIMENSION(:, :), OPTIONAL        :: initial_variables
       LOGICAL, INTENT(IN), OPTIONAL                      :: apply_preprocessing
-
-      parser%input_unit = -1
-      parser%input_file_name = ""
-      NULLIFY (parser%initial_variables)
 
       ! Load the default values and overwrite them, if requested
       parser%separators = default_separators
@@ -190,15 +184,14 @@ CONTAINS
       ! para_env
       IF (PRESENT(para_env)) THEN
          parser%para_env => para_env
-         CALL cp_para_env_retain(para_env)
+         CALL para_env%retain()
       ELSE
-         NULLIFY (parser%para_env)
-         CALL cp_para_env_create(parser%para_env, group=mp_comm_self, source=0, &
-                                 mepos=0, num_pe=1, owns_group=.FALSE.)
+         ALLOCATE (parser%para_env)
+         parser%para_env = mp_comm_self
       END IF
 
       !   *** Get the logical output unit number for error messages ***
-      IF (parser%para_env%ionode) THEN
+      IF (parser%para_env%is_source()) THEN
          IF (PRESENT(unit_nr)) THEN
             parser%input_unit = unit_nr
             IF (PRESENT(file_name)) parser%input_file_name = file_name
@@ -218,15 +211,6 @@ CONTAINS
          END IF
       END IF
 
-      parser%input_line_number = 0
-      parser%icol = 0
-      parser%icol1 = 0
-      parser%icol2 = 0
-      parser%first_separator = .TRUE.
-      NULLIFY (parser%buffer)
-      NULLIFY (parser%status)
-      NULLIFY (parser%inpp)
-      NULLIFY (parser%ilist)
       CALL create_inpp_type(parser%inpp, parser%initial_variables)
       CALL create_ilist_type(parser%ilist)
       CALL create_buffer_type(parser%buffer)

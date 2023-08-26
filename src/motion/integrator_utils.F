@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,7 +25,6 @@ MODULE integrator_utils
    USE cell_types,                      ONLY: cell_type
    USE constraint,                      ONLY: rattle_roll_control
    USE constraint_util,                 ONLY: pv_constraint
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE extended_system_types,           ONLY: debug_isotropic_limit,&
                                               debug_uniaxial_limit,&
@@ -37,8 +36,8 @@ MODULE integrator_utils
    USE kinds,                           ONLY: dp
    USE md_environment_types,            ONLY: get_md_env,&
                                               md_environment_type
-   USE message_passing,                 ONLY: mp_max,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE molecule_kind_types,             ONLY: local_fixd_constraint_type,&
                                               molecule_kind_type
    USE molecule_types,                  ONLY: get_molecule,&
@@ -263,7 +262,7 @@ CONTAINS
       TYPE(tmp_variables_type), POINTER                  :: tmp
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set, shell_particle_set, &
                                                             core_particle_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN)                                :: shell_adiabatic
       LOGICAL, INTENT(IN), OPTIONAL                      :: pos, vel, should_deall_vel
 
@@ -279,12 +278,12 @@ CONTAINS
 
       !      *** Broadcast the new particle positions ***
       IF (my_pos) THEN
-         CALL update_particle_set(particle_set, para_env%group, pos=tmp%pos)
+         CALL update_particle_set(particle_set, para_env, pos=tmp%pos)
          DEALLOCATE (tmp%pos)
 
          IF (shell_adiabatic) THEN
-            CALL update_particle_set(shell_particle_set, para_env%group, pos=tmp%shell_pos)
-            CALL update_particle_set(core_particle_set, para_env%group, pos=tmp%core_pos)
+            CALL update_particle_set(shell_particle_set, para_env, pos=tmp%shell_pos)
+            CALL update_particle_set(core_particle_set, para_env, pos=tmp%core_pos)
             DEALLOCATE (tmp%shell_pos)
             DEALLOCATE (tmp%core_pos)
          END IF
@@ -292,10 +291,10 @@ CONTAINS
 
       !     *** Broadcast the new particle velocities ***
       IF (my_vel) THEN
-         CALL update_particle_set(particle_set, para_env%group, vel=tmp%vel)
+         CALL update_particle_set(particle_set, para_env, vel=tmp%vel)
          IF (shell_adiabatic) THEN
-            CALL update_particle_set(shell_particle_set, para_env%group, vel=tmp%shell_vel)
-            CALL update_particle_set(core_particle_set, para_env%group, vel=tmp%core_vel)
+            CALL update_particle_set(shell_particle_set, para_env, vel=tmp%shell_vel)
+            CALL update_particle_set(core_particle_set, para_env, vel=tmp%core_vel)
          END IF
          IF (my_deall) THEN
             DEALLOCATE (tmp%vel)
@@ -334,7 +333,7 @@ CONTAINS
       TYPE(distribution_1d_type), POINTER                :: local_particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       REAL(KIND=dp)                                      :: dt
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: tmpv
 
       INTEGER                                            :: iparticle, iparticle_kind, &
@@ -371,9 +370,9 @@ CONTAINS
             END IF
          END IF
       END DO
-      CALL mp_sum(K, para_env%group)
-      CALL mp_sum(a, para_env%group)
-      CALL mp_sum(b, para_env%group)
+      CALL para_env%sum(K)
+      CALL para_env%sum(a)
+      CALL para_env%sum(b)
       a = a/(2.0_dp*K)
       b = b/(2.0_dp*K)
       rb = SQRT(b)
@@ -528,7 +527,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: gamma1
       TYPE(npt_info_type), INTENT(IN)                    :: npt
       REAL(KIND=dp), INTENT(IN)                          :: dt
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
 
       INTEGER                                            :: first_atom, ikind, imol, imol_local, &
                                                             ipart, last_atom, nmol_local
@@ -558,7 +558,7 @@ CONTAINS
          END DO
       END DO
       !
-      CALL mp_sum(kin, group)
+      CALL group%sum(kin)
       !
       ikin = 1.0_dp/kin
       scale = 1.0_dp
@@ -608,7 +608,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: gamma1
       TYPE(npt_info_type), INTENT(IN)                    :: npt
       REAL(KIND=dp), INTENT(IN)                          :: dt
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
 
       INTEGER                                            :: first_atom, ikind, imol, imol_local, &
                                                             ipart, last_atom, nmol_local
@@ -635,7 +636,7 @@ CONTAINS
          END DO
       END DO
       !
-      CALL mp_sum(kin, group)
+      CALL group%sum(kin)
       !
       ikin = 1.0_dp/kin
       scale = 1.0_dp
@@ -668,7 +669,7 @@ CONTAINS
 !>      none
 !> \author CJM
 ! **************************************************************************************************
-   SUBROUTINE damp_veps(npt, gamma1, dt)
+   ELEMENTAL SUBROUTINE damp_veps(npt, gamma1, dt)
 
       TYPE(npt_info_type), INTENT(INOUT)                 :: npt
       REAL(KIND=dp), INTENT(IN)                          :: gamma1, dt
@@ -732,7 +733,7 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: iroll
       REAL(KIND=dp), INTENT(IN)                          :: infree
       LOGICAL, INTENT(INOUT)                             :: first
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: u(:, :)
 
       REAL(KIND=dp)                                      :: kin
@@ -742,7 +743,7 @@ CONTAINS
       IF (first) THEN
          CALL update_pv(gci, simpar, atomic_kind_set, vel, particle_set, &
                         local_molecules, molecule_set, molecule_kind_set, &
-                        local_particles, kin, pv_kin, virial, para_env%group)
+                        local_particles, kin, pv_kin, virial, para_env)
          CALL update_veps(cell, npt, simpar, pv_kin, kin, virial, infree)
 
       END IF
@@ -804,7 +805,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: kin
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(OUT)        :: pv_kin
       TYPE(virial_type), INTENT(INOUT)                   :: virial
-      INTEGER, INTENT(IN)                                :: int_group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: int_group
 
       INTEGER                                            :: i, iparticle, iparticle_kind, &
                                                             iparticle_local, j, nparticle_local
@@ -831,8 +833,8 @@ CONTAINS
          END DO
       END DO
 
-      CALL mp_sum(pv_kin, int_group)
-      CALL mp_sum(kin, int_group)
+      CALL int_group%sum(pv_kin)
+      CALL int_group%sum(kin)
 
       ! updating the constraint virial
       IF (simpar%constraint) CALL pv_constraint(gci, local_molecules, &
@@ -878,7 +880,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: kin
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: pv_kin
       TYPE(virial_type), INTENT(INOUT)                   :: virial
-      INTEGER, INTENT(IN)                                :: int_group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: int_group
 
       INTEGER                                            :: i, iparticle, iparticle_kind, &
                                                             iparticle_local, j, nparticle_local
@@ -903,8 +906,8 @@ CONTAINS
          END DO
       END DO
 
-      CALL mp_sum(pv_kin, int_group)
-      CALL mp_sum(kin, int_group)
+      CALL int_group%sum(pv_kin)
+      CALL int_group%sum(kin)
 
       ! updating the constraint virial
       IF (simpar%constraint) CALL pv_constraint(gci, local_molecules, &
@@ -931,7 +934,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE update_veps(box, npt, simpar, pv_kin, kin, virial, infree, virial_components)
 
-      TYPE(cell_type), INTENT(IN)                        :: box
+      TYPE(cell_type), POINTER                           :: box
       TYPE(npt_info_type), DIMENSION(:, :), &
          INTENT(INOUT)                                   :: npt
       TYPE(simpar_type), INTENT(IN)                      :: simpar
@@ -945,7 +948,9 @@ CONTAINS
       REAL(KIND=dp)                                      :: fdotr, trace, v, v0, v0i, vi
       REAL(KIND=dp), DIMENSION(3, 3)                     :: unit
 
-! initialize unit
+      CPASSERT(ASSOCIATED(box))
+
+      ! Initialize unit
 
       unit = 0.0_dp
       unit(1, 1) = 1.0_dp
@@ -1555,7 +1560,7 @@ CONTAINS
       TYPE(tmp_variables_type), POINTER                  :: tmp
       REAL(KIND=dp), INTENT(INOUT)                       :: dt
       TYPE(simpar_type), POINTER                         :: simpar
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(distribution_1d_type), POINTER                :: local_particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set, core_particle_set, &
@@ -1580,16 +1585,16 @@ CONTAINS
       NULLIFY (thermostats)
 
       itime = itime + 1
-      CALL mp_max(tmp%max_dr, para_env%group)
+      CALL para_env%max(tmp%max_dr)
       IF (tmp%max_dr > simpar%dr_tol) THEN
-         CALL mp_max(tmp%max_dvel, para_env%group)
+         CALL para_env%max(tmp%max_dvel)
          dt_fact = SQRT(simpar%dr_tol*dt/tmp%max_dvel)/dt
       END IF
 
       IF (shell_adiabatic) THEN
-         CALL mp_max(tmp%max_dsc, para_env%group)
+         CALL para_env%max(tmp%max_dsc)
          IF (tmp%max_dsc > simpar%dsc_tol) THEN
-            CALL mp_max(tmp%max_dvel_sc, para_env%group)
+            CALL para_env%max(tmp%max_dvel_sc)
             dt_fact_sc = SQRT(simpar%dsc_tol*dt/tmp%max_dvel_sc)/dt
          END IF
       END IF
@@ -1606,16 +1611,16 @@ CONTAINS
 
       dt_fact = 1.0_dp
       dt_fact_sc = 1.0_dp
-      CALL mp_max(tmp%max_dr, para_env%group)
+      CALL para_env%max(tmp%max_dr)
       IF (tmp%max_dr > simpar%dr_tol) THEN
-         CALL mp_max(tmp%max_vel, para_env%group)
+         CALL para_env%max(tmp%max_vel)
          dt_fact = simpar%dr_tol/tmp%max_vel/dt
       END IF
 
       IF (shell_adiabatic) THEN
-         CALL mp_max(tmp%max_dsc, para_env%group)
+         CALL para_env%max(tmp%max_dsc)
          IF (tmp%max_dsc > simpar%dsc_tol) THEN
-            CALL mp_max(tmp%max_vel_sc, para_env%group)
+            CALL para_env%max(tmp%max_vel_sc)
             dt_fact_sc = simpar%dsc_tol/tmp%max_vel_sc/dt
          END IF
       END IF

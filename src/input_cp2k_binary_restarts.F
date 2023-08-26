@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -22,14 +22,13 @@ MODULE input_cp2k_binary_restarts
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_unit_nr,&
                                               debug_print_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE extended_system_types,           ONLY: lnhc_parameters_type
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: angstrom
    USE print_messages,                  ONLY: print_message
@@ -71,7 +70,7 @@ CONTAINS
 
       TYPE(topology_parameters_type)                     :: topology
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: subsys_section
       LOGICAL, INTENT(OUT)                               :: binary_file_read
 
@@ -115,7 +114,7 @@ CONTAINS
       nmolecule = 0
 
       ! Open binary restart file and read number atomic kinds, atoms, etc.
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL open_file(file_name=binary_restart_file_name, &
                         file_status="OLD", &
                         file_form="UNFORMATTED", &
@@ -141,23 +140,23 @@ CONTAINS
          END IF
       END IF
 
-      CALL mp_bcast(natomkind, para_env%source, para_env%group)
-      CALL mp_bcast(natom, para_env%source, para_env%group)
-      CALL mp_bcast(ncore, para_env%source, para_env%group)
-      CALL mp_bcast(nshell, para_env%source, para_env%group)
-      CALL mp_bcast(nmoleculekind, para_env%source, para_env%group)
-      CALL mp_bcast(nmolecule, para_env%source, para_env%group)
+      CALL para_env%bcast(natomkind)
+      CALL para_env%bcast(natom)
+      CALL para_env%bcast(ncore)
+      CALL para_env%bcast(nshell)
+      CALL para_env%bcast(nmoleculekind)
+      CALL para_env%bcast(nmolecule)
 
       ALLOCATE (id_name(natomkind))
       ! Read atomic kind names
       DO ikind = 1, natomkind
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) string
             IF (istat /= 0) CALL stop_read("string (IOSTAT = "// &
                                            TRIM(ADJUSTL(cp_to_string(istat)))//")", &
                                            input_unit)
          END IF
-         CALL mp_bcast(string, para_env%source, para_env%group)
+         CALL para_env%bcast(string)
          id_name(ikind) = str2id(string)
       END DO
 
@@ -186,13 +185,13 @@ CONTAINS
       ALLOCATE (ibuf(natom))
 
       ! Read atomic kind number of each atom
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          READ (UNIT=input_unit, IOSTAT=istat) ibuf(1:natom)
          IF (istat /= 0) CALL stop_read("ibuf (IOSTAT = "// &
                                         TRIM(ADJUSTL(cp_to_string(istat)))//")", &
                                         input_unit)
       END IF
-      CALL mp_bcast(ibuf, para_env%source, para_env%group)
+      CALL para_env%bcast(ibuf)
       DO iatom = 1, natom
          ikind = ibuf(iatom)
          atom_info%id_atmname(iatom) = id_name(ikind)
@@ -201,49 +200,49 @@ CONTAINS
       DEALLOCATE (id_name)
 
       ! Read atomic coordinates
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          READ (UNIT=input_unit, IOSTAT=istat) atom_info%r(1:3, 1:natom)
          IF (istat /= 0) CALL stop_read("atom_info%r(1:3,1:natom) (IOSTAT = "// &
                                         TRIM(ADJUSTL(cp_to_string(istat)))//")", &
                                         input_unit)
       END IF
-      CALL mp_bcast(atom_info%r, para_env%source, para_env%group)
+      CALL para_env%bcast(atom_info%r)
 
       ! Read molecule information if available
       IF (nmolecule > 0) THEN
          ALLOCATE (id_name(nmoleculekind))
          ! Read molecule kind names
          DO ikind = 1, nmoleculekind
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                READ (UNIT=input_unit, IOSTAT=istat) string
                IF (istat /= 0) CALL stop_read("string (IOSTAT = "// &
                                               TRIM(ADJUSTL(cp_to_string(istat)))//")", &
                                               input_unit)
             END IF
-            CALL mp_bcast(string, para_env%source, para_env%group)
+            CALL para_env%bcast(string)
             id_name(ikind) = str2id(string)
          END DO
          ! Read molecule kind numbers
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) ibuf(1:natom)
             IF (istat /= 0) CALL stop_read("ibuf(1:natom) (IOSTAT = "// &
                                            TRIM(ADJUSTL(cp_to_string(istat)))//")", &
                                            input_unit)
          END IF
-         CALL mp_bcast(ibuf, para_env%source, para_env%group)
+         CALL para_env%bcast(ibuf)
          DO iatom = 1, natom
             ikind = ibuf(iatom)
             atom_info%id_molname(iatom) = id_name(ikind)
          END DO
          DEALLOCATE (id_name)
          ! Read molecule index which is used also as residue id
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) atom_info%resid(1:natom)
             IF (istat /= 0) CALL stop_read("atom_info%resid(1:natom) (IOSTAT = "// &
                                            TRIM(ADJUSTL(cp_to_string(istat)))//")", &
                                            input_unit)
          END IF
-         CALL mp_bcast(atom_info%resid, para_env%source, para_env%group)
+         CALL para_env%bcast(atom_info%resid)
          DO iatom = 1, natom
             atom_info%id_resname(iatom) = str2id(s2s(cp_to_string(atom_info%resid(iatom))))
          END DO
@@ -271,8 +270,8 @@ CONTAINS
             TRIM(binary_restart_file_name)
       END IF
 
-      IF (para_env%ionode) CALL close_file(unit_number=input_unit, &
-                                           keep_preconnection=.TRUE.)
+      IF (para_env%is_source()) CALL close_file(unit_number=input_unit, &
+                                                keep_preconnection=.TRUE.)
 
       binary_file_read = .TRUE.
 
@@ -311,7 +310,7 @@ CONTAINS
       LOGICAL                                            :: exit_routine
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: rbuf
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
 
@@ -345,7 +344,7 @@ CONTAINS
       section_name = prefix//" COORDINATES"
 
       ! Open binary restart file at last position
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL open_file(file_name=TRIM(binary_restart_file_name), &
                         file_status="OLD", &
                         file_form="UNFORMATTED", &
@@ -404,10 +403,10 @@ CONTAINS
          END IF
       END IF
 
-      CALL mp_bcast(exit_routine, para_env%source, para_env%group)
+      CALL para_env%bcast(exit_routine)
       IF (exit_routine) THEN
-         IF (para_env%ionode) CALL close_file(unit_number=input_unit, &
-                                              keep_preconnection=.TRUE.)
+         IF (para_env%is_source()) CALL close_file(unit_number=input_unit, &
+                                                   keep_preconnection=.TRUE.)
          CALL timestop(handle)
          RETURN
       END IF
@@ -416,14 +415,14 @@ CONTAINS
 
       ALLOCATE (rbuf(3, nparticle))
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          READ (UNIT=input_unit, IOSTAT=istat) rbuf(1:3, 1:nparticle)
          IF (istat /= 0) CALL stop_read("rbuf(1:3,1:nparticle) -> "//prefix// &
                                         " coordinates (IOSTAT = "// &
                                         TRIM(ADJUSTL(cp_to_string(istat)))//")", &
                                         input_unit)
       END IF
-      CALL mp_bcast(rbuf, para_env%source, para_env%group)
+      CALL para_env%bcast(rbuf)
 
       DO iparticle = 1, nparticle
          particle_set(iparticle)%r(1:3) = rbuf(1:3, iparticle)
@@ -433,7 +432,7 @@ CONTAINS
 
       ALLOCATE (ibuf(nparticle))
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          READ (UNIT=input_unit, IOSTAT=istat) ibuf(1:nparticle)
          IF (istat /= 0) CALL stop_read("ibuf(1:nparticle) -> atomic indices of the "// &
                                         TRIM(section_name)//" (IOSTAT = "// &
@@ -441,7 +440,7 @@ CONTAINS
                                         input_unit)
       END IF
 
-      CALL mp_bcast(ibuf, para_env%source, para_env%group)
+      CALL para_env%bcast(ibuf)
 
       DO iparticle = 1, nparticle
          particle_set(iparticle)%atom_index = ibuf(iparticle)
@@ -466,8 +465,8 @@ CONTAINS
             TRIM(binary_restart_file_name)
       END IF
 
-      IF (para_env%ionode) CALL close_file(unit_number=input_unit, &
-                                           keep_preconnection=.TRUE.)
+      IF (para_env%is_source()) CALL close_file(unit_number=input_unit, &
+                                                keep_preconnection=.TRUE.)
 
       binary_file_read = .TRUE.
 
@@ -495,7 +494,7 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: prefix
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: subsys_section
       LOGICAL, INTENT(OUT)                               :: binary_file_read
 
@@ -546,7 +545,7 @@ CONTAINS
 
       ! Open binary restart file at last position and check if there are
       ! velocities available
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL open_file(file_name=binary_restart_file_name, &
                         file_status="OLD", &
                         file_form="UNFORMATTED", &
@@ -594,14 +593,14 @@ CONTAINS
          END DO
       END IF
 
-      CALL mp_bcast(nbuf, para_env%source, para_env%group)
-      CALL mp_bcast(have_velocities, para_env%source, para_env%group)
+      CALL para_env%bcast(nbuf)
+      CALL para_env%bcast(have_velocities)
 
       IF (have_velocities) THEN
 
          ALLOCATE (rbuf(3, nbuf))
 
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) rbuf(1:3, 1:nbuf)
             IF (istat /= 0) CALL stop_read("rbuf(1:3,1:nbuf) -> "// &
                                            TRIM(ADJUSTL(section_name))// &
@@ -610,7 +609,7 @@ CONTAINS
          END IF
 
          IF (nbuf == nparticle) THEN
-            CALL mp_bcast(rbuf, para_env%source, para_env%group)
+            CALL para_env%bcast(rbuf)
             DO iparticle = 1, nparticle
                particle_set(iparticle)%v(1:3) = rbuf(1:3, iparticle)
             END DO
@@ -653,8 +652,8 @@ CONTAINS
          binary_file_read = .TRUE.
       END IF
 
-      IF (para_env%ionode) CALL close_file(unit_number=input_unit, &
-                                           keep_preconnection=.TRUE.)
+      IF (para_env%is_source()) CALL close_file(unit_number=input_unit, &
+                                                keep_preconnection=.TRUE.)
 
       CALL timestop(handle)
 
@@ -680,7 +679,7 @@ CONTAINS
       TYPE(lnhc_parameters_type), POINTER                :: nhc
       CHARACTER(LEN=*), INTENT(IN)                       :: binary_restart_file_name
       LOGICAL, INTENT(OUT)                               :: restart
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'read_binary_thermostats_nose'
 
@@ -712,7 +711,7 @@ CONTAINS
       section_name = prefix//" THERMOSTATS"
 
       ! Open binary restart file at last position
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL open_file(file_name=binary_restart_file_name, &
                         file_status="OLD", &
                         file_form="UNFORMATTED", &
@@ -739,7 +738,7 @@ CONTAINS
          END IF
       END IF
 
-      CALL mp_bcast(nhc_size, para_env%source, para_env%group)
+      CALL para_env%bcast(nhc_size)
 
       IF (nhc_size > 0) THEN
 
@@ -747,7 +746,7 @@ CONTAINS
          rbuf(:) = 0.0_dp
 
          ! Read NHC section &COORD
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) rbuf(1:nhc_size)
             IF (istat /= 0) CALL stop_read("eta -> rbuf (IOSTAT = "// &
                                            TRIM(ADJUSTL(cp_to_string(istat)))//")", &
@@ -757,7 +756,7 @@ CONTAINS
                   "&COORD", rbuf(1:nhc_size)
             END IF
          END IF
-         CALL mp_bcast(rbuf, para_env%source, para_env%group)
+         CALL para_env%bcast(rbuf)
          DO i = 1, SIZE(nhc%nvt, 2)
             idx = (nhc%map_info%index(i) - 1)*nhc%nhc_len
             DO j = 1, SIZE(nhc%nvt, 1)
@@ -767,7 +766,7 @@ CONTAINS
          END DO
 
          ! Read NHC section &VELOCITY
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) rbuf(1:nhc_size)
             IF (istat /= 0) CALL stop_read("veta -> rbuf (IOSTAT = "// &
                                            TRIM(ADJUSTL(cp_to_string(istat)))//")", &
@@ -777,7 +776,7 @@ CONTAINS
                   "&VELOCITY", rbuf(1:nhc_size)
             END IF
          END IF
-         CALL mp_bcast(rbuf, para_env%source, para_env%group)
+         CALL para_env%bcast(rbuf)
          DO i = 1, SIZE(nhc%nvt, 2)
             idx = (nhc%map_info%index(i) - 1)*nhc%nhc_len
             DO j = 1, SIZE(nhc%nvt, 1)
@@ -787,7 +786,7 @@ CONTAINS
          END DO
 
          ! Read NHC section &MASS
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) rbuf(1:nhc_size)
             IF (istat /= 0) CALL stop_read("mnhc -> rbuf (IOSTAT = "// &
                                            TRIM(ADJUSTL(cp_to_string(istat)))//")", &
@@ -797,7 +796,7 @@ CONTAINS
                   "&MASS:", rbuf(1:nhc_size)
             END IF
          END IF
-         CALL mp_bcast(rbuf, para_env%source, para_env%group)
+         CALL para_env%bcast(rbuf)
          DO i = 1, SIZE(nhc%nvt, 2)
             idx = (nhc%map_info%index(i) - 1)*nhc%nhc_len
             DO j = 1, SIZE(nhc%nvt, 1)
@@ -807,7 +806,7 @@ CONTAINS
          END DO
 
          ! Read NHC section &FORCE
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             READ (UNIT=input_unit, IOSTAT=istat) rbuf(1:nhc_size)
             IF (istat /= 0) CALL stop_read("fnhc -> rbuf (IOSTAT = "// &
                                            TRIM(ADJUSTL(cp_to_string(istat)))//")", &
@@ -817,7 +816,7 @@ CONTAINS
                   "&FORCE", rbuf(1:nhc_size)
             END IF
          END IF
-         CALL mp_bcast(rbuf, para_env%source, para_env%group)
+         CALL para_env%bcast(rbuf)
          DO i = 1, SIZE(nhc%nvt, 2)
             idx = (nhc%map_info%index(i) - 1)*nhc%nhc_len
             DO j = 1, SIZE(nhc%nvt, 1)
@@ -832,7 +831,7 @@ CONTAINS
 
       END IF
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          IF (debug .AND. output_unit > 0) THEN
             WRITE (UNIT=output_unit, FMT="(T2,A)") &
                "END of"//TRIM(ADJUSTL(section_label))// &

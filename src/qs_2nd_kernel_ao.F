@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,7 +20,7 @@ MODULE qs_2nd_kernel_ao
                                               dbcsr_allocate_matrix_set,&
                                               dbcsr_deallocate_matrix_set
    USE cp_fm_types,                     ONLY: cp_fm_get_info,&
-                                              cp_fm_p_type
+                                              cp_fm_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_copy,&
                                               dbcsr_create,&
@@ -38,6 +38,7 @@ MODULE qs_2nd_kernel_ao
    USE kinds,                           ONLY: dp
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
+   USE pw_methods,                      ONLY: pw_scale
    USE pw_pool_types,                   ONLY: pw_pool_give_back_pw,&
                                               pw_pool_type
    USE pw_types,                        ONLY: pw_type
@@ -78,7 +79,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE build_dm_response(c0, c1, dm)
       !
-      TYPE(cp_fm_p_type), DIMENSION(:), INTENT(IN)       :: c0, c1
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: c0, c1
       TYPE(dbcsr_p_type), DIMENSION(:), INTENT(INOUT)    :: dm
 
       INTEGER                                            :: ispin, ncol, nspins
@@ -87,10 +88,10 @@ CONTAINS
 
       DO ispin = 1, nspins
          CALL dbcsr_set(dm(ispin)%matrix, 0.0_dp)
-         CALL cp_fm_get_info(c0(ispin)%matrix, ncol_global=ncol)
+         CALL cp_fm_get_info(c0(ispin), ncol_global=ncol)
          CALL cp_dbcsr_plus_fm_fm_t(dm(ispin)%matrix, &
-                                    matrix_v=c0(ispin)%matrix, &
-                                    matrix_g=c1(ispin)%matrix, &
+                                    matrix_v=c0(ispin), &
+                                    matrix_g=c1(ispin), &
                                     ncol=ncol, alpha=2.0_dp, &
                                     keep_sparsity=.TRUE., &
                                     symmetry_mode=1)
@@ -337,13 +338,13 @@ CONTAINS
 
          CALL cp_fm_get_info(admm_env%A, nrow_global=nao_aux, ncol_global=nao)
          DO ispin = 1, nspins
-            v_xc(ispin)%cr3d = v_xc(ispin)%cr3d*v_xc(ispin)%pw_grid%dvol
+            CALL pw_scale(v_xc(ispin), v_xc(ispin)%pw_grid%dvol)
             CALL dbcsr_set(work_hmat%matrix, 0.0_dp)
             CALL integrate_v_rspace(v_rspace=v_xc(ispin), hmat=work_hmat, qs_env=qs_env, &
                                     calculate_forces=my_calc_forces, basis_type="AUX_FIT", &
                                     task_list_external=task_list_aux_fit, pmat=rho_ao_aux(ispin))
             IF (ASSOCIATED(v_xc_tau)) THEN
-               v_xc_tau(ispin)%cr3d = v_xc_tau(ispin)%cr3d*v_xc_tau(ispin)%pw_grid%dvol
+               CALL pw_scale(v_xc_tau(ispin), v_xc_tau(ispin)%pw_grid%dvol)
                CALL integrate_v_rspace(v_rspace=v_xc_tau(ispin), hmat=work_hmat, qs_env=qs_env, &
                                        compute_tau=.TRUE., &
                                        calculate_forces=my_calc_forces, basis_type="AUX_FIT", &

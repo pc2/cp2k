@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,10 +23,6 @@ MODULE replica_types
                                               cp_logger_type,&
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_rm_iter_level
-   USE cp_para_env,                     ONLY: cp_cart_release,&
-                                              cp_para_env_release
-   USE cp_para_types,                   ONLY: cp_para_cart_type,&
-                                              cp_para_env_type
    USE cp_result_methods,               ONLY: cp_results_mp_bcast
    USE cp_result_types,                 ONLY: cp_result_p_type,&
                                               cp_result_release
@@ -36,7 +32,10 @@ MODULE replica_types
                                               f_env_type
    USE kinds,                           ONLY: default_path_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_cart_release,&
+                                              mp_para_cart_type,&
+                                              mp_para_env_release,&
+                                              mp_para_env_type
    USE qs_wf_history_types,             ONLY: qs_wf_history_p_type,&
                                               wfi_release
 #include "./base/base_uses.f90"
@@ -107,8 +106,8 @@ MODULE replica_types
       INTEGER, DIMENSION(:), POINTER                    :: replica_owner, force_rank, &
                                                            inter_rep_rank
       LOGICAL, DIMENSION(:), POINTER                    :: rep_is_local
-      TYPE(cp_para_cart_type), POINTER                  :: cart
-      TYPE(cp_para_env_type), POINTER                   :: para_env, para_env_f, &
+      TYPE(mp_para_cart_type), POINTER                  :: cart
+      TYPE(mp_para_env_type), POINTER                   :: para_env, para_env_f, &
                                                            para_env_inter_rep
    END TYPE replica_env_type
 
@@ -179,10 +178,10 @@ CONTAINS
                DEALLOCATE (rep_env%replica_owner)
             END IF
             DEALLOCATE (rep_env%inter_rep_rank, rep_env%force_rank)
-            CALL cp_cart_release(rep_env%cart)
-            CALL cp_para_env_release(rep_env%para_env)
-            CALL cp_para_env_release(rep_env%para_env_f)
-            CALL cp_para_env_release(rep_env%para_env_inter_rep)
+            CALL mp_para_cart_release(rep_env%cart)
+            CALL mp_para_env_release(rep_env%para_env)
+            CALL mp_para_env_release(rep_env%para_env_f)
+            CALL mp_para_env_release(rep_env%para_env_inter_rep)
             CALL rep_envs_rm_rep_env(rep_env)
             DEALLOCATE (rep_env)
          END IF
@@ -243,7 +242,7 @@ CONTAINS
             vals(:, irep) = 0._dp
          END IF
       END DO
-      CALL mp_sum(vals, rep_env%para_env_inter_rep%group)
+      CALL rep_env%para_env_inter_rep%sum(vals)
       CALL timestop(handle)
    END SUBROUTINE rep_env_sync
 
@@ -268,10 +267,6 @@ CONTAINS
       CPASSERT(rep_env%ref_count > 0)
       CPASSERT(SIZE(results) == rep_env%nrep)
       DO irep = 1, nrep
-!         source = 0
-!         IF (rep_env%rep_is_local(irep)) source = rep_env%para_env_inter_rep%mepos
-!         CALL mp_sum(source, rep_env%para_env_inter_rep%group)
-! above three lines should be the same as just:
          source = rep_env%inter_rep_rank(rep_env%replica_owner(irep))
          CALL cp_results_mp_bcast(results(irep)%results, source, rep_env%para_env_inter_rep)
       END DO

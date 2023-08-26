@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -18,7 +18,6 @@ MODULE glbopt_master
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE exclusion_types,                 ONLY: exclusion_release,&
                                               exclusion_type
@@ -41,6 +40,7 @@ MODULE glbopt_master
    USE kinds,                           ONLY: default_string_length,&
                                               dp,&
                                               int_8
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: deallocate_molecule_kind_set,&
                                               molecule_kind_type
    USE molecule_types,                  ONLY: deallocate_global_constraint,&
@@ -73,9 +73,9 @@ MODULE glbopt_master
       INTEGER(int_8)                                      :: total_md_steps = 0
       INTEGER(int_8)                                      :: total_gopt_steps = 0
       INTEGER(int_8)                                      :: count_reports = 0
-      INTEGER                                             :: method
-      TYPE(minhop_type), POINTER                           :: minhop
-      TYPE(mincrawl_type), POINTER                        :: mincrawl
+      INTEGER                                             :: method = glbopt_do_minhop
+      TYPE(minhop_type), POINTER                           :: minhop => NULL()
+      TYPE(mincrawl_type), POINTER                        :: mincrawl => NULL()
       INTEGER                                             :: i_iteration = 0
       TYPE(atomic_kind_type), DIMENSION(:), POINTER       :: atomic_kind_set => Null()
       TYPE(particle_type), DIMENSION(:), POINTER          :: particle_set => Null()
@@ -95,7 +95,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE glbopt_master_init(this, para_env, root_section, n_walkers, iw)
       TYPE(glbopt_master_type), INTENT(INOUT)            :: this
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: root_section
       INTEGER, INTENT(IN)                                :: n_walkers, iw
 
@@ -140,7 +140,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE glbopt_read_particle_set(this, para_env, root_section)
       TYPE(glbopt_master_type), INTENT(INOUT)            :: this
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: root_section
 
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set

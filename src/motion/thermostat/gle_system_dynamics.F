@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -11,7 +11,6 @@
 ! **************************************************************************************************
 MODULE gle_system_dynamics
 
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE extended_system_types,           ONLY: map_info_type
    USE gle_system_types,                ONLY: gle_thermo_create,&
@@ -27,7 +26,8 @@ MODULE gle_system_dynamics
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE molecule_kind_types,             ONLY: molecule_kind_type
    USE molecule_types,                  ONLY: global_constraint_type,&
                                               molecule_type
@@ -80,7 +80,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(particle_type), POINTER                       :: particle_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_molecules
-      INTEGER, INTENT(IN)                                :: group
+      TYPE(mp_comm_type), INTENT(IN)                     :: group
       LOGICAL, INTENT(IN), OPTIONAL                      :: shell_adiabatic
       TYPE(particle_type), OPTIONAL, POINTER             :: shell_particle_set(:), &
                                                             core_particle_set(:)
@@ -189,7 +189,7 @@ CONTAINS
       TYPE(distribution_1d_type), POINTER                :: local_molecules
       TYPE(molecule_type), POINTER                       :: molecule(:)
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(gle_type), POINTER                            :: gle
       TYPE(section_vals_type), POINTER                   :: gle_section
       TYPE(global_constraint_type), POINTER              :: gci
@@ -330,7 +330,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(gle_type), POINTER                            :: gle
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_constraint_type), POINTER              :: gci
 
       INTEGER                                            :: i, imap, j, mal_size, natoms_local, &
@@ -382,7 +382,7 @@ CONTAINS
 
          ! If thermostats are replicated but molecules distributed, we have to
          ! sum s_kin over all processors
-         IF (map_info%dis_type == do_thermo_communication) CALL mp_sum(map_info%s_kin, para_env%group)
+         IF (map_info%dis_type == do_thermo_communication) CALL para_env%sum(map_info%s_kin)
 
          ! We know the total number of system thermostats.
          IF ((sum_of_thermostats == 1) .AND. (map_info%dis_type /= do_thermo_no_communication)) THEN

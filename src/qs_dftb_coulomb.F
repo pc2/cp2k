@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,7 +20,6 @@ MODULE qs_dftb_coulomb
                                               pbc
    USE cp_control_types,                ONLY: dft_control_type,&
                                               dftb_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_get_block_p,&
                                               dbcsr_iterator_blocks_left,&
@@ -40,7 +39,7 @@ MODULE qs_dftb_coulomb
                                               kpoint_type
    USE mathconstants,                   ONLY: oorootpi,&
                                               pi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_poisson_types,                ONLY: do_ewald_ewald,&
                                               do_ewald_none,&
@@ -112,8 +111,8 @@ CONTAINS
 
       INTEGER :: atom_i, atom_j, blk, ewald_type, handle, i, ia, iac, iatom, ic, icol, ikind, img, &
          irow, is, jatom, jkind, natom, natorb_a, natorb_b, nimg, nkind, nmat
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of
       INTEGER, DIMENSION(3)                              :: cellind, periodic
-      INTEGER, DIMENSION(:), POINTER                     :: atom_of_kind, kind_of
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: defined, do_ewald, do_gamma_stress, &
                                                             found, hb_sr_damp, use_virial
@@ -128,7 +127,6 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atprop_type), POINTER                         :: atprop
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -136,6 +134,7 @@ CONTAINS
       TYPE(ewald_environment_type), POINTER              :: ewald_env
       TYPE(ewald_pw_type), POINTER                       :: ewald_pw
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -261,7 +260,7 @@ CONTAINS
          CALL ewald_env_get(ewald_env, alpha=alpha, ewald_type=ewald_type)
          CALL get_qs_env(qs_env=qs_env, sab_tbe=n_list)
          CALL tb_ewald_overlap(gmcharge, mcharge, alpha, n_list, &
-                               virial, use_virial, atprop)
+                               virial, use_virial, atprop=atprop)
          SELECT CASE (ewald_type)
          CASE DEFAULT
             CPABORT("Invalid Ewald type")
@@ -273,7 +272,8 @@ CONTAINS
             CPABORT("PME not implemented in DFTB")
          CASE (do_ewald_spme)
             CALL tb_spme_evaluate(ewald_env, ewald_pw, particle_set, cell, &
-                                  gmcharge, mcharge, calculate_forces, virial, use_virial, atprop)
+                                  gmcharge, mcharge, calculate_forces, virial, &
+                                  use_virial, atprop=atprop)
          END SELECT
       ELSE
          ! direct sum
@@ -298,7 +298,7 @@ CONTAINS
          CPASSERT(.NOT. use_virial)
       END IF
 
-      CALL mp_sum(gmcharge(:, 1), para_env%group)
+      CALL para_env%sum(gmcharge(:, 1))
 
       IF (do_ewald) THEN
          ! add self charge interaction and background charge contribution
@@ -324,8 +324,6 @@ CONTAINS
       END IF
 
       IF (calculate_forces) THEN
-         ALLOCATE (atom_of_kind(natom), kind_of(natom))
-
          CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                   kind_of=kind_of, &
                                   atom_of_kind=atom_of_kind)
@@ -541,9 +539,6 @@ CONTAINS
          CALL release_sap_int(sap_int)
       END IF
 
-      IF (calculate_forces) THEN
-         DEALLOCATE (atom_of_kind, kind_of)
-      END IF
       DEALLOCATE (gmcharge)
 
       CALL timestop(handle)

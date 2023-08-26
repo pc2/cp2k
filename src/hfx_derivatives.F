@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -26,7 +26,7 @@ MODULE hfx_derivatives
                                  cp_print_key_finished_output, &
                                  cp_print_key_should_output, &
                                  cp_print_key_unit_nr
-   USE cp_para_types, ONLY: cp_para_env_type
+   USE message_passing, ONLY: mp_para_env_type
    USE dbcsr_api, ONLY: dbcsr_get_matrix_type, &
                         dbcsr_p_type, &
                         dbcsr_type_antisymmetric
@@ -64,7 +64,6 @@ MODULE hfx_derivatives
    USE libint_wrapper, ONLY: cp_libint_t
    USE machine, ONLY: m_walltime
    USE mathconstants, ONLY: fac
-   USE message_passing, ONLY: mp_sum
    USE orbital_pointers, ONLY: nco, &
                                ncoset, &
                                nso
@@ -120,7 +119,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: rho_ao
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: rho_ao_resp
       TYPE(section_vals_type), POINTER                   :: hfx_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(IN)                                :: irep
       LOGICAL, INTENT(IN)                                :: use_virial
       REAL(dp), INTENT(IN), OPTIONAL                     :: adiabatic_rescale_factor
@@ -266,7 +265,7 @@ CONTAINS
           my_x_data(1, 1)%potential_parameter%potential_type == do_potential_mix_cl_trunc) THEN
          IF (l_max > init_t_c_g0_lmax) THEN
             CALL open_file(unit_number=unit_id, file_name=my_x_data(1, 1)%potential_parameter%filename)
-            CALL init(l_max, unit_id, para_env%mepos, para_env%group)
+            CALL init(l_max, unit_id, para_env%mepos, para_env)
             CALL close_file(unit_id)
             init_t_c_g0_lmax = l_max
          END IF
@@ -290,7 +289,8 @@ CONTAINS
          my_adiabatic_rescale_factor = adiabatic_rescale_factor
       END IF
 
-!$OMP PARALLEL DEFAULT(NONE) SHARED(qs_env,&
+      !$OMP PARALLEL DEFAULT(OMP_DEFAULT_NONE_WITH_OOP) &
+!$OMP SHARED(qs_env,&
 !$OMP                                  rho_ao,&
 !$OMP                                  rho_ao_resp,&
 !$OMP                                  with_resp_density,&
@@ -434,8 +434,6 @@ CONTAINS
 
       !! Get screening parameter
 
-      ALLOCATE (atom_of_kind(natom))
-      ALLOCATE (kind_of(natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                atom_of_kind=atom_of_kind, &
                                kind_of=kind_of)
@@ -536,13 +534,8 @@ CONTAINS
       !! matrix is initialized to 1.0
       IF (screen_pmat_forces) THEN
          NULLIFY (shm_initial_p)
-         shm_initial_p => actual_x_data%initial_p
-         shm_pmax_atom => actual_x_data%pmax_atom
-
-         IF (memory_parameter%treat_forces_in_core) THEN
-            shm_initial_p => actual_x_data%initial_p_forces
-            shm_pmax_atom => actual_x_data%pmax_atom_forces
-         END IF
+         shm_initial_p => actual_x_data%initial_p_forces
+         shm_pmax_atom => actual_x_data%pmax_atom_forces
          IF (memory_parameter%recalc_forces) THEN
             CALL update_pmax_mat(shm_initial_p, &
                                  actual_x_data%map_atom_to_kind_atom, &
@@ -1585,7 +1578,7 @@ CONTAINS
       IF (actual_x_data%memory_parameter%recalc_forces) THEN
          tmp_i8(1:6) = (/shm_storage_counter_integrals, shm_neris_onthefly, shm_neris_incore, &
                          shm_neris_total, shm_nprim_ints, shm_stor_count_max_val/)
-         CALL mp_sum(tmp_i8, para_env%group)
+         CALL para_env%sum(tmp_i8)
          shm_storage_counter_integrals = tmp_i8(1)
          shm_neris_onthefly = tmp_i8(2)
          shm_neris_incore = tmp_i8(3)

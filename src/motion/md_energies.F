@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -30,7 +30,6 @@ MODULE md_energies
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
@@ -68,7 +67,7 @@ MODULE md_energies
    USE md_environment_types,            ONLY: get_md_env,&
                                               md_environment_type,&
                                               set_md_env
-   USE message_passing,                 ONLY: mp_max
+   USE message_passing,                 ONLY: mp_para_env_type
    USE motion_utils,                    ONLY: write_simulation_cell,&
                                               write_stress_tensor,&
                                               write_trajectory
@@ -271,10 +270,10 @@ CONTAINS
       TYPE(barostat_type), POINTER                       :: barostat
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(md_ener_type), POINTER                        :: md_ener
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: core_particles, particles, &
                                                             shell_particles
       TYPE(qmmm_env_type), POINTER                       :: qmmm_env
@@ -809,12 +808,12 @@ CONTAINS
 !> \note based on what is done in start/cp2k_runs.F
 ! **************************************************************************************************
    FUNCTION sample_memory(para_env) RESULT(max_memory)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER(KIND=int_8)                                :: max_memory
 
       CALL m_memory()
       max_memory = m_memory_max
-      CALL mp_max(max_memory, para_env%group)
+      CALL para_env%max(max_memory)
 
    END FUNCTION sample_memory
 

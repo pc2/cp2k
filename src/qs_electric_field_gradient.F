@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -21,7 +21,6 @@ MODULE qs_electric_field_gradient
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE eigenvalueproblems,              ONLY: diagonalise
    USE input_section_types,             ONLY: section_get_lval,&
                                               section_vals_get_subs_vals,&
@@ -30,12 +29,11 @@ MODULE qs_electric_field_gradient
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fac,&
                                               fourpi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: indso,&
                                               nsoset
    USE particle_types,                  ONLY: particle_type
-   USE paw_proj_set_types,              ONLY: get_paw_proj_set,&
-                                              paw_proj_set_type
+   USE paw_basis_types,                 ONLY: get_paw_basis_info
    USE physcon,                         ONLY: a_bohr,&
                                               e_charge,&
                                               joule
@@ -109,8 +107,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: rvals
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
@@ -416,7 +414,7 @@ CONTAINS
 
       ! calculate : Limit(r->0) V_hartree(r)/r^2
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(dp), DIMENSION(:, -2:), INTENT(inout)         :: vlimit
       TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom_set
       TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind
@@ -435,22 +433,20 @@ CONTAINS
       REAL(dp), DIMENSION(20)                            :: vgg
       REAL(dp), DIMENSION(:, :), POINTER                 :: coeff, zet
       REAL(dp), DIMENSION(:, :, :), POINTER              :: my_CG
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
-      TYPE(paw_proj_set_type), POINTER                   :: paw_proj
 
-      NULLIFY (orb_basis)
+      NULLIFY (basis_1c)
       NULLIFY (harmonics)
       NULLIFY (lmin, lmax, npgf, zet, my_CG, coeff)
 
-      CALL get_qs_kind(qs_kind=qs_kind, basis_set=orb_basis, &
-                       paw_proj_set=paw_proj, harmonics=harmonics)
+      CALL get_qs_kind(qs_kind=qs_kind, basis_set=basis_1c, basis_type="GAPW_1C", &
+                       harmonics=harmonics)
 
-      CALL get_gto_basis_set(gto_basis_set=orb_basis, lmax=lmax, lmin=lmin, &
+      CALL get_gto_basis_set(gto_basis_set=basis_1c, lmax=lmax, lmin=lmin, &
                              maxl=maxl, npgf=npgf, nset=nset, zet=zet, &
                              maxso=maxso)
-
-      CALL get_paw_proj_set(paw_proj_set=paw_proj, o2nindex=o2nindex)
+      CALL get_paw_basis_info(basis_1c, o2nindex=o2nindex)
 
       max_iso_not0 = harmonics%max_iso_not0
       max_s_harm = harmonics%max_s_harm
@@ -552,8 +548,9 @@ CONTAINS
          m1s = m1s + maxso
       END DO ! iset1
 
-      CALL mp_sum(vlimit, para_env%group)
+      CALL para_env%sum(vlimit)
 
+      DEALLOCATE (o2nindex)
       DEALLOCATE (CPC_sphere)
       DEALLOCATE (cg_list, cg_n_list)
 

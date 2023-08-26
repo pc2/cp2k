@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -41,7 +41,6 @@ MODULE constraint
    USE constraint_vsite,                ONLY: shake_vsite_ext,&
                                               shake_vsite_int
    USE cp_log_handling,                 ONLY: cp_to_string
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE input_constants,                 ONLY: npt_f_ensemble,&
                                               npt_i_ensemble,&
@@ -51,7 +50,8 @@ MODULE constraint
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE molecule_kind_types,             ONLY: get_molecule_kind,&
                                               get_molecule_kind_set,&
                                               molecule_kind_type
@@ -109,7 +109,8 @@ CONTAINS
       INTEGER, INTENT(in)                                :: log_unit, lagrange_mult
       LOGICAL, INTENT(IN)                                :: dump_lm
       TYPE(cell_type), POINTER                           :: cell
-      INTEGER, INTENT(in)                                :: group
+
+      CLASS(mp_comm_type), INTENT(in)                     :: group
       TYPE(distribution_1d_type), POINTER                :: local_particles
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'shake_control'
@@ -236,7 +237,8 @@ CONTAINS
       INTEGER, INTENT(in)                                :: log_unit, lagrange_mult
       LOGICAL, INTENT(IN)                                :: dump_lm
       TYPE(cell_type), POINTER                           :: cell
-      INTEGER, INTENT(in)                                :: group
+
+      CLASS(mp_comm_type), INTENT(in)                     :: group
       TYPE(distribution_1d_type), POINTER                :: local_particles
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'rattle_control'
@@ -355,7 +357,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: roll_tol
       INTEGER, INTENT(INOUT)                             :: iroll
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: vector_r, vector_v
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
          OPTIONAL                                        :: u
       TYPE(cell_type), POINTER                           :: cell
@@ -364,7 +367,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'shake_roll_control'
 
       INTEGER :: handle, i, ikind, imol, ishake_ext, ishake_int, k, lagrange_mult, log_unit, &
-         n3x3con, n4x6con, nconstraint, nkind, nmol_per_kind, nvsitecon
+                 n3x3con, n4x6con, nconstraint, nkind, nmol_per_kind, nvsitecon
       LOGICAL                                            :: do_ext_constraint, dump_lm
       REAL(KIND=dp)                                      :: int_max_sigma, mass, max_sigma, shake_tol
       REAL(KIND=dp), DIMENSION(3, 3)                     :: r_shake, v_shake
@@ -500,7 +503,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: veps
       REAL(KIND=dp), INTENT(OUT)                         :: roll_tol
       INTEGER, INTENT(INOUT)                             :: iroll
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
          OPTIONAL                                        :: u
       TYPE(cell_type), POINTER                           :: cell
@@ -579,7 +582,7 @@ CONTAINS
          END DO MOL
          ! Intermolecular Constraints
          IF (do_ext_constraint) THEN
-            CALL update_temporary_set(para_env%group, vel=vel)
+            CALL update_temporary_set(para_env, vel=vel)
             ! 3x3
             IF (gci%ng3x3 /= 0) &
                CALL rattle_roll_3x3_ext(gci, particle_set, vel, r_rattle, dt, &
@@ -597,7 +600,7 @@ CONTAINS
          CALL rattle_ext_info(log_unit, irattle_ext, max_sigma)
       END DO Rattle_Inter_Loop
       CALL dump_lagrange_mult(dump_lm, lagrange_mult, local_molecules, molecule_set, gci, &
-                              molecule_kind_set, para_env%group, "R")
+                              molecule_kind_set, para_env, "R")
       CALL check_tol(roll_tol, iroll, 'RATTLE', veps=veps)
       CALL timestop(handle)
    END SUBROUTINE rattle_roll_control
@@ -623,7 +626,8 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(global_constraint_type), POINTER              :: gci
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
       CHARACTER(LEN=1), INTENT(IN)                       :: id_type
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'dump_lagrange_mult'
@@ -680,7 +684,7 @@ CONTAINS
                   END IF
                END DO
             END DO MOL
-            CALL mp_sum(lagr, group)
+            CALL group%sum(lagr)
          END IF
          ! Intermolecular constraints
          IF (do_ext_constraint) THEN

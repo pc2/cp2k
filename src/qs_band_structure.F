@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,14 +13,11 @@
 ! **************************************************************************************************
 MODULE qs_band_structure
    USE cell_types,                      ONLY: cell_type
-   USE cp_blacs_env,                    ONLY: cp_blacs_env_retain,&
-                                              cp_blacs_env_type
+   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cp_para_env,                     ONLY: cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: read_float_object
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE input_section_types,             ONLY: section_vals_get,&
@@ -42,7 +39,7 @@ MODULE qs_band_structure
                                               kpoint_type
    USE machine,                         ONLY: m_walltime
    USE mathconstants,                   ONLY: twopi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE physcon,                         ONLY: angstrom,&
                                               evolt
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -123,10 +120,10 @@ CONTAINS
                                                             occupation_numbers, wkp
       REAL(kind=dp), DIMENSION(:, :), POINTER            :: kpgeneral, kspecial, xkp
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_type), POINTER                         :: kpoint
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: bs_input, kpset
 
       bs_input => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%BAND_STRUCTURE")
@@ -152,7 +149,7 @@ CONTAINS
             io_default = .TRUE.
          ELSE
             io_default = .FALSE.
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                CALL open_file(filename, unit_number=bs_data_unit, file_status="UNKNOWN", file_action="WRITE", &
                               file_position="APPEND")
             ELSE
@@ -257,8 +254,8 @@ CONTAINS
                      eigval(1:nmo) = 0.0_dp
                      occnum(1:nmo) = 0.0_dp
                   END IF
-                  CALL mp_sum(eigval, kpoint%para_env_inter_kp%group)
-                  CALL mp_sum(occnum, kpoint%para_env_inter_kp%group)
+                  CALL kpoint%para_env_inter_kp%sum(eigval)
+                  CALL kpoint%para_env_inter_kp%sum(occnum)
                   IF (bs_data_unit > 0) THEN
                      WRITE (UNIT=bs_data_unit, FMT="(A,I0,T15,A,I0,A,T24,3(1X,F14.8),3X,F14.8)") &
                         "#  Point ", ik, "  Spin ", ispin, ":", xkp(1:3, ik), wkp(ik)
@@ -284,7 +281,7 @@ CONTAINS
 
          ! Close output files
          IF (.NOT. io_default) THEN
-            IF (para_env%ionode) CALL close_file(bs_data_unit)
+            IF (para_env%is_source()) CALL close_file(bs_data_unit)
          END IF
 
       END IF
@@ -312,10 +309,11 @@ CONTAINS
          OPTIONAL                                        :: kpgeneral
       INTEGER, INTENT(IN), OPTIONAL                      :: group_size_ext
 
+      LOGICAL                                            :: diis_step
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
@@ -324,11 +322,7 @@ CONTAINS
       CALL calculate_kpoints_for_bs(kpoint, scheme, group_size_ext, mp_grid, kpgeneral)
 
       CALL get_qs_env(qs_env=qs_env, para_env=para_env, blacs_env=blacs_env)
-      kpoint%para_env => para_env
-      CALL cp_para_env_retain(para_env)
-      kpoint%blacs_env_all => blacs_env
-      CALL cp_blacs_env_retain(blacs_env)
-      CALL kpoint_env_initialize(kpoint)
+      CALL kpoint_env_initialize(kpoint, para_env, blacs_env)
 
       CALL kpoint_initialize_mos(kpoint, qs_env%mos, nadd)
       CALL kpoint_initialize_mo_set(kpoint)
@@ -338,7 +332,7 @@ CONTAINS
 
       CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, matrix_s_kp=matrix_s, &
                       scf_env=scf_env, scf_control=scf_control)
-      CALL do_general_diag_kp(matrix_ks, matrix_s, kpoint, scf_env, scf_control, .FALSE.)
+      CALL do_general_diag_kp(matrix_ks, matrix_s, kpoint, scf_env, scf_control, .FALSE., diis_step)
 
    END SUBROUTINE calculate_kp_orbitals
 

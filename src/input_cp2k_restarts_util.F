@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -112,9 +112,11 @@ CONTAINS
          END IF
          NULLIFY (my_val)
       END DO
+
       velocity_section%values(ik, 1)%list => vals
 
       CALL timestop(handle)
+
    END SUBROUTINE section_velocity_val_set
 
 END MODULE input_cp2k_restarts_util

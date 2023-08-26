@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -19,13 +19,13 @@ MODULE qs_basis_gradient
    USE cp_fm_types,                     ONLY: cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_copy,&
                                               dbcsr_p_type,&
                                               dbcsr_set,&
                                               dbcsr_type
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_core_hamiltonian,             ONLY: build_core_hamiltonian_matrix
    USE qs_density_matrices,             ONLY: calculate_density_matrix
@@ -41,7 +41,8 @@ MODULE qs_basis_gradient
                                               qs_kind_type
    USE qs_ks_methods,                   ONLY: qs_ks_allocate_basics,&
                                               qs_ks_update_qs_env
-   USE qs_ks_types,                     ONLY: qs_ks_env_type,&
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type,&
                                               set_ks_env
    USE qs_mixing_utils,                 ONLY: mixing_allocate
    USE qs_mo_methods,                   ONLY: make_basis_sm
@@ -92,10 +93,10 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: gradient
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s, matrix_w_kp
       TYPE(dbcsr_type), POINTER                          :: matrix
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: basis_force, force, qs_force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -279,19 +280,22 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_basis_reinit_energy'
 
       INTEGER                                            :: handle, ispin, nmo
+      LOGICAL                                            :: ks_is_complex
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s_kp, rho_ao_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(section_vals_type), POINTER                   :: input
 
       CALL timeset(routineN, handle)
 
+      NULLIFY (input, para_env, ks_env)
       ! rebuild neighbor lists
-      CALL get_qs_env(qs_env, input=input, para_env=para_env)
+      CALL get_qs_env(qs_env, input=input, para_env=para_env, ks_env=ks_env)
       CALL build_qs_neighbor_lists(qs_env, para_env, molecular=.FALSE., &
                                    force_env_section=input)
       ! update core hamiltonian
@@ -299,7 +303,8 @@ CONTAINS
       ! update structures
       CALL qs_env_update_s_mstruct(qs_env)
       ! KS matrices
-      CALL qs_ks_allocate_basics(qs_env)
+      CALL get_ks_env(ks_env, complex_ks=ks_is_complex)
+      CALL qs_ks_allocate_basics(qs_env, is_complex=ks_is_complex)
       ! reinit SCF task matrices
       NULLIFY (scf_env)
       CALL get_qs_env(qs_env, scf_env=scf_env, dft_control=dft_control)

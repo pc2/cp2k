@@ -1,6 +1,6 @@
 /*----------------------------------------------------------------------------*/
 /*  CP2K: A general program to perform molecular dynamics simulations         */
-/*  Copyright 2000-2022 CP2K developers group <https://cp2k.org>              */
+/*  Copyright 2000-2023 CP2K developers group <https://cp2k.org>              */
 /*                                                                            */
 /*  SPDX-License-Identifier: BSD-3-Clause                                     */
 /*----------------------------------------------------------------------------*/
@@ -13,13 +13,18 @@
 #include "common/grid_library.h"
 #include "grid_replay.h"
 
+// Only used to call MPI_Init and MPI_Finalize to avoid spurious MPI error.
+#if defined(__parallel)
+#include <mpi.h>
+#endif
+
 /*******************************************************************************
  * \brief Standin for mpi_sum, passed to grid_library_print_stats.
  * \author Ole Schuett
  ******************************************************************************/
 static void mpi_sum_func(long *number, int mpi_comm) {
-  *number += 0; // Nothing todo without MPI, pretend arguments are used anyways.
-  mpi_comm += 0;
+  (void)number; // mark used
+  (void)mpi_comm;
 }
 
 /*******************************************************************************
@@ -27,7 +32,7 @@ static void mpi_sum_func(long *number, int mpi_comm) {
  * \author Ole Schuett
  ******************************************************************************/
 static void print_func(char *message, int output_unit) {
-  output_unit += 0; // Pretend argument is used.
+  (void)output_unit; // mark used
   printf("%s", message);
 }
 
@@ -50,12 +55,13 @@ static int run_test(const char cp2k_root_dir[], const char task_file[]) {
   strcat(filename, "src/grid/sample_tasks/");
   strcat(filename, task_file);
 
+  const double tolerance = 1e-12;
   int errors = 0;
   for (int icol = 0; icol < 2; icol++) {
     for (int ibatch = 0; ibatch < 2; ibatch++) {
-      const double max_diff =
-          grid_replay(filename, 1, icol == 1, ibatch == 1, 1);
-      if (max_diff > 1e-12) {
+      const bool success =
+          grid_replay(filename, 1, icol == 1, ibatch == 1, 1, tolerance);
+      if (!success) {
         printf("Max diff too high, test failed.\n\n");
         errors++;
       }
@@ -65,6 +71,10 @@ static int run_test(const char cp2k_root_dir[], const char task_file[]) {
 }
 
 int main(int argc, char *argv[]) {
+#if defined(__parallel)
+  MPI_Init(&argc, &argv);
+#endif
+
   if (argc != 2) {
     printf("Usage: grid_unittest.x <cp2k-root-dir>\n");
     return 1;
@@ -79,6 +89,7 @@ int main(int argc, char *argv[]) {
   errors += run_test(argv[1], "ortho_density_l2200.task");
   errors += run_test(argv[1], "ortho_density_l3300.task");
   errors += run_test(argv[1], "ortho_density_l3333.task");
+  errors += run_test(argv[1], "ortho_density_l0505.task");
   errors += run_test(argv[1], "ortho_non_periodic.task");
   errors += run_test(argv[1], "ortho_tau.task");
   errors += run_test(argv[1], "general_density.task");
@@ -95,6 +106,10 @@ int main(int argc, char *argv[]) {
   } else {
     printf("\nFound %i errors :-(\n", errors);
   }
+
+#if defined(__parallel)
+  MPI_Finalize();
+#endif
 
   return errors;
 }

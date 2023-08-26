@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -32,7 +32,6 @@ MODULE ps_implicit_methods
                                               int_8
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
-   USE message_passing,                 ONLY: mp_sum
    USE ps_implicit_types,               ONLY: MIXED_BC,&
                                               MIXED_PERIODIC_BC,&
                                               NEUMANN_BC,&
@@ -633,13 +632,13 @@ CONTAINS
          CALL apply_P_operator(pw_pool, dielectric, v_new, Axvbar)
          Axvbar_avg = accurate_sum(Axvbar%cr3d)/ngpts
          gminusAxvbar_avg = g_avg - Axvbar_avg
-         CALL mp_sum(gminusAxvbar_avg, pw_grid%para%group)
+         CALL pw_grid%para%group%sum(gminusAxvbar_avg)
 
 ! evaluate Q_S * \lambda + v_D - B * \bar{v}
          CALL DGEMV('N', n_tiles_tot, n_tiles_tot, 1.0_dp, QS, n_tiles_tot, lambda_old, 1, 0.0_dp, QSxlambda, 1)
          v_bar1D(ps_implicit_env%idx_1dto3d) = RESHAPE(v_new%cr3d, (/data_size/))
          CALL DGEMV('N', n_tiles_tot, data_size, 1.0_dp, B, n_tiles_tot, v_bar1D, 1, 0.0_dp, Bxv_bar, 1)
-         CALL mp_sum(Bxv_bar, pw_grid%para%group)
+         CALL pw_grid%para%group%sum(Bxv_bar)
 ! solve R [\lambda; \eta] = [Q_S * \lambda + v_D - B * \bar{v}; 1^t * (g - \Delta(\bar{v}) - P(\bar{v}))]
          w = 0.0_dp
          w(:) = (/QSxlambda + v_D - Bxv_bar, gminusAxvbar_avg/)
@@ -682,7 +681,7 @@ CONTAINS
          IF (poisson_params%dbc_params%verbose_output) THEN
             v_new1D(ps_implicit_env%idx_1dto3d) = RESHAPE(v_new%cr3d, (/data_size/))
             CALL DGEMV('N', n_tiles_tot, data_size, 1.0_dp, B, n_tiles_tot, v_new1D, 1, 0.0_dp, Bxv_new, 1)
-            CALL mp_sum(Bxv_new, pw_grid%para%group)
+            CALL pw_grid%para%group%sum(Bxv_new)
             IF (outp_unit .GT. 0) THEN
                WRITE (outp_unit, '(T3,A,A)') "======== verbose ", REPEAT('=', 61)
                WRITE (outp_unit, '(T20,A)') "Drgn       tile      vhartree      lambda "
@@ -718,7 +717,7 @@ CONTAINS
 
       IF ((times_called .NE. 0) .AND. (.NOT. use_zero_initial_guess)) THEN
          CALL pw_copy(v_new, ps_implicit_env%initial_guess)
-         ps_implicit_env%initial_lambda = lambda_new
+         ps_implicit_env%initial_lambda(:) = lambda_new
       END IF
 
       ps_implicit_env%cstr_charge%cr3d = Btxlambda_new3D
@@ -918,13 +917,13 @@ CONTAINS
          CALL apply_P_operator(pw_pool_xpndd, dielectric, v_new_xpndd, Axvbar)
          Axvbar_avg = accurate_sum(Axvbar%cr3d)/ngpts
          gminusAxvbar_avg = g_avg - Axvbar_avg
-         CALL mp_sum(gminusAxvbar_avg, dct_pw_grid%para%group)
+         CALL dct_pw_grid%para%group%sum(gminusAxvbar_avg)
 
 ! evaluate Q_S * \lambda + v_D - B * \bar{v}
          CALL DGEMV('N', n_tiles_tot, n_tiles_tot, 1.0_dp, QS, n_tiles_tot, lambda_old, 1, 0.0_dp, QSxlambda, 1)
          v_bar1D(ps_implicit_env%idx_1dto3d) = RESHAPE(v_new_xpndd%cr3d, (/data_size/))
          CALL DGEMV('N', n_tiles_tot, data_size, 1.0_dp, B, n_tiles_tot, v_bar1D, 1, 0.0_dp, Bxv_bar, 1)
-         CALL mp_sum(Bxv_bar, dct_pw_grid%para%group)
+         CALL dct_pw_grid%para%group%sum(Bxv_bar)
 ! solve R [\lambda; \eta] = [Q_S * \lambda + v_D - B * \bar{v}; 1^t * (g - \Delta(\bar{v}) - P(\bar{v}))]
          w = 0.0_dp
          w(:) = (/QSxlambda + v_D - Bxv_bar, gminusAxvbar_avg/)
@@ -968,7 +967,7 @@ CONTAINS
          IF (poisson_params%dbc_params%verbose_output) THEN
             v_new1D(ps_implicit_env%idx_1dto3d) = RESHAPE(v_new_xpndd%cr3d, (/data_size/))
             CALL DGEMV('N', n_tiles_tot, data_size, 1.0_dp, B, n_tiles_tot, v_new1D, 1, 0.0_dp, Bxv_new, 1)
-            CALL mp_sum(Bxv_new, pw_grid%para%group)
+            CALL pw_grid%para%group%sum(Bxv_new)
             IF (outp_unit .GT. 0) THEN
                WRITE (outp_unit, '(T3,A)') "======== verbose "//REPEAT('=', 61)
                WRITE (outp_unit, '(T20,A)') "Drgn       tile      vhartree      lambda "
@@ -1007,7 +1006,7 @@ CONTAINS
 
       IF ((times_called .NE. 0) .AND. (.NOT. use_zero_initial_guess)) THEN
          CALL pw_copy(v_new_xpndd, ps_implicit_env%initial_guess)
-         ps_implicit_env%initial_lambda = lambda_new
+         ps_implicit_env%initial_lambda(:) = lambda_new
       END IF
 
       ps_implicit_env%cstr_charge%cr3d = Btxlambda_new3D
@@ -1108,7 +1107,7 @@ CONTAINS
       pw_grid_orig => pw_pool_orig%pw_grid
 
       logger => cp_get_default_logger()
-      IF (logger%para_env%mepos .EQ. logger%para_env%source) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -1151,6 +1150,11 @@ CONTAINS
 
          ALLOCATE (ps_implicit_env%idx_1dto3d(data_size))
          l = 1
+         ! Suppress OpenMP (at least the Intel compiler has an issue here)
+         ! An automatic OpenMP parallelization of this loop might be tricky
+         ! because of the l incrementation
+!$OMP PARALLEL IF(.FALSE.)
+!$OMP DO
          DO k = lb3, ub3
             DO j = lb2, ub2
                DO i = lb1, ub1
@@ -1161,6 +1165,8 @@ CONTAINS
                END DO
             END DO
          END DO
+!$OMP END DO
+!$OMP END PARALLEL
 
          n_contacts = SIZE(ps_implicit_env%contacts)
          n_tiles_tot = 0
@@ -1217,7 +1223,7 @@ CONTAINS
             END DO
             indx1 = indx2 + 1
          END DO
-         ps_implicit_env%B = TRANSPOSE(ps_implicit_env%Bt)
+         ps_implicit_env%B(:, :) = TRANSPOSE(ps_implicit_env%Bt)
 
 ! evaluate QS = - B*(\Delta^-1)*B^t
          IF (data_size .NE. 0) THEN
@@ -1225,18 +1231,18 @@ CONTAINS
                        -1.0_dp, ps_implicit_env%B, n_tiles_tot, QAinvxBt, &
                        data_size, 0.0_dp, ps_implicit_env%QS, n_tiles_tot)
          END IF
-         CALL mp_sum(ps_implicit_env%QS, pw_grid_orig%para%group)
+         CALL pw_grid_orig%para%group%sum(ps_implicit_env%QS)
 
 ! evaluate B*1
          Bxunit_vec(:) = SUM(ps_implicit_env%B, 2)/ngpts
-         CALL mp_sum(Bxunit_vec, pw_grid_orig%para%group)
+         CALL pw_grid_orig%para%group%sum(Bxunit_vec)
 ! set up R = [QS B*1; (B*1)^t 0]
          R = 0.0_dp
          R(1:n_tiles_tot, 1:n_tiles_tot) = ps_implicit_env%QS
          R(1:n_tiles_tot, n_tiles_tot + 1) = Bxunit_vec
          R(n_tiles_tot + 1, 1:n_tiles_tot) = Bxunit_vec
 ! evaluate R^(-1)
-         ps_implicit_env%Rinv = R
+         ps_implicit_env%Rinv(:, :) = R
          CALL DGETRF(n_tiles_tot + 1, n_tiles_tot + 1, ps_implicit_env%Rinv, n_tiles_tot + 1, ipiv, info)
          IF (info .NE. 0) &
             CALL cp_abort(__LOCATION__, &
@@ -1250,7 +1256,7 @@ CONTAINS
          CALL pw_pool_release(pw_pool_xpndd)
 
          done_preparing = .TRUE.
-         CALL mp_sum(done_preparing, pw_grid_orig%para%group)
+         CALL pw_grid_orig%para%group%sum(done_preparing)
          IF ((unit_nr .GT. 0) .AND. done_preparing) THEN
             WRITE (unit_nr, "(T3,A,/,T3,A,/,A)") "POISSON| ... Done. ", REPEAT('-', 78)
          END IF
@@ -1280,6 +1286,11 @@ CONTAINS
 
          ALLOCATE (ps_implicit_env%idx_1dto3d(data_size))
          l = 1
+         ! Suppress OpenMP (at least the Intel compiler has an issue here)
+         ! An automatic OpenMP parallelization of this loop might be tricky
+         ! because of the l incrementation
+!$OMP PARALLEL IF(.FALSE.)
+!$OMP DO
          DO k = lb3, ub3
             DO j = lb2, ub2
                DO i = lb1, ub1
@@ -1290,6 +1301,8 @@ CONTAINS
                END DO
             END DO
          END DO
+!$OMP END DO
+!$OMP END PARALLEL
 
          n_contacts = SIZE(ps_implicit_env%contacts)
          n_tiles_tot = 0
@@ -1339,7 +1352,7 @@ CONTAINS
             END DO
             indx1 = indx2 + 1
          END DO
-         ps_implicit_env%B = TRANSPOSE(ps_implicit_env%Bt)
+         ps_implicit_env%B(:, :) = TRANSPOSE(ps_implicit_env%Bt)
 
 ! evaluate QS = - B*(\Delta^-1)*B^t
          IF (data_size .NE. 0) THEN
@@ -1347,18 +1360,18 @@ CONTAINS
                        -1.0_dp, ps_implicit_env%B, n_tiles_tot, QAinvxBt, &
                        data_size, 0.0_dp, ps_implicit_env%QS, n_tiles_tot)
          END IF
-         CALL mp_sum(ps_implicit_env%QS, pw_grid_orig%para%group)
+         CALL pw_grid_orig%para%group%sum(ps_implicit_env%QS)
 
 ! evaluate B*1
          Bxunit_vec(:) = SUM(ps_implicit_env%B, 2)/ngpts
-         CALL mp_sum(Bxunit_vec, pw_grid_orig%para%group)
+         CALL pw_grid_orig%para%group%sum(Bxunit_vec)
 ! set up R = [QS B*1; (B*1)^t 0]
          R = 0.0_dp
          R(1:n_tiles_tot, 1:n_tiles_tot) = ps_implicit_env%QS
          R(1:n_tiles_tot, n_tiles_tot + 1) = Bxunit_vec
          R(n_tiles_tot + 1, 1:n_tiles_tot) = Bxunit_vec
 ! evaluate R^(-1)
-         ps_implicit_env%Rinv = R
+         ps_implicit_env%Rinv(:, :) = R
          CALL DGETRF(n_tiles_tot + 1, n_tiles_tot + 1, ps_implicit_env%Rinv, n_tiles_tot + 1, ipiv, info)
          IF (info .NE. 0) &
             CALL cp_abort(__LOCATION__, &
@@ -1371,7 +1384,7 @@ CONTAINS
          DEALLOCATE (QAinvxBt, Bxunit_vec, R, work_arr, ipiv)
 
          done_preparing = .TRUE.
-         CALL mp_sum(done_preparing, pw_grid_orig%para%group)
+         CALL pw_grid_orig%para%group%sum(done_preparing)
          IF ((unit_nr .GT. 0) .AND. done_preparing) THEN
             WRITE (unit_nr, "(T3,A,/,T3,A,/,A)") "POISSON| ... Done. ", REPEAT('-', 78)
          END IF
@@ -1860,8 +1873,8 @@ CONTAINS
       ehartree_rho_cstr = accurate_sum(dielectric%eps%cr3d*Btxlambda*v%cr3d/fourpi)
       ehartree_rho = 0.5_dp*ehartree_rho*dvol
       ehartree_rho_cstr = 0.5_dp*ehartree_rho_cstr*dvol
-      CALL mp_sum(ehartree_rho, pw_grid%para%group)
-      CALL mp_sum(ehartree_rho_cstr, pw_grid%para%group)
+      CALL pw_grid%para%group%sum(ehartree_rho)
+      CALL pw_grid%para%group%sum(ehartree_rho_cstr)
       electric_enthalpy = ehartree_rho + ehartree_rho_cstr
       ehartree = ehartree_rho - ehartree_rho_cstr
 
@@ -1906,13 +1919,13 @@ CONTAINS
       CALL apply_inv_laplace_operator_fft(pw_pool, green, res_new, QAinvxres_new)
 ! (normalized) preconditioned residual norm error :
       pres_error = accurate_sum(QAinvxres_new%cr3d(:, :, :)**2)
-      CALL mp_sum(pres_error, pw_pool%pw_grid%para%group)
+      CALL pw_pool%pw_grid%para%group%sum(pres_error)
       pres_error = SQRT(pres_error)/vol
 
 ! normalized absolute error :
 ! nabs_error := \frac{\| v_old - v_new \|}{volume}
       nabs_error = accurate_sum(ABS(v_old%cr3d - v_new%cr3d)**2)
-      CALL mp_sum(nabs_error, pw_pool%pw_grid%para%group)
+      CALL pw_pool%pw_grid%para%group%sum(nabs_error)
       nabs_error = SQRT(nabs_error)/vol
 
       CALL timestop(handle)
@@ -1957,13 +1970,13 @@ CONTAINS
       CALL apply_inv_laplace_operator_dct(pw_pool, green, res_new, QAinvxres_new)
 ! (normalized) preconditioned residual norm error :
       pres_error = accurate_sum(QAinvxres_new%cr3d(:, :, :)**2)
-      CALL mp_sum(pres_error, pw_pool%pw_grid%para%group)
+      CALL pw_pool%pw_grid%para%group%sum(pres_error)
       pres_error = SQRT(pres_error)/vol
 
 ! normalized absolute error :
 ! nabs_error := \frac{\| v_old - v_new \|}{volume}
       nabs_error = accurate_sum(ABS(v_old%cr3d - v_new%cr3d)**2)
-      CALL mp_sum(nabs_error, pw_pool%pw_grid%para%group)
+      CALL pw_pool%pw_grid%para%group%sum(nabs_error)
       nabs_error = SQRT(nabs_error)/vol
 
       CALL timestop(handle)
@@ -1995,7 +2008,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       logger => cp_get_default_logger()
-      IF (logger%para_env%mepos .EQ. logger%para_env%source) THEN
+      IF (logger%para_env%is_source()) THEN
          outp_unit = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          outp_unit = -1
@@ -2097,8 +2110,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE convert_1dto3d(idx_1dto3d, arr1d, arr3d)
 
-      INTEGER, DIMENSION(:), INTENT(IN), POINTER         :: idx_1dto3d
-      REAL(dp), ALLOCATABLE, DIMENSION(:), INTENT(IN)    :: arr1d
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: idx_1dto3d
+      REAL(dp), DIMENSION(:), INTENT(IN)                 :: arr1d
       REAL(dp), ALLOCATABLE, DIMENSION(:, :, :), &
          INTENT(INOUT)                                   :: arr3d
 

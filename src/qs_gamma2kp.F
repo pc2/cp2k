@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,7 +12,6 @@
 !> \author JGH
 ! **************************************************************************************************
 MODULE qs_gamma2kp
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_p_type
@@ -25,6 +24,8 @@ MODULE qs_gamma2kp
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_create,&
                                               kpoint_type
+   USE message_passing,                 ONLY: mp_para_env_type
+   USE pw_methods,                      ONLY: pw_copy
    USE pw_types,                        ONLY: pw_type
    USE qs_energy_init,                  ONLY: qs_energies_init
    USE qs_environment,                  ONLY: qs_init
@@ -63,10 +64,10 @@ CONTAINS
 
       INTEGER                                            :: ispin, xc_func
       LOGICAL                                            :: without_xc_terms
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: cp_subsys
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: rho_ao_kp, rho_ao_kp_gamma
       TYPE(kpoint_type), POINTER                         :: kpoint
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_type), DIMENSION(:), POINTER               :: rho_g_gamma, rho_g_kp, rho_r_gamma, &
                                                             rho_r_kp
       TYPE(qs_rho_type), POINTER                         :: rho, rho_gamma
@@ -123,8 +124,8 @@ CONTAINS
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp, rho_r=rho_r_kp, rho_g=rho_g_kp)
 
       DO ispin = 1, SIZE(rho_r_gamma)
-         rho_r_kp(ispin)%cr3d(:, :, :) = rho_r_gamma(ispin)%cr3d(:, :, :)
-         rho_g_kp(ispin)%cc(:) = rho_g_gamma(ispin)%cc(:)
+         CALL pw_copy(rho_r_gamma(ispin), rho_r_kp(ispin))
+         CALL pw_copy(rho_g_gamma(ispin), rho_g_kp(ispin))
          CALL dbcsr_add(matrix_a=rho_ao_kp(ispin, 1)%matrix, alpha_scalar=0.0_dp, &
                         matrix_b=rho_ao_kp_gamma(ispin, 1)%matrix, beta_scalar=1.0_dp)
       END DO

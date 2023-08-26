@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -40,7 +40,6 @@ MODULE qs_fb_env_methods
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE dbcsr_api,                       ONLY: &
         dbcsr_create, dbcsr_finalize, dbcsr_get_info, dbcsr_iterator_blocks_left, &
@@ -57,7 +56,7 @@ MODULE qs_fb_env_methods
                                               section_vals_val_get
    USE kinds,                           ONLY: default_string_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_max
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: nco,&
                                               ncoset
    USE parallel_gemm_api,               ONLY: parallel_gemm
@@ -154,7 +153,6 @@ CONTAINS
                                                             fm_matrix_filtered_s, fm_matrix_ortho, &
                                                             fm_matrix_work
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_filtered
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_filter
       TYPE(dbcsr_type)                                   :: matrix_filtered_ks, matrix_filtered_s, &
                                                             matrix_tmp
@@ -162,6 +160,7 @@ CONTAINS
       TYPE(fb_atomic_halo_list_obj)                      :: atomic_halos
       TYPE(fb_trial_fns_obj)                             :: trial_fns
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_filtered
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
@@ -198,7 +197,7 @@ CONTAINS
 
       DO ispin = 1, nspin
          CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, &
-                               scf_env%scf_work1(ispin)%matrix)
+                               scf_env%scf_work1(ispin))
       END DO
 
       eps_diis = scf_control%eps_diis
@@ -857,9 +856,9 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: pair_radii
       REAL(KIND=dp), DIMENSION(:), POINTER               :: rcut
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(fb_atomic_halo_list_obj)                      :: atomic_halos
       TYPE(fb_atomic_halo_obj), DIMENSION(:), POINTER    :: halos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -891,7 +890,7 @@ CONTAINS
 
       ! get the maximum number of local atoms across the procs.
       max_natoms_local = natoms_local
-      CALL mp_max(max_natoms_local, para_env%group)
+      CALL para_env%max(max_natoms_local)
 
       ! create the halos, one for each local atom
       ALLOCATE (halos(natoms_local))

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,8 +15,6 @@ MODULE qmmm_pw_grid
                                               do_qmmm_swave
    USE kinds,                           ONLY: dp,&
                                               int_8
-   USE message_passing,                 ONLY: mp_comm_dup,&
-                                              mp_environ
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
    USE pw_grid_types,                   ONLY: FULLSPACE,&
@@ -120,7 +118,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: pw_mode
 
       INTEGER                                            :: pw_mode_loc
-      INTEGER, DIMENSION(:), POINTER                     :: pos_of_x
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: pos_of_x
 
       CPASSERT(pw_grid_in%ngpts_cut > 0)
       CPASSERT(.NOT. ASSOCIATED(pw_grid_out))
@@ -158,35 +156,26 @@ CONTAINS
       pw_grid_out%vol = pw_grid_in%vol*REAL(pw_grid_out%ngpts, dp) &
                         /REAL(pw_grid_in%ngpts, dp) !FM do not modify?
       pw_grid_out%cutoff = pw_grid_in%cutoff
-      NULLIFY (pw_grid_out%mapl%pos, pw_grid_out%mapl%neg, &
-               pw_grid_out%mapm%pos, pw_grid_out%mapm%neg, &
-               pw_grid_out%mapn%pos, pw_grid_out%mapn%neg)
 
       !para
-      CALL mp_environ(pw_grid_out%para%group_size, &
-                      pw_grid_out%para%my_pos, &
-                      pw_grid_out%para%group)
+      pw_grid_out%para%group_size = pw_grid_out%para%group%num_pe
+      pw_grid_out%para%my_pos = pw_grid_out%para%group%mepos
       pw_grid_out%para%group_head_id = pw_grid_in%para%group_head_id
       pw_grid_out%para%group_head = &
          (pw_grid_out%para%group_head_id == pw_grid_out%para%my_pos)
       pw_grid_out%para%mode = pw_mode_loc
-      NULLIFY (pw_grid_out%para%yzp, &
-               pw_grid_out%para%yzq, &
-               pw_grid_out%para%nyzray, &
-               pw_grid_out%para%bo)
       ALLOCATE (pos_of_x(pw_grid_out%bounds(1, 1):pw_grid_out%bounds(2, 1)))
       pos_of_x(:pw_grid_out%bounds(2, 1) - 1) = pw_grid_in%para%pos_of_x
       pos_of_x(pw_grid_out%bounds(2, 1)) = pos_of_x(pw_grid_out%bounds(2, 1) - 1)
-      pw_grid_out%para%pos_of_x => pos_of_x
+      CALL MOVE_ALLOC(pos_of_x, pw_grid_out%para%pos_of_x)
       pw_grid_out%para%rs_dims = pw_grid_in%para%rs_dims
       IF (PRODUCT(pw_grid_in%para%rs_dims) /= 0) THEN
-         CALL mp_comm_dup(pw_grid_in%para%rs_group, &
-                          pw_grid_out%para%rs_group)
+         CALL pw_grid_out%para%rs_group%from_dup(pw_grid_in%para%rs_group)
       END IF
       pw_grid_out%para%rs_pos = pw_grid_in%para%rs_pos
       pw_grid_out%para%rs_mpo = pw_grid_in%para%rs_mpo
 
-      NULLIFY (pw_grid_out%g, pw_grid_out%gsq, pw_grid_out%g_hat)
+      NULLIFY (pw_grid_out%g, pw_grid_out%gsq)
       CPASSERT(pw_grid_in%grid_span == FULLSPACE)
       pw_grid_out%grid_span = pw_grid_in%grid_span
       pw_grid_out%have_g0 = .FALSE.

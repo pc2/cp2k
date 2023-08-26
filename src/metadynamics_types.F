@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -11,13 +11,12 @@
 !>      01.2005 created [fawzi and ale]
 ! **************************************************************************************************
 MODULE metadynamics_types
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: default_path_length,&
                                               dp
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
    USE parallel_rng_types,              ONLY: rng_stream_type
 #include "./base/base_uses.f90"
 
@@ -114,7 +113,7 @@ MODULE metadynamics_types
       TYPE(hills_env_type), POINTER             :: hills_env
       TYPE(metavar_type), POINTER, DIMENSION(:) :: metavar
       TYPE(multiple_walkers_type), POINTER      :: multiple_walkers
-      TYPE(cp_para_env_type), POINTER           :: para_env
+      TYPE(mp_para_env_type), POINTER           :: para_env
       TYPE(section_vals_type), POINTER          :: metadyn_section
       TYPE(rng_stream_type), DIMENSION(:), &
          ALLOCATABLE :: rng
@@ -145,7 +144,7 @@ CONTAINS
       TYPE(meta_env_type), INTENT(OUT)                   :: meta_env
       INTEGER, INTENT(in)                                :: n_colvar
       REAL(dp), INTENT(in)                               :: dt
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: metadyn_section
 
       INTEGER                                            :: i
@@ -162,7 +161,7 @@ CONTAINS
       meta_env%restart = .TRUE.
       meta_env%n_colvar = n_colvar
       meta_env%para_env => para_env
-      CALL cp_para_env_retain(para_env)
+      CALL para_env%retain()
 
       meta_env%ekin_s = 0.0_dp
       meta_env%epot_s = 0.0_dp
@@ -248,7 +247,7 @@ CONTAINS
 
       INTEGER                                            :: i
 
-      CALL cp_para_env_release(meta_env%para_env)
+      CALL mp_para_env_release(meta_env%para_env)
       IF (ASSOCIATED(meta_env%metavar)) THEN
          DO i = 1, SIZE(meta_env%metavar)
             IF (ASSOCIATED(meta_env%metavar(i)%walls)) THEN

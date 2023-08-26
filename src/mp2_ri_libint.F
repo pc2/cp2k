@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -35,7 +35,6 @@ MODULE mp2_ri_libint
                                               cp_fm_release,&
                                               cp_fm_set_submatrix,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE gamma,                           ONLY: init_md_ftable
    USE hfx_energy_potential,            ONLY: coulomb4
    USE hfx_pair_list_methods,           ONLY: build_pair_list_mp2
@@ -50,7 +49,7 @@ MODULE mp2_ri_libint
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE libint_wrapper,                  ONLY: cp_libint_t
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mp2_types,                       ONLY: init_TShPSC_lmax,&
                                               mp2_biel_type,&
                                               mp2_type,&
@@ -112,7 +111,7 @@ CONTAINS
       TYPE(hfx_basis_type), DIMENSION(:), POINTER        :: basis_S0
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: RI_index_table
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: Lai
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'libint_ri_mp2'
@@ -410,7 +409,7 @@ CONTAINS
 
       TYPE(mp2_type)                                     :: mp2_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(mp2_biel_type)                                :: mp2_biel
       INTEGER                                            :: dimen
       REAL(KIND=dp), DIMENSION(dimen, dimen)             :: C
@@ -667,7 +666,7 @@ CONTAINS
       END DO !iatom
 
       ! now create a fm_matrix for the L matrix
-      CALL mp_sum(L_full_matrix, para_env%group)
+      CALL para_env%sum(L_full_matrix)
 
       ! create a sub blacs_env
       NULLIFY (blacs_env)
@@ -909,7 +908,7 @@ CONTAINS
          END DO
       END DO
 
-      CALL mp_sum(Lai, para_env%group)
+      CALL para_env%sum(Lai)
 
       DO iiB = 1, occupied
          IF (MOD(iiB, para_env%num_pe) == para_env%mepos) THEN
@@ -919,7 +918,7 @@ CONTAINS
          END IF
       END DO
 
-      CALL mp_sum(Lai, para_env%group)
+      CALL para_env%sum(Lai)
 
       DEALLOCATE (set_list_kl)
 
@@ -997,7 +996,7 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
       TYPE(mp2_type), INTENT(INOUT)                      :: mp2_env
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       TYPE(hfx_potential_type), INTENT(OUT)              :: mp2_potential_parameter
       TYPE(hfx_type), POINTER                            :: actual_x_data
       LOGICAL, INTENT(OUT)                               :: do_periodic
@@ -1099,10 +1098,7 @@ CONTAINS
 
       natom = SIZE(particle_set, 1)
 
-      ALLOCATE (kind_of(natom))
-
-      CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
-                               kind_of=kind_of)
+      CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, kind_of=kind_of)
 
       !! precompute maximum nco and allocate scratch
       ncos_max = 0
@@ -1193,18 +1189,18 @@ CONTAINS
 
       TYPE(mp2_type)                                     :: mp2_env
       INTEGER, INTENT(IN)                                :: l_max
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       TYPE(hfx_potential_type), INTENT(OUT)              :: mp2_potential_parameter
 
       INTEGER                                            :: unit_id
 
       IF (mp2_env%potential_parameter%potential_type == do_potential_TShPSC) THEN
          IF (l_max > init_TShPSC_lmax) THEN
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                CALL open_file(unit_number=unit_id, file_name=mp2_env%potential_parameter%filename)
             END IF
-            CALL init(l_max, unit_id, para_env%mepos, para_env%group)
-            IF (para_env%ionode) THEN
+            CALL init(l_max, unit_id, para_env%mepos, para_env)
+            IF (para_env%is_source()) THEN
                CALL close_file(unit_id)
             END IF
             init_TShPSC_lmax = l_max

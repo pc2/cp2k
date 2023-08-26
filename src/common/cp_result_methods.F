@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,7 +15,6 @@
 !>                   - module more lean
 ! **************************************************************************************************
 MODULE cp_result_methods
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_result_types,                 ONLY: &
         cp_result_clean, cp_result_copy, cp_result_create, cp_result_release, cp_result_type, &
         cp_result_value_copy, cp_result_value_create, cp_result_value_init, &
@@ -23,7 +22,7 @@ MODULE cp_result_methods
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -434,7 +433,7 @@ CONTAINS
    SUBROUTINE cp_results_mp_bcast(results, source, para_env)
       TYPE(cp_result_type), POINTER                      :: results
       INTEGER, INTENT(IN)                                :: source
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: i, nlist
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: size_value, type_in_use
@@ -442,7 +441,7 @@ CONTAINS
       CPASSERT(ASSOCIATED(results))
       nlist = 0
       IF (para_env%mepos == source) nlist = SIZE(results%result_value)
-      CALL mp_bcast(nlist, source, para_env%group)
+      CALL para_env%bcast(nlist, source)
 
       ALLOCATE (size_value(nlist))
       ALLOCATE (type_in_use(nlist))
@@ -452,8 +451,8 @@ CONTAINS
                            n_entries=size_value(i), type_in_use=type_in_use(i))
          END DO
       END IF
-      CALL mp_bcast(size_value, source, para_env%group)
-      CALL mp_bcast(type_in_use, source, para_env%group)
+      CALL para_env%bcast(size_value, source)
+      CALL para_env%bcast(type_in_use, source)
 
       IF (para_env%mepos /= source) THEN
          CALL cp_result_clean(results)
@@ -468,14 +467,14 @@ CONTAINS
          END DO
       END IF
       DO i = 1, nlist
-         CALL mp_bcast(results%result_label(i), source, para_env%group)
+         CALL para_env%bcast(results%result_label(i), source)
          SELECT CASE (results%result_value(i)%value%type_in_use)
          CASE (result_type_real)
-            CALL mp_bcast(results%result_value(i)%value%real_type, source, para_env%group)
+            CALL para_env%bcast(results%result_value(i)%value%real_type, source)
          CASE (result_type_integer)
-            CALL mp_bcast(results%result_value(i)%value%integer_type, source, para_env%group)
+            CALL para_env%bcast(results%result_value(i)%value%integer_type, source)
          CASE (result_type_logical)
-            CALL mp_bcast(results%result_value(i)%value%logical_type, source, para_env%group)
+            CALL para_env%bcast(results%result_value(i)%value%logical_type, source)
          CASE DEFAULT
             CPABORT("Type not implemented in cp_result_type")
          END SELECT

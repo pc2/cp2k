@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -35,7 +35,6 @@ MODULE colvar_methods
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_get_next_line,&
                                               parser_get_object
    USE cp_parser_types,                 ONLY: cp_parser_type,&
@@ -81,8 +80,7 @@ MODULE colvar_methods
                                               twopi
    USE mathlib,                         ONLY: vector_product
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_sum,&
-                                              mp_sync
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mixed_energy_types,              ONLY: mixed_force_type
    USE mixed_environment_utils,         ONLY: get_subsys_map_index
    USE molecule_kind_types,             ONLY: fixd_constraint_type
@@ -125,7 +123,7 @@ CONTAINS
       TYPE(colvar_type), POINTER                         :: colvar
       INTEGER, INTENT(IN)                                :: icol
       TYPE(section_vals_type), POINTER                   :: colvar_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'colvar_read'
 
@@ -252,6 +250,7 @@ CONTAINS
          colvar%dist_param%i_at = iatms(1)
          colvar%dist_param%j_at = iatms(2)
          CALL section_vals_val_get(distance_section, "AXIS", i_val=colvar%dist_param%axis_id)
+         CALL section_vals_val_get(distance_section, "SIGN", l_val=colvar%dist_param%sign_d)
       ELSE IF (my_subsection(2)) THEN
          ! Angle
          wrk_section => angle_section
@@ -2206,21 +2205,21 @@ CONTAINS
                natom_iforce = SIZE(particles(iforce_eval)%list%els)
 
                ! Only the rank 0 process collect info for each computation
-               IF (force_env%sub_force_env(iforce_eval)%force_env%para_env%ionode) THEN
+               IF (force_env%sub_force_env(iforce_eval)%force_env%para_env%is_source()) THEN
                   glob_natoms(iforce_eval) = natom_iforce
                END IF
             END DO
 
             ! Handling Parallel execution
-            CALL mp_sync(force_env%para_env%group)
-            CALL mp_sum(glob_natoms, force_env%para_env%group)
+            CALL force_env%para_env%sync()
+            CALL force_env%para_env%sum(glob_natoms)
 
             ! Transfer forces
             DO iforce_eval = 1, nforce_eval
                ALLOCATE (global_forces(iforce_eval)%forces(3, glob_natoms(iforce_eval)))
                global_forces(iforce_eval)%forces = 0.0_dp
                IF (ASSOCIATED(force_env%sub_force_env(iforce_eval)%force_env)) THEN
-                  IF (force_env%sub_force_env(iforce_eval)%force_env%para_env%ionode) THEN
+                  IF (force_env%sub_force_env(iforce_eval)%force_env%para_env%is_source()) THEN
                      ! Forces
                      DO iparticle = 1, glob_natoms(iforce_eval)
                         global_forces(iforce_eval)%forces(:, iparticle) = &
@@ -2228,7 +2227,7 @@ CONTAINS
                      END DO
                   END IF
                END IF
-               CALL mp_sum(global_forces(iforce_eval)%forces, force_env%para_env%group)
+               CALL force_env%para_env%sum(global_forces(iforce_eval)%forces)
             END DO
 
             wrk_section => colvar%u_param%mixed_energy_section
@@ -2904,7 +2903,22 @@ CONTAINS
       END SELECT
       r12 = SQRT(xij(1)**2 + xij(2)**2 + xij(3)**2)
 
-      colvar%ss = r12
+      IF (colvar%dist_param%sign_d) THEN
+         SELECT CASE (colvar%dist_param%axis_id)
+         CASE (do_clv_x)
+            colvar%ss = xij(1)
+         CASE (do_clv_y)
+            colvar%ss = xij(2)
+         CASE (do_clv_z)
+            colvar%ss = xij(3)
+         CASE DEFAULT
+            !do_clv_xyz
+         END SELECT
+
+      ELSE
+         colvar%ss = r12
+      END IF
+
       fi(:) = xij/r12
       fj(:) = -xij/r12
 
@@ -5789,7 +5803,7 @@ CONTAINS
    SUBROUTINE read_frames(frame_section, para_env, nr_frames, r_ref, n_atoms)
 
       TYPE(section_vals_type), POINTER                   :: frame_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(IN)                                :: nr_frames
       REAL(dp), DIMENSION(:, :), POINTER                 :: r_ref
       INTEGER, INTENT(OUT)                               :: n_atoms

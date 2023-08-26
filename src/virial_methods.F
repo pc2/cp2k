@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,14 +15,14 @@ MODULE virial_methods
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind
    USE cell_types,                      ONLY: cell_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE kinds,                           ONLY: dp
    USE mathlib,                         ONLY: det_3x3,&
                                               jacobi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE particle_list_types,             ONLY: particle_list_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: pascal
@@ -50,7 +50,7 @@ CONTAINS
    SUBROUTINE virial_update(virial, subsys, para_env)
       TYPE(virial_type), INTENT(INOUT)                   :: virial
       TYPE(cp_subsys_type), POINTER                      :: subsys
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       TYPE(atomic_kind_list_type), POINTER               :: atomic_kinds
       TYPE(distribution_1d_type), POINTER                :: local_particles
@@ -60,7 +60,7 @@ CONTAINS
                          particles=particles)
 
       CALL virial_evaluate(atomic_kinds%els, particles%els, local_particles, &
-                           virial, para_env%group)
+                           virial, para_env)
 
    END SUBROUTINE virial_update
 
@@ -82,7 +82,8 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(distribution_1d_type), POINTER                :: local_particles
       TYPE(virial_type), INTENT(INOUT)                   :: virial
-      INTEGER, INTENT(IN)                                :: igroup
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: igroup
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'virial_evaluate'
 
@@ -113,7 +114,7 @@ CONTAINS
             END DO
          END DO
 
-         CALL mp_sum(virial%pv_kinetic, igroup)
+         CALL igroup%sum(virial%pv_kinetic)
 
          ! total virial
          virial%pv_total = virial%pv_virial + virial%pv_kinetic + virial%pv_constraint

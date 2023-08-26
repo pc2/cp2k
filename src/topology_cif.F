@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -11,10 +11,10 @@
 !> \date   12.2008
 ! **************************************************************************************************
 MODULE topology_cif
-   USE cell_methods,                    ONLY: read_cell_cif,&
+   USE cell_methods,                    ONLY: cell_create,&
+                                              read_cell_cif,&
                                               write_cell
-   USE cell_types,                      ONLY: cell_create,&
-                                              cell_release,&
+   USE cell_types,                      ONLY: cell_release,&
                                               cell_type,&
                                               pbc,&
                                               real_to_scaled,&
@@ -24,7 +24,6 @@ MODULE topology_cif
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_get_next_line,&
                                               parser_get_object,&
                                               parser_search_string
@@ -40,6 +39,7 @@ MODULE topology_cif
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_para_env_type
    USE string_table,                    ONLY: id2str,&
                                               s2s,&
                                               str2id
@@ -86,7 +86,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE read_coordinate_cif(topology, para_env, subsys_section)
       TYPE(topology_parameters_type)                     :: topology
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: subsys_section
 
       CHARACTER(len=*), PARAMETER :: routineN = 'read_coordinate_cif'
@@ -133,9 +133,9 @@ CONTAINS
 
       ! Create cell
       NULLIFY (cell)
-      CALL cell_create(cell)
+      CALL cell_create(cell, tag="CELL_CIF")
       CALL read_cell_cif(topology%coord_file_name, cell, para_env)
-      CALL write_cell(cell, subsys_section, label="CELL_CIF|")
+      CALL write_cell(cell, subsys_section)
 
       CALL parser_create(parser, topology%coord_file_name, &
                          para_env=para_env, apply_preprocessing=.FALSE.)
@@ -163,8 +163,13 @@ CONTAINS
       ifield = 0
       ii = 1
       ifield(ii) = 0
-      CALL parser_get_next_line(parser, 1)
+      CALL parser_search_string(parser, "_atom_site_", ignore_case=.FALSE., found=found, &
+                                begin_line=.FALSE., search_from_begin_of_file=.TRUE.)
       DO WHILE (INDEX(parser%input_line, "_atom_site_") /= 0)
+         IF (INDEX(parser%input_line, "_atom_site_label") /= 0) THEN
+            CALL parser_get_next_line(parser, 1)
+            CYCLE
+         END IF
          ii = ii + 1
          CPASSERT(ii <= 20)
 

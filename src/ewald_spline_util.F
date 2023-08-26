@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,19 +13,18 @@
 !> \author Teodoro Laino
 ! **************************************************************************************************
 MODULE ewald_spline_util
-   USE cell_types,                      ONLY: cell_create,&
-                                              cell_release,&
+   USE cell_methods,                    ONLY: cell_create
+   USE cell_types,                      ONLY: cell_release,&
                                               cell_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_grid_types,                   ONLY: HALFSPACE,&
                                               pw_grid_type
    USE pw_grids,                        ONLY: pw_grid_create,&
@@ -84,7 +83,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: param_section
       CHARACTER(LEN=*), INTENT(IN)                       :: tag
       TYPE(section_vals_type), POINTER                   :: print_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: bo(2, 3), iounit
       TYPE(cell_type), POINTER                           :: cell
@@ -101,7 +100,7 @@ CONTAINS
       NULLIFY (cell, pw)
 
       CALL cell_create(cell, hmat=hmat, periodic=(/1, 1, 1/))
-      CALL pw_grid_create(pw_grid, para_env%group, local=.TRUE.)
+      CALL pw_grid_create(pw_grid, para_env, local=.TRUE.)
       logger => cp_get_default_logger()
       iounit = cp_print_key_unit_nr(logger, print_section, "", &
                                     extension=".Log")
@@ -297,7 +296,7 @@ CONTAINS
          grid%cr3d(gbo(1, 1):nxlim, gbo(1, 2):nylim, gbo(1, 3):nzlim) = 0.0_dp
       END IF ! NLg_loc > 0
 
-      CALL mp_sum(grid%cr3d(gbo(1, 1):nxlim, gbo(1, 2):nylim, gbo(1, 3):nzlim), grid%pw_grid%para%group)
+      CALL grid%pw_grid%para%group%sum(grid%cr3d(gbo(1, 1):nxlim, gbo(1, 2):nylim, gbo(1, 3):nzlim))
 
       Fake_LoopOnGrid: DO k = gbo(1, 3), gbo(2, 3)
          my_k = k

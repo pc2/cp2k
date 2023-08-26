@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,8 +12,7 @@
 !> \author Frederick Stein
 ! **************************************************************************************************
 MODULE group_dist_types
-   USE cp_para_types,                   ONLY: cp_para_env_type
-   USE message_passing,                 ONLY: mp_allgather
+   USE message_passing,                 ONLY: mp_comm_type
    USE util,                            ONLY: get_limit
 #include "./base/base_uses.f90"
 
@@ -28,7 +27,7 @@ MODULE group_dist_types
 
    ! Type to represent start, end and size of one group (usually the own group)
    TYPE group_dist_d0_type
-      INTEGER :: starts, ends, sizes
+      INTEGER :: starts = -1, ends = -1, sizes = -1
    END TYPE group_dist_d0_type
 
    ! Class to represent 1d-sets of starts, ends and sizes of all groups
@@ -130,12 +129,13 @@ CONTAINS
 !> \param starts ...
 !> \param ends ...
 !> \param sizes ...
-!> \param para_env ...
+!> \param comm ...
 ! **************************************************************************************************
-   SUBROUTINE create_group_dist_d1_i3(this, starts, ends, sizes, para_env)
+   SUBROUTINE create_group_dist_d1_i3(this, starts, ends, sizes, comm)
       TYPE(group_dist_d1_type), INTENT(INOUT)            :: this
       INTEGER, INTENT(IN)                                :: starts, ends, sizes
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+
+      CLASS(mp_comm_type), INTENT(IN)                    :: comm
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'create_group_dist_d1_i3'
 
@@ -143,13 +143,13 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      ALLOCATE (this%starts(0:para_env%num_pe - 1))
-      ALLOCATE (this%ends(0:para_env%num_pe - 1))
-      ALLOCATE (this%sizes(0:para_env%num_pe - 1))
+      ALLOCATE (this%starts(0:comm%num_pe - 1))
+      ALLOCATE (this%ends(0:comm%num_pe - 1))
+      ALLOCATE (this%sizes(0:comm%num_pe - 1))
 
-      CALL mp_allgather(starts, this%starts, para_env%group)
-      CALL mp_allgather(ends, this%ends, para_env%group)
-      CALL mp_allgather(sizes, this%sizes, para_env%group)
+      CALL comm%allgather(starts, this%starts)
+      CALL comm%allgather(ends, this%ends)
+      CALL comm%allgather(sizes, this%sizes)
 
       CALL timestop(handle)
 
@@ -159,12 +159,13 @@ CONTAINS
 !> \brief ...
 !> \param this ...
 !> \param group_dist_ext ...
-!> \param para_env ...
+!> \param comm ...
 ! **************************************************************************************************
-   SUBROUTINE create_group_dist_d1_gd(this, group_dist_ext, para_env)
+   SUBROUTINE create_group_dist_d1_gd(this, group_dist_ext, comm)
       TYPE(group_dist_d1_type), INTENT(INOUT)            :: this
       TYPE(group_dist_d0_type), INTENT(IN)               :: group_dist_ext
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+
+      CLASS(mp_comm_type), INTENT(IN)                    :: comm
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'create_group_dist_d1_gd'
 
@@ -172,13 +173,13 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      ALLOCATE (this%starts(0:para_env%num_pe - 1))
-      ALLOCATE (this%ends(0:para_env%num_pe - 1))
-      ALLOCATE (this%sizes(0:para_env%num_pe - 1))
+      ALLOCATE (this%starts(0:comm%num_pe - 1))
+      ALLOCATE (this%ends(0:comm%num_pe - 1))
+      ALLOCATE (this%sizes(0:comm%num_pe - 1))
 
-      CALL mp_allgather(group_dist_ext%starts, this%starts, para_env%group)
-      CALL mp_allgather(group_dist_ext%ends, this%ends, para_env%group)
-      CALL mp_allgather(group_dist_ext%sizes, this%sizes, para_env%group)
+      CALL comm%allgather(group_dist_ext%starts, this%starts)
+      CALL comm%allgather(group_dist_ext%ends, this%ends)
+      CALL comm%allgather(group_dist_ext%sizes, this%sizes)
 
       CALL timestop(handle)
 

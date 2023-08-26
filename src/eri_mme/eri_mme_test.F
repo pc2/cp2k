@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,7 +13,6 @@
 
 MODULE eri_mme_test
 
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE eri_mme_gaussian,                ONLY: create_gaussian_overlap_dist_to_hermite,&
                                               create_hermite_to_cartesian
    USE eri_mme_integrate,               ONLY: eri_mme_2c_integrate,&
@@ -25,7 +24,7 @@ MODULE eri_mme_test
                                               eri_mme_yukawa
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: twopi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: ncoset
 #include "../base/base_uses.f90"
 
@@ -65,7 +64,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rabc
       INTEGER, INTENT(IN)                                :: nrep
       LOGICAL, INTENT(INOUT)                             :: test_accuracy
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER, INTENT(IN)                                :: iw
       INTEGER, INTENT(IN), OPTIONAL                      :: potential
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: pot_par
@@ -126,7 +125,7 @@ CONTAINS
          END DO
       END DO
 
-      CALL mp_sum(time, para_env%group)
+      CALL para_env%sum(time)
 
       IF (test_accuracy) THEN
          I_diff(:, :, :, :) = ABS(I_test - I_ref)
@@ -193,7 +192,7 @@ CONTAINS
          INTENT(IN)                                      :: rabc
       INTEGER, INTENT(IN)                                :: nrep
       INTEGER, INTENT(IN), OPTIONAL                      :: nsample
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER, INTENT(IN)                                :: iw
       INTEGER, INTENT(IN), OPTIONAL                      :: potential
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: pot_par
@@ -276,7 +275,7 @@ CONTAINS
                END DO
                CALL CPU_TIME(t1)
                time = t1 - t0
-               CALL mp_sum(time, para_env%group)
+               CALL para_env%sum(time)
                IF (iw > 0) THEN
                   WRITE (iw, '(T11, I1, 1X, I1, 1X, I1, 1X, ES9.2, 1X, ES9.2, 1X, ES9.2, 1X, ES9.2)') &
                      la, lb, lc, zet(izeta), zet(izetb), zet(izetc), time/nrep

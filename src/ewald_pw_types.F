@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,7 +16,6 @@ MODULE ewald_pw_types
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_init,          ONLY: init_input_type
    USE dg_types,                        ONLY: dg_create,&
                                               dg_release,&
@@ -28,7 +27,8 @@ MODULE ewald_pw_types
                                               section_vals_type
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: pi
-   USE message_passing,                 ONLY: mp_comm_self
+   USE message_passing,                 ONLY: mp_comm_self,&
+                                              mp_para_env_type
    USE pw_grid_types,                   ONLY: HALFSPACE,&
                                               pw_grid_type
    USE pw_grids,                        ONLY: pw_grid_create,&
@@ -136,7 +136,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: alpha, alphasq, cutoff_radius, epsilon, &
                                                             norm
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_grid_type), POINTER                        :: pw_big_grid, pw_small_grid
       TYPE(pw_poisson_parameter_type)                    :: poisson_params
       TYPE(pw_pool_p_type), DIMENSION(:), POINTER        :: pw_pools
@@ -191,7 +191,7 @@ CONTAINS
             CALL pw_poisson_create(ewald_pw%poisson_env)
          END IF
          CALL pw_grid_create(pw_small_grid, mp_comm_self)
-         CALL pw_grid_create(pw_big_grid, para_env%group)
+         CALL pw_grid_create(pw_big_grid, para_env)
          IF (ns_max == 2*(ns_max/2)) THEN
             CPABORT("ns_max has to be odd.")
          END IF
@@ -253,7 +253,7 @@ CONTAINS
          IF (.NOT. ASSOCIATED(ewald_pw%poisson_env)) THEN
             CALL pw_poisson_create(ewald_pw%poisson_env)
          END IF
-         CALL pw_grid_create(pw_big_grid, para_env%group)
+         CALL pw_grid_create(pw_big_grid, para_env)
          npts_s = gmax
          CALL pw_grid_setup(cell_ref%hmat, pw_big_grid, grid_span=HALFSPACE, npts=npts_s, spherical=.TRUE., &
                             rs_dims=(/para_env%num_pe, 1/), iounit=output_unit, fft_usage=.TRUE.)

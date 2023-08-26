@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,7 +12,6 @@
 MODULE cp_ddapc_methods
    USE cell_types,                      ONLY: cell_type
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_constants,                 ONLY: weight_type_mass,&
                                               weight_type_unit
    USE input_section_types,             ONLY: section_vals_type,&
@@ -26,8 +25,7 @@ MODULE cp_ddapc_methods
                                               twopi
    USE mathlib,                         ONLY: diamat_all,&
                                               invert_matrix
-!NB for paralelizaion of ewald_ddapc_pot()
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_spline_utils,                 ONLY: Eval_Interp_Spl3_pbc
    USE pw_types,                        ONLY: pw_type
@@ -577,7 +575,7 @@ CONTAINS
       CALL build_A_matrix(Am, gfunc, w, particle_set, radii, rho_tot_g, gcut, g_dot_rvec_sin, g_dot_rvec_cos)
       CALL cleanup_g_dot_rvec_sin_cos(g_dot_rvec_sin, g_dot_rvec_cos)
       Am(:, :) = Am(:, :)/(Vol*Vol)
-      CALL mp_sum(Am, rho_tot_g%pw_grid%para%group)
+      CALL rho_tot_g%pw_grid%para%group%sum(Am)
       IF (iw > 0) THEN
          ! Checking conditions numbers and eigenvalues
          ALLOCATE (Amw(ndim, ndim))
@@ -625,7 +623,7 @@ CONTAINS
 ! **************************************************************************************************
    RECURSIVE SUBROUTINE ewald_ddapc_pot(cp_para_env, coeff, factor, cell, multipole_section, &
                                         particle_set, M, radii)
-      TYPE(cp_para_env_type), POINTER                    :: cp_para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: cp_para_env
       TYPE(pw_type), INTENT(IN), POINTER                 :: coeff
       REAL(KIND=dp), INTENT(IN)                          :: factor
       TYPE(cell_type), POINTER                           :: cell
@@ -683,7 +681,6 @@ CONTAINS
       M = 0.0_dp
       !
       idim = 0
-      !NB zero EwM so mp_sum(EwM) will give right answer
       EwM = 0.0_dp
       DO iparticle1 = 1, SIZE(particle_set)
          ip1 = (iparticle1 - 1)*SIZE(radii)
@@ -767,7 +764,7 @@ CONTAINS
          END DO ! iparticle2
       END DO ! iparticle1
       !NB sum over parallelized contributions of different nodes
-      CALL mp_sum(EwM, cp_para_env%group)
+      CALL cp_para_env%sum(EwM)
       idim = 0
       DO iparticle2 = 1, SIZE(particle_set)
          ip2 = (iparticle2 - 1)*SIZE(radii)

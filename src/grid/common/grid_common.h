@@ -1,6 +1,6 @@
 /*----------------------------------------------------------------------------*/
 /*  CP2K: A general program to perform molecular dynamics simulations         */
-/*  Copyright 2000-2022 CP2K developers group <https://cp2k.org>              */
+/*  Copyright 2000-2023 CP2K developers group <https://cp2k.org>              */
 /*                                                                            */
 /*  SPDX-License-Identifier: BSD-3-Clause                                     */
 /*----------------------------------------------------------------------------*/
@@ -71,12 +71,13 @@ GRID_HOST_DEVICE static inline double fac(const int i) {
  * \author Ole Schuett
  ******************************************************************************/
 GRID_HOST_DEVICE static inline int ncoset(const int l) {
-  static const int table[] = {1,  // l=0
+  static const int table[] = {0,  // l=-1, usefull for computing loop bounds
+                              1,  // l=0
                               4,  // l=1
                               10, // l=2 ...
                               20,  35,  56,  84,  120, 165, 220,  286,
                               364, 455, 560, 680, 816, 969, 1140, 1330};
-  return table[l];
+  return table[l + 1];
 }
 
 /*******************************************************************************

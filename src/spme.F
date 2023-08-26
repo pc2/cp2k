@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -27,6 +27,7 @@ MODULE spme
                                               ewald_pw_type
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
+   USE message_passing,                 ONLY: mp_comm_type
    USE particle_types,                  ONLY: particle_type
    USE pme_tools,                       ONLY: get_center,&
                                               set_list
@@ -35,6 +36,7 @@ MODULE spme
    USE pw_methods,                      ONLY: pw_copy,&
                                               pw_derive,&
                                               pw_integral_a2b,&
+                                              pw_multiply_with,&
                                               pw_transfer
    USE pw_poisson_methods,              ONLY: pw_poisson_rebuild,&
                                               pw_poisson_solve
@@ -48,9 +50,14 @@ MODULE spme
                                               REALSPACE,&
                                               RECIPROCALSPACE,&
                                               pw_type
-   USE realspace_grid_types,            ONLY: &
-        pw2rs, realspace_grid_desc_type, realspace_grid_type, rs2pw, rs_grid_create, &
-        rs_grid_release, rs_grid_set_box, rs_grid_zero, rs_pw_transfer
+   USE realspace_grid_types,            ONLY: realspace_grid_desc_type,&
+                                              realspace_grid_type,&
+                                              rs_grid_create,&
+                                              rs_grid_release,&
+                                              rs_grid_set_box,&
+                                              rs_grid_zero,&
+                                              transfer_pw2rs,&
+                                              transfer_rs2pw
    USE shell_potential_types,           ONLY: shell_kind_type
 #include "./base/base_uses.f90"
 
@@ -108,9 +115,8 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'spme_evaluate'
 
-      INTEGER                                            :: group, handle, i, ig, ipart, j, n, &
-                                                            ncore, npart, nshell, o_spline, p1, &
-                                                            p1_shell
+      INTEGER                                            :: handle, i, ig, ipart, j, n, ncore, &
+                                                            npart, nshell, o_spline, p1, p1_shell
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: center, core_center, shell_center
       INTEGER, DIMENSION(3)                              :: nd, npts
       LOGICAL                                            :: do_shell
@@ -120,6 +126,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3)                        :: fat
       REAL(KIND=dp), DIMENSION(3, 3)                     :: f_stress, h_stress
       TYPE(greens_fn_type), POINTER                      :: green
+      TYPE(mp_comm_type)                                 :: group
       TYPE(pw_grid_type), POINTER                        :: grid_spme
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: pw_pool
@@ -217,7 +224,7 @@ CONTAINS
       ALLOCATE (rhob_r)
       CALL pw_pool_create_pw(pw_pool, rhob_r, use_data=REALDATA3D, &
                              in_space=REALSPACE)
-      CALL rs_pw_transfer(rden, rhob_r, rs2pw)
+      CALL transfer_rs2pw(rden, rhob_r)
       ! transform density to G space and add charge function
       NULLIFY (rhob_g)
       ALLOCATE (rhob_g)
@@ -226,7 +233,7 @@ CONTAINS
                              in_space=RECIPROCALSPACE)
       CALL pw_transfer(rhob_r, rhob_g)
       ! update charge function
-      rhob_g%cc = rhob_g%cc*green%p3m_charge%cr
+      CALL pw_multiply_with(rhob_g, green%p3m_charge)
 
       !-------------- ELECTROSTATIC CALCULATION -----------
       ! allocate intermediate arrays
@@ -249,9 +256,9 @@ CONTAINS
          ALLOCATE (rpot)
          CALL rs_grid_create(rpot, rs_desc)
          CALL rs_grid_set_box(grid_spme, rs=rpot)
-         phi_g%cc = phi_g%cc*green%p3m_charge%cr
+         CALL pw_multiply_with(phi_g, green%p3m_charge)
          CALL pw_transfer(phi_g, rhob_r)
-         CALL rs_pw_transfer(rpot, rhob_r, pw2rs)
+         CALL transfer_pw2rs(rpot, rhob_r)
          ipart = 0
          DO
             CALL set_list(particle_set, npart, center, p1, rden, ipart)
@@ -313,9 +320,9 @@ CONTAINS
                   nd(j) = 1
                   CALL pw_copy(phi_g, rhob_g)
                   CALL pw_derive(rhob_g, nd)
-                  rhob_g%cc = rhob_g%cc*green%p3m_charge%cr
+                  CALL pw_multiply_with(rhob_g, green%p3m_charge)
                   CALL pw_transfer(rhob_g, rhob_r)
-                  CALL rs_pw_transfer(rpot, rhob_r, pw2rs)
+                  CALL transfer_pw2rs(rpot, rhob_r)
 
                   ipart = 0
                   DO
@@ -359,10 +366,10 @@ CONTAINS
       DO i = 1, 3
          CALL rs_grid_create(drpot(i), rs_desc)
          CALL rs_grid_set_box(grid_spme, rs=drpot(i))
-         dphi_g(i)%cc = dphi_g(i)%cc*green%p3m_charge%cr
+         CALL pw_multiply_with(dphi_g(i), green%p3m_charge)
          CALL pw_transfer(dphi_g(i), rhob_r)
          CALL pw_pool_give_back_pw(pw_pool, dphi_g(i))
-         CALL rs_pw_transfer(drpot(i), rhob_r, pw2rs)
+         CALL transfer_pw2rs(drpot(i), rhob_r)
       END DO
 
       CALL pw_pool_give_back_pw(pw_pool, rhob_r)
@@ -479,14 +486,15 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'spme_potential'
 
-      INTEGER                                            :: group, handle, ipart, n, npart_a, &
-                                                            npart_b, o_spline, p1
+      INTEGER                                            :: handle, ipart, n, npart_a, npart_b, &
+                                                            o_spline, p1
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: center
       INTEGER, DIMENSION(3)                              :: npts
       REAL(KIND=dp)                                      :: alpha, dvols, fat1
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: delta
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: rhos
       TYPE(greens_fn_type), POINTER                      :: green
+      TYPE(mp_comm_type)                                 :: group
       TYPE(pw_grid_type), POINTER                        :: grid_spme
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: pw_pool
@@ -541,7 +549,7 @@ CONTAINS
       ALLOCATE (rhob_r)
       CALL pw_pool_create_pw(pw_pool, rhob_r, use_data=REALDATA3D, &
                              in_space=REALSPACE)
-      CALL rs_pw_transfer(rden, rhob_r, rs2pw)
+      CALL transfer_rs2pw(rden, rhob_r)
       ! transform density to G space and add charge function
       NULLIFY (rhob_g)
       ALLOCATE (rhob_g)
@@ -550,7 +558,7 @@ CONTAINS
                              in_space=RECIPROCALSPACE)
       CALL pw_transfer(rhob_r, rhob_g)
       ! update charge function
-      rhob_g%cc = rhob_g%cc*green%p3m_charge%cr
+      CALL pw_multiply_with(rhob_g, green%p3m_charge)
 
       !-------------- ELECTROSTATIC CALCULATION -----------
       ! allocate intermediate arrays
@@ -566,9 +574,9 @@ CONTAINS
       ALLOCATE (center(3, npart_b), delta(3, npart_b))
       CALL get_center(particle_set_b, box, center, delta, npts, n)
       rpot => rden
-      phi_g%cc = phi_g%cc*green%p3m_charge%cr
+      CALL pw_multiply_with(phi_g, green%p3m_charge)
       CALL pw_transfer(phi_g, rhob_r)
-      CALL rs_pw_transfer(rpot, rhob_r, pw2rs)
+      CALL transfer_pw2rs(rpot, rhob_r)
       ipart = 0
       DO
          CALL set_list(particle_set_b, npart_b, center, p1, rden, ipart)
@@ -624,8 +632,8 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'spme_forces'
 
-      INTEGER                                            :: group, handle, i, ipart, n, npart_a, &
-                                                            npart_b, o_spline, p1
+      INTEGER                                            :: handle, i, ipart, n, npart_a, npart_b, &
+                                                            o_spline, p1
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: center
       INTEGER, DIMENSION(3)                              :: npts
       REAL(KIND=dp)                                      :: alpha, dvols
@@ -633,6 +641,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: rhos
       REAL(KIND=dp), DIMENSION(3)                        :: fat
       TYPE(greens_fn_type), POINTER                      :: green
+      TYPE(mp_comm_type)                                 :: group
       TYPE(pw_grid_type), POINTER                        :: grid_spme
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: pw_pool
@@ -689,7 +698,7 @@ CONTAINS
       ALLOCATE (rhob_r)
       CALL pw_pool_create_pw(pw_pool, rhob_r, use_data=REALDATA3D, &
                              in_space=REALSPACE)
-      CALL rs_pw_transfer(rden, rhob_r, rs2pw)
+      CALL transfer_rs2pw(rden, rhob_r)
       ! transform density to G space and add charge function
       NULLIFY (rhob_g)
       ALLOCATE (rhob_g)
@@ -698,7 +707,7 @@ CONTAINS
                              in_space=RECIPROCALSPACE)
       CALL pw_transfer(rhob_r, rhob_g)
       ! update charge function
-      rhob_g%cc = rhob_g%cc*green%p3m_charge%cr
+      CALL pw_multiply_with(rhob_g, green%p3m_charge)
 
       !-------------- ELECTROSTATIC CALCULATION -----------
       ! allocate intermediate arrays
@@ -720,10 +729,10 @@ CONTAINS
       DO i = 1, 3
          CALL rs_grid_create(drpot(i), rs_desc)
          CALL rs_grid_set_box(grid_spme, rs=drpot(i))
-         dphi_g(i)%cc = dphi_g(i)%cc*green%p3m_charge%cr
+         CALL pw_multiply_with(dphi_g(i), green%p3m_charge)
          CALL pw_transfer(dphi_g(i), rhob_r)
          CALL pw_pool_give_back_pw(pw_pool, dphi_g(i))
-         CALL rs_pw_transfer(drpot(i), rhob_r, pw2rs)
+         CALL transfer_pw2rs(drpot(i), rhob_r)
       END DO
       !----------------- FORCE CALCULATION ----------------
       ALLOCATE (center(3, npart_b), delta(3, npart_b))

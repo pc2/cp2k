@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,7 +17,6 @@ MODULE kg_correction
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_dot,&
                                               dbcsr_p_type
@@ -36,7 +35,7 @@ MODULE kg_correction
                                               lri_kind_type
    USE lri_forces,                      ONLY: calculate_lri_forces
    USE lri_ks_methods,                  ONLY: calculate_lri_ks_matrix
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
    USE pw_methods,                      ONLY: pw_integral_ab,&
@@ -404,13 +403,13 @@ CONTAINS
       REAL(KIND=dp)                                      :: ekin_imol
       REAL(KIND=dp), DIMENSION(3, 3)                     :: xcvirial
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: density_matrix, ksmat
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: pmat
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(lri_density_type), POINTER                    :: lri_density
       TYPE(lri_environment_type), POINTER                :: lri_env
       TYPE(lri_kind_type), DIMENSION(:), POINTER         :: lri_v_int
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
       TYPE(pw_type), DIMENSION(:), POINTER               :: vxc_rho, vxc_tau
@@ -475,7 +474,7 @@ CONTAINS
          CPABORT(" KG with meta-kinetic energy functionals not implemented")
       END IF
       DO ispin = 1, nspins
-         vxc_rho(ispin)%cr3d = vxc_rho(ispin)%cr3d*vxc_rho(ispin)%pw_grid%dvol
+         CALL pw_scale(vxc_rho(ispin), vxc_rho(ispin)%pw_grid%dvol)
          lri_v_int => lri_density%lri_coefs(ispin)%lri_kinds
          CALL integrate_v_rspace_one_center(vxc_rho(ispin), qs_env, lri_v_int, calc_force, "LRI_AUX")
          CALL pw_pool_give_back_pw(auxbas_pw_pool, vxc_rho(ispin))
@@ -502,7 +501,7 @@ CONTAINS
          ekin_mol = ekin_mol + ekin_imol
 
          DO ispin = 1, nspins
-            vxc_rho(ispin)%cr3d = -vxc_rho(ispin)%cr3d*vxc_rho(ispin)%pw_grid%dvol
+            CALL pw_scale(vxc_rho(ispin), -vxc_rho(ispin)%pw_grid%dvol)
             lri_v_int => lri_density%lri_coefs(ispin)%lri_kinds
             CALL integrate_v_rspace_one_center(vxc_rho(ispin), qs_env, &
                                                lri_v_int, calc_force, &
@@ -527,7 +526,7 @@ CONTAINS
       DO ispin = 1, nspins
          lri_v_int => lri_density%lri_coefs(ispin)%lri_kinds
          DO ikind = 1, nkind
-            CALL mp_sum(lri_v_int(ikind)%v_int, para_env%group)
+            CALL para_env%sum(lri_v_int(ikind)%v_int)
          END DO
          ksmat(1)%matrix => ks_matrix(ispin)%matrix
          CALL calculate_lri_ks_matrix(lri_env, lri_v_int, ksmat, atomic_kind_set)
@@ -579,13 +578,13 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3, 3)                     :: xcvirial
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: density_matrix, ksmat
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: pmat
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(lri_density_type), POINTER                    :: lri_density, lri_rho1
       TYPE(lri_environment_type), POINTER                :: lri_env, lri_env1
       TYPE(lri_kind_type), DIMENSION(:), POINTER         :: lri_v_int
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
       TYPE(pw_type), DIMENSION(:), POINTER               :: rho1_g, rho1_r, tau1_r, vxc_rho, vxc_tau
@@ -811,14 +810,14 @@ CONTAINS
             ! KS int with rho_ext"
             lri_v_int => lri_rho1%lri_coefs(ispin)%lri_kinds
             DO ikind = 1, nkind
-               CALL mp_sum(lri_v_int(ikind)%v_int, para_env%group)
+               CALL para_env%sum(lri_v_int(ikind)%v_int)
             END DO
             CALL calculate_lri_ks_matrix(lri_env1, lri_v_int, ksmat, atomic_kind_set)
          ELSE
             ! KS int with rho_ao"
             lri_v_int => lri_density%lri_coefs(ispin)%lri_kinds
             DO ikind = 1, nkind
-               CALL mp_sum(lri_v_int(ikind)%v_int, para_env%group)
+               CALL para_env%sum(lri_v_int(ikind)%v_int)
             END DO
             CALL calculate_lri_ks_matrix(lri_env, lri_v_int, ksmat, atomic_kind_set)
          END IF

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -55,7 +55,7 @@ MODULE dbt_methods
    USE kinds, ONLY: &
       dp, default_string_length, int_8, dp
    USE message_passing, ONLY: &
-      mp_environ, mp_max, mp_sum, mp_comm_free, mp_cart_create, mp_sync
+      mp_cart_type
    USE util, ONLY: &
       sort
    USE dbt_reshape_ops, ONLY: &
@@ -67,6 +67,7 @@ MODULE dbt_methods
       dbt_split_copyback, dbt_make_compatible_blocks, dbt_crop
    USE dbt_io, ONLY: &
       dbt_write_tensor_info, dbt_write_tensor_dist, prep_output_unit, dbt_write_split_info
+   USE message_passing, ONLY: mp_comm_type
 
 #include "../base/base_uses.f90"
 
@@ -121,7 +122,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                  :: unit_nr
       INTEGER :: handle
 
-      CALL mp_sync(tensor_in%pgrid%mp_comm_2d)
+      CALL tensor_in%pgrid%mp_comm_2d%sync()
       CALL timeset("dbt_total", handle)
 
       ! make sure that it is safe to use dbt_copy during a batched contraction
@@ -129,7 +130,7 @@ CONTAINS
       CALL dbt_tas_batched_mm_complete(tensor_out%matrix_rep, warn=.TRUE.)
 
       CALL dbt_copy_expert(tensor_in, tensor_out, order, summation, bounds, move_data, unit_nr)
-      CALL mp_sync(tensor_in%pgrid%mp_comm_2d)
+      CALL tensor_in%pgrid%mp_comm_2d%sync()
       CALL timestop(handle)
    END SUBROUTINE
 
@@ -530,7 +531,7 @@ CONTAINS
 
       INTEGER                     :: handle
 
-      CALL mp_sync(tensor_1%pgrid%mp_comm_2d)
+      CALL tensor_1%pgrid%mp_comm_2d%sync()
       CALL timeset("dbt_total", handle)
       CALL dbt_contract_expert(alpha, tensor_1, tensor_2, beta, tensor_3, &
                                contract_1, notcontract_1, &
@@ -549,7 +550,7 @@ CONTAINS
                                retain_sparsity=retain_sparsity, &
                                unit_nr=unit_nr, &
                                log_verbose=log_verbose)
-      CALL mp_sync(tensor_1%pgrid%mp_comm_2d)
+      CALL tensor_1%pgrid%mp_comm_2d%sync()
       CALL timestop(handle)
 
    END SUBROUTINE
@@ -605,8 +606,9 @@ CONTAINS
       TYPE(dbt_type), POINTER                    :: tensor_small, tensor_large
 
       LOGICAL                                        :: assert_stmt, tensors_remapped
-      INTEGER                                        :: max_mm_dim, max_tensor, mp_comm, &
-                                                        unit_nr_prv, ref_tensor, mp_comm_opt, handle
+      INTEGER                                        :: max_mm_dim, max_tensor, &
+                                                        unit_nr_prv, ref_tensor, handle
+      TYPE(mp_cart_type) :: mp_comm_opt
       INTEGER, DIMENSION(SIZE(contract_1))           :: contract_1_mod
       INTEGER, DIMENSION(SIZE(notcontract_1))        :: notcontract_1_mod
       INTEGER, DIMENSION(SIZE(contract_2))           :: contract_2_mod
@@ -629,8 +631,7 @@ CONTAINS
       LOGICAL                                        :: do_crop_1, do_crop_2, do_write_3, nodata_3, do_batched, pgrid_changed, &
                                                         pgrid_changed_any, do_change_pgrid(2)
       TYPE(dbt_tas_split_info)                     :: split_opt, split, split_opt_avg
-      INTEGER, DIMENSION(2) :: pdims_2d_opt, pdims_2d, pcoord_2d, pdims_sub, pdims_sub_opt
-      LOGICAL, DIMENSION(2) :: periods_2d
+      INTEGER, DIMENSION(2) :: pdims_2d_opt, pdims_sub, pdims_sub_opt
       REAL(dp) :: pdim_ratio, pdim_ratio_opt
 
       NULLIFY (tensor_contr_1, tensor_contr_2, tensor_contr_3, tensor_crop_1, tensor_crop_2, &
@@ -704,11 +705,12 @@ CONTAINS
       ! shortcut for empty tensors
       ! this is needed to avoid unnecessary work in case user contracts different portions of a
       ! tensor consecutively to save memory
-      mp_comm = tensor_crop_1%pgrid%mp_comm_2d
-      occ_1 = dbt_get_num_blocks(tensor_crop_1)
-      CALL mp_max(occ_1, mp_comm)
-      occ_2 = dbt_get_num_blocks(tensor_crop_2)
-      CALL mp_max(occ_2, mp_comm)
+      ASSOCIATE (mp_comm => tensor_crop_1%pgrid%mp_comm_2d)
+         occ_1 = dbt_get_num_blocks(tensor_crop_1)
+         CALL mp_comm%max(occ_1)
+         occ_2 = dbt_get_num_blocks(tensor_crop_2)
+         CALL mp_comm%max(occ_2)
+      END ASSOCIATE
 
       IF (occ_1 == 0 .OR. occ_2 == 0) THEN
          CALL dbt_scale(tensor_3, beta)
@@ -941,8 +943,6 @@ CONTAINS
                       "Internal process grid optimization disabled because tensors are not in contraction-compatible format")
       END IF
 
-      CALL mp_environ(tensor_large%pgrid%mp_comm_2d, 2, pdims_2d, pcoord_2d, periods_2d)
-
       ! optimize process grid during batched contraction
       do_change_pgrid(:) = .FALSE.
       IF ((.NOT. tensors_remapped) .AND. do_batched) THEN
@@ -956,15 +956,15 @@ CONTAINS
                mp_comm_opt = dbt_tas_mp_comm(tensor_small%pgrid%mp_comm_2d, split_opt%split_rowcol, NINT(storage%nsplit_avg))
                CALL dbt_tas_create_split(split_opt_avg, mp_comm_opt, split_opt%split_rowcol, &
                                          NINT(storage%nsplit_avg), own_comm=.TRUE.)
-               CALL mp_environ(split_opt_avg%mp_comm, 2, pdims_2d_opt, pcoord_2d, periods_2d)
+               pdims_2d_opt = split_opt_avg%mp_comm%num_pe_cart
             END IF
 
          END ASSOCIATE
 
          IF (do_change_pgrid(1) .AND. .NOT. do_change_pgrid(2)) THEN
             ! check if new grid has better subgrid, if not there is no need to change process grid
-            CALL mp_environ(split_opt_avg%mp_comm_group, 2, pdims_sub_opt, pcoord_2d, periods_2d)
-            CALL mp_environ(split%mp_comm_group, 2, pdims_sub, pcoord_2d, periods_2d)
+            pdims_sub_opt = split_opt_avg%mp_comm_group%num_pe_cart
+            pdims_sub = split%mp_comm_group%num_pe_cart
 
             pdim_ratio = MAXVAL(REAL(pdims_sub, dp))/MINVAL(pdims_sub)
             pdim_ratio_opt = MAXVAL(REAL(pdims_sub_opt, dp))/MINVAL(pdims_sub_opt)
@@ -1181,7 +1181,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL               :: optimize_dist
       INTEGER, INTENT(IN), OPTIONAL               :: unit_nr
       INTEGER                                     :: compat1, compat1_old, compat2, compat2_old, &
-                                                     comm_2d, unit_nr_prv
+                                                     unit_nr_prv
+      TYPE(mp_cart_type)                          :: comm_2d
       TYPE(array_list)                            :: dist_list
       INTEGER, DIMENSION(:), ALLOCATABLE          :: mp_dims
       TYPE(dbt_distribution_type)             :: dist_in
@@ -1255,7 +1256,7 @@ CONTAINS
             ALLOCATE (tensor1_out)
             CALL dbt_remap(tensor1, ind1_linked, ind1_free, tensor1_out, comm_2d=comm_2d, &
                            nodata=nodata1, move_data=move_data_1)
-            CALL mp_comm_free(comm_2d)
+            CALL comm_2d%free()
             compat1 = 1
          ELSE
             IF (unit_nr_prv > 0) WRITE (unit_nr_prv, '(T2,A,1X,A)') "No redistribution of", TRIM(tensor1%name)
@@ -1298,7 +1299,7 @@ CONTAINS
             comm_2d = dbt_tas_mp_comm(tensor2%pgrid%mp_comm_2d, nblkrows, nblkcols)
             ALLOCATE (tensor2_out)
             CALL dbt_remap(tensor2, ind2_linked, ind2_free, tensor2_out, nodata=nodata2, move_data=move_data_2)
-            CALL mp_comm_free(comm_2d)
+            CALL comm_2d%free()
             compat2 = 1
          ELSE
             IF (unit_nr_prv > 0) WRITE (unit_nr_prv, '(T2,A,1X,A)') "No redistribution of", TRIM(tensor2%name)
@@ -1474,8 +1475,7 @@ CONTAINS
       TYPE(dbt_contraction_storage), INTENT(INOUT) :: storage
       TYPE(dbt_tas_split_info), INTENT(IN)           :: split_opt
       TYPE(dbt_tas_split_info), INTENT(IN)           :: split
-      INTEGER, DIMENSION(2) :: pdims_opt, coor, pdims, pdims_sub
-      LOGICAL, DIMENSION(2) :: periods
+      INTEGER, DIMENSION(2) :: pdims, pdims_sub
       LOGICAL, DIMENSION(2) :: do_change_pgrid
       REAL(kind=dp) :: change_criterion, pdims_ratio
       INTEGER :: nsplit_opt, nsplit
@@ -1484,8 +1484,7 @@ CONTAINS
       nsplit_opt = split_opt%ngroup_opt
       nsplit = split%ngroup
 
-      CALL mp_environ(split_opt%mp_comm, 2, pdims_opt, coor, periods)
-      CALL mp_environ(split%mp_comm, 2, pdims, coor, periods)
+      pdims = split%mp_comm%num_pe_cart
 
       storage%ibatch = storage%ibatch + 1
 
@@ -1502,7 +1501,7 @@ CONTAINS
       do_change_pgrid(:) = .FALSE.
 
       ! check for process grid dimensions
-      CALL mp_environ(split%mp_comm_group, 2, pdims_sub, coor, periods)
+      pdims_sub = split%mp_comm_group%num_pe_cart
       change_criterion = MAXVAL(REAL(pdims_sub, dp))/MINVAL(pdims_sub)
       IF (change_criterion > default_pdims_accept_ratio**2) do_change_pgrid(1) = .TRUE.
 
@@ -1580,7 +1579,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(OUT)        :: tensor_out
       CHARACTER(len=*), INTENT(IN), OPTIONAL :: name
       LOGICAL, INTENT(IN), OPTIONAL          :: nodata, move_data
-      INTEGER, INTENT(IN), OPTIONAL          :: comm_2d
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm_2d
       TYPE(array_list), INTENT(IN), OPTIONAL :: dist1, dist2
       INTEGER, DIMENSION(SIZE(map1_2d)), OPTIONAL :: mp_dims_1
       INTEGER, DIMENSION(SIZE(map2_2d)), OPTIONAL :: mp_dims_2
@@ -1588,7 +1587,8 @@ CONTAINS
       INTEGER, DIMENSION(:), ALLOCATABLE     :: ${varlist("blk_sizes")}$, &
                                                 ${varlist("nd_dist")}$
       TYPE(dbt_distribution_type)        :: dist
-      INTEGER                                :: comm_2d_prv, handle, i
+      TYPE(mp_cart_type) :: comm_2d_prv
+      INTEGER                                :: handle, i
       INTEGER, DIMENSION(ndims_tensor(tensor_in)) :: pdims, myploc
       CHARACTER(LEN=*), PARAMETER :: routineN = 'dbt_remap'
       LOGICAL                               :: nodata_prv
@@ -1983,7 +1983,7 @@ CONTAINS
       LOGICAL :: do_write
       INTEGER :: unit_nr_prv, handle
 
-      CALL mp_sync(tensor%pgrid%mp_comm_2d)
+      CALL tensor%pgrid%mp_comm_2d%sync()
       CALL timeset("dbt_total", handle)
       unit_nr_prv = prep_output_unit(unit_nr)
 
@@ -2007,7 +2007,7 @@ CONTAINS
 
       CALL destroy_array_list(tensor%contraction_storage%batch_ranges)
       DEALLOCATE (tensor%contraction_storage)
-      CALL mp_sync(tensor%pgrid%mp_comm_2d)
+      CALL tensor%pgrid%mp_comm_2d%sync()
       CALL timestop(handle)
 
    END SUBROUTINE
@@ -2129,7 +2129,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE dbt_change_pgrid_2d(tensor, mp_comm, pdims, nodata, nsplit, dimsplit, pgrid_changed, unit_nr)
       TYPE(dbt_type), INTENT(INOUT)                  :: tensor
-      INTEGER, INTENT(IN)               :: mp_comm
+      TYPE(mp_cart_type), INTENT(IN)               :: mp_comm
       INTEGER, DIMENSION(2), INTENT(IN), OPTIONAL :: pdims
       LOGICAL, INTENT(IN), OPTIONAL                      :: nodata
       INTEGER, INTENT(IN), OPTIONAL :: nsplit, dimsplit

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -60,7 +60,7 @@ MODULE tmc_move_types
       !   1st dimension are the different move types
       INTEGER, DIMENSION(:, :), ALLOCATABLE :: subbox_acc_count
       INTEGER, DIMENSION(:, :), ALLOCATABLE :: subbox_count
-      TYPE(list_atoms), DIMENSION(:), POINTER :: atom_lists
+      TYPE(list_atoms), DIMENSION(:), POINTER :: atom_lists => NULL()
 
       !-- nmc_acc_prob, probability of acceptance of a certain move type,
       !   done in Nested Monte Carlo routine, for different potential
@@ -71,7 +71,7 @@ MODULE tmc_move_types
 
    TYPE list_atoms
       CHARACTER(LEN=default_string_length), &
-         DIMENSION(:), POINTER                  :: atoms
+         DIMENSION(:), POINTER                  :: atoms => NULL()
    END TYPE list_atoms
 CONTAINS
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -26,9 +26,8 @@ MODULE cp_lbfgs_optimizer_gopt
                               cp_to_string
    USE cp_output_handling, ONLY: cp_print_key_finished_output, &
                                  cp_print_key_unit_nr
-   USE cp_para_env, ONLY: cp_para_env_release, &
-                          cp_para_env_retain
-   USE cp_para_types, ONLY: cp_para_env_type
+   USE message_passing, ONLY: mp_para_env_release
+   USE message_passing, ONLY: mp_para_env_type
    USE cp_subsys_types, ONLY: cp_subsys_type
    USE force_env_types, ONLY: force_env_get, &
                               force_env_type
@@ -40,7 +39,6 @@ MODULE cp_lbfgs_optimizer_gopt
    USE input_section_types, ONLY: section_vals_type
    USE kinds, ONLY: dp
    USE machine, ONLY: m_walltime
-   USE message_passing, ONLY: mp_bcast
    USE space_groups, ONLY: spgr_apply_rotations_coord, &
                            spgr_apply_rotations_force
    USE space_groups_types, ONLY: spgr_type
@@ -69,7 +67,7 @@ MODULE cp_lbfgs_optimizer_gopt
 ! **************************************************************************************************
 !> \brief info for the optimizer (see the description of this module)
 !> \param task the actual task of the optimizer (in the master it is up to
-!>        date, in case of error also the slaves one get updated.
+!>        date, in case of error also the minions one get updated.
 !> \param csave internal character string used by the lbfgs optimizer,
 !>        meaningful only in the master
 !> \param lsave logical array used by the lbfgs optimizer, updated only
@@ -131,17 +129,17 @@ MODULE cp_lbfgs_optimizer_gopt
 !>      @version 2.2002
 ! **************************************************************************************************
    TYPE cp_lbfgs_opt_gopt_type
-      CHARACTER(len=60) :: task
-      CHARACTER(len=60) :: csave
-      LOGICAL :: lsave(4)
-      INTEGER :: m, print_every, master, max_f_per_iter, status, n_iter
-      INTEGER, DIMENSION(:), POINTER :: kind_of_bound, i_work_array, isave
-      REAL(kind=dp) :: f, wanted_relative_f_delta, wanted_projected_gradient, &
-                       last_f, projected_gradient, eold, emin, trust_radius
-      REAL(kind=dp), DIMENSION(:), POINTER :: x, lower_bound, upper_bound, &
-                                              gradient, dsave, work_array
-      TYPE(cp_para_env_type), POINTER :: para_env
-      TYPE(gopt_f_type), POINTER :: obj_funct
+      CHARACTER(len=60) :: task = ""
+      CHARACTER(len=60) :: csave = ""
+      LOGICAL :: lsave(4) = .FALSE.
+      INTEGER :: m = 0, print_every = 0, master = 0, max_f_per_iter = 0, status = 0, n_iter = 0
+      INTEGER, DIMENSION(:), POINTER :: kind_of_bound => NULL(), i_work_array => NULL(), isave => NULL()
+      REAL(kind=dp) :: f = 0.0_dp, wanted_relative_f_delta = 0.0_dp, wanted_projected_gradient = 0.0_dp, &
+                       last_f = 0.0_dp, projected_gradient = 0.0_dp, eold = 0.0_dp, emin = 0.0_dp, trust_radius = 0.0_dp
+      REAL(kind=dp), DIMENSION(:), POINTER :: x => NULL(), lower_bound => NULL(), upper_bound => NULL(), &
+                                              gradient => NULL(), dsave => NULL(), work_array => NULL()
+      TYPE(mp_para_env_type), POINTER :: para_env => NULL()
+      TYPE(gopt_f_type), POINTER :: obj_funct => NULL()
    END TYPE cp_lbfgs_opt_gopt_type
 
 CONTAINS
@@ -173,7 +171,7 @@ CONTAINS
                                  wanted_relative_f_delta, wanted_projected_gradient, lower_bound, upper_bound, &
                                  kind_of_bound, master, max_f_per_iter, trust_radius)
       TYPE(cp_lbfgs_opt_gopt_type), INTENT(OUT)          :: optimizer
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(gopt_f_type), POINTER                         :: obj_funct
       REAL(kind=dp), DIMENSION(:), INTENT(in)            :: x0
       INTEGER, INTENT(in), OPTIONAL                      :: m, print_every
@@ -207,7 +205,7 @@ CONTAINS
       IF (PRESENT(m)) optimizer%m = m
       optimizer%master = para_env%source
       optimizer%para_env => para_env
-      CALL cp_para_env_retain(para_env)
+      CALL para_env%retain()
       optimizer%obj_funct => obj_funct
       CALL gopt_f_retain(obj_funct)
       optimizer%max_f_per_iter = 20
@@ -255,7 +253,7 @@ CONTAINS
          ALLOCATE (optimizer%gradient(n))
          optimizer%gradient(:) = 0.0_dp
       END IF
-      CALL mp_bcast(optimizer%x, optimizer%master, optimizer%para_env%group)
+      CALL optimizer%para_env%bcast(optimizer%x, optimizer%master)
       optimizer%status = 0
 
       CALL timestop(handle)
@@ -306,7 +304,7 @@ CONTAINS
       IF (ASSOCIATED(optimizer%work_array)) THEN
          DEALLOCATE (optimizer%work_array)
       END IF
-      CALL cp_para_env_release(optimizer%para_env)
+      CALL mp_para_env_release(optimizer%para_env)
       CALL gopt_f_release(optimizer%obj_funct)
 
       CALL timestop(handle)
@@ -348,7 +346,7 @@ CONTAINS
                               n_var, n_iter, status, max_f_per_iter, at_end, &
                               is_master, last_f, f)
       TYPE(cp_lbfgs_opt_gopt_type), INTENT(IN)           :: optimizer
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(gopt_f_type), OPTIONAL, POINTER               :: obj_funct
       INTEGER, INTENT(out), OPTIONAL                     :: m, print_every
       REAL(kind=dp), INTENT(out), OPTIONAL               :: wanted_relative_f_delta, &
@@ -562,7 +560,7 @@ CONTAINS
                CPWARN("unknown task '"//optimizer%task//"'")
             END IF
          END IF ifMaster
-         CALL mp_bcast(optimizer%status, optimizer%master, optimizer%para_env%group)
+         CALL optimizer%para_env%bcast(optimizer%status, optimizer%master)
          ! Dump info
          IF (optimizer%status == 3) THEN
             its = 0
@@ -600,10 +598,10 @@ CONTAINS
                   CALL spgr_apply_rotations_force(spgr, optimizer%gradient)
                END IF
             END IF
-            CALL mp_bcast(optimizer%x, optimizer%master, optimizer%para_env%group)
+            CALL optimizer%para_env%bcast(optimizer%x, optimizer%master)
          CASE (2)
             !op=2 begin new iter
-            CALL mp_bcast(optimizer%x, optimizer%master, optimizer%para_env%group)
+            CALL optimizer%para_env%bcast(optimizer%x, optimizer%master)
             t_old = m_walltime()
          CASE (3)
             !op=3 ended iter
@@ -611,7 +609,7 @@ CONTAINS
             dataunit = cp_print_key_unit_nr(logger, geo_section, &
                                             "PRINT%PROGRAM_RUN_INFO", extension=".geoLog")
             IF (is_master) its = optimizer%isave(30)
-            CALL mp_bcast(its, optimizer%master, optimizer%para_env%group)
+            CALL optimizer%para_env%bcast(its, optimizer%master)
 
             ! Some IO and Convergence check
             t_now = m_walltime()
@@ -620,7 +618,7 @@ CONTAINS
             CALL gopt_f_io(optimizer%obj_funct, force_env, force_env%root_section, &
                            its, optimizer%f, dataunit, optimizer%eold, optimizer%emin, wildcard, gopt_param, &
                            SIZE(optimizer%x), optimizer%x - xold, optimizer%gradient, conv, used_time=t_diff)
-            CALL mp_bcast(conv, optimizer%master, optimizer%para_env%group)
+            CALL optimizer%para_env%bcast(conv, optimizer%master)
             CALL cp_print_key_finished_output(dataunit, logger, geo_section, &
                                               "PRINT%PROGRAM_RUN_INFO")
             optimizer%eold = optimizer%f
@@ -649,8 +647,7 @@ CONTAINS
             EXIT
          CASE (5)
             ! op=5 abnormal exit ()
-            CALL mp_bcast(optimizer%task, optimizer%master, &
-                          optimizer%para_env%group)
+            CALL optimizer%para_env%bcast(optimizer%task, optimizer%master)
          CASE (6)
             ! deallocated
             CPABORT("step on a deallocated opt structure ")
@@ -667,8 +664,7 @@ CONTAINS
          justEntred = .FALSE.
       END DO
 
-      CALL mp_bcast(optimizer%x, optimizer%master, &
-                    optimizer%para_env%group)
+      CALL optimizer%para_env%bcast(optimizer%x, optimizer%master)
       CALL cp_opt_gopt_bcast_res(optimizer, &
                                  n_iter=optimizer%n_iter, &
                                  f=optimizer%f, last_f=optimizer%last_f, &
@@ -710,8 +706,7 @@ CONTAINS
          results = (/REAL(optimizer%isave(30), kind=dp), &
                      optimizer%f, optimizer%dsave(2), optimizer%dsave(13)/)
       END IF
-      CALL mp_bcast(results, optimizer%master, &
-                    optimizer%para_env%group)
+      CALL optimizer%para_env%bcast(results, optimizer%master)
       IF (PRESENT(n_iter)) n_iter = NINT(results(1))
       IF (PRESENT(f)) f = results(2)
       IF (PRESENT(last_f)) last_f = results(3)

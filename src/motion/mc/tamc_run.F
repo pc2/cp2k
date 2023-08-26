@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -36,7 +36,6 @@ MODULE tamc_run
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr,&
                                               cp_rm_iter_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
@@ -85,6 +84,8 @@ MODULE tamc_run
                                               md_environment_type,&
                                               set_md_env
    USE md_run,                          ONLY: qs_mol_dyn
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE metadynamics_types,              ONLY: meta_env_type,&
                                               metavar_type,&
                                               set_meta_env
@@ -166,7 +167,6 @@ CONTAINS
       TYPE(barostat_type), POINTER                       :: barostat
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys, subsys_i
       TYPE(distribution_1d_type), POINTER                :: local_particles
       TYPE(free_energy_type), POINTER                    :: fe_env
@@ -177,6 +177,7 @@ CONTAINS
       TYPE(md_ener_type), POINTER                        :: md_ener
       TYPE(md_environment_type), POINTER                 :: md_env
       TYPE(meta_env_type), POINTER                       :: meta_env_saved
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(reftraj_type), POINTER                        :: reftraj
       TYPE(rng_stream_type)                              :: rng_stream_mc
@@ -305,7 +306,7 @@ CONTAINS
 ! set some values...will use get_globenv if that ever comes around
 
 ! initialize the random numbers
-!       IF (para_env%ionode) THEN
+!       IF (para_env%is_source()) THEN
       rng_stream_mc = rng_stream_type(name="Random numbers for monte carlo acc/rej", &
                                       distribution_type=UNIFORM)
 !       ENDIF
@@ -332,7 +333,7 @@ CONTAINS
       CALL set_mc_par(mc_par, ensemble=ensemble, nstep=nmccycles, iprint=iprint, temperature=temp, &
                       beta=1.0_dp/temp/boltzmann*joule, exp_max_val=0.9_dp*LOG(HUGE(0.0_dp)), &
                       exp_min_val=0.9_dp*LOG(TINY(0.0_dp)), max_val=HUGE(0.0_dp), min_val=0.0_dp, &
-                      source=para_env%source, group=para_env%group, ionode=para_env%ionode, rand2skip=rand2skip)
+                      source=para_env%source, group=para_env, ionode=para_env%is_source(), rand2skip=rand2skip)
 
       output_unit = cp_logger_get_default_io_unit(logger)
       IF (output_unit > 0) THEN
@@ -466,7 +467,7 @@ CONTAINS
 !             particles=particles)
 
          CALL virial_evaluate(atomic_kinds%els, particles%els, local_particles, &
-                              virial, force_env%para_env%group)
+                              virial, force_env%para_env)
 
          CALL md_energy(md_env, md_ener)
 !        CALL md_write_output(md_env) !inits the print env at itimes == 0 also writes trajectories
@@ -638,7 +639,7 @@ CONTAINS
       DEALLOCATE (md_env)
       ! Clean restartable sections..
       IF (my_rm_restart_info) CALL remove_restart_info(force_env%root_section)
-!     IF (para_env%ionode) THEN
+!     IF (para_env%is_source()) THEN
 !     ENDIF
       CALL MC_ENV_RELEASE(mc_env)
       DEALLOCATE (mc_env)
@@ -881,7 +882,6 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(distribution_1d_type), POINTER                :: local_molecules, local_particles
       TYPE(force_env_type), POINTER                      :: force_env
@@ -891,6 +891,7 @@ CONTAINS
       TYPE(molecule_kind_type), DIMENSION(:), POINTER    :: molecule_kind_set
       TYPE(molecule_list_type), POINTER                  :: molecules
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(simpar_type), POINTER                         :: simpar
@@ -960,7 +961,7 @@ CONTAINS
       !    *** Velocity Verlet for Langeving *** v(t+1/2)--> v(t+1)
       CALL tamc_velocities_colvar(force_env, An)
 !       CALL virial_evaluate ( atomic_kind_set, particle_set,  &
-!          local_particles, virial, para_env%group)
+!          local_particles, virial, para_env)
 
    END SUBROUTINE langevinVEC
 
@@ -1131,7 +1132,7 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'mc_hmc_move'
 
-      INTEGER                                            :: group, handle, iatom, j, nAtoms, source
+      INTEGER                                            :: handle, iatom, j, nAtoms, source
       LOGICAL                                            :: ionode, localise
       REAL(KIND=dp)                                      :: BETA, energy_term, exp_max_val, &
                                                             exp_min_val, new_energy, new_epx, &
@@ -1139,6 +1140,7 @@ CONTAINS
       TYPE(cp_subsys_type), POINTER                      :: oldsys
       TYPE(mc_ekin_type), POINTER                        :: hmc_ekin
       TYPE(meta_env_type), POINTER                       :: meta_env_saved
+      TYPE(mp_comm_type)                                 :: group
       TYPE(particle_list_type), POINTER                  :: particles_set
       TYPE(section_vals_type), POINTER                   :: dft_section, input
 

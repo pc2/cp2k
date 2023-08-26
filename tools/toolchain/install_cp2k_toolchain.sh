@@ -150,6 +150,8 @@ The --with-PKG options follow the rules:
                           Default = system
   --with-intel            Use the Intel compiler to compile CP2K.
                           Default = system
+  --with-intel-classic    Use the classic Intel compiler to compile CP2K.
+                          Default = no
   --with-cmake            Cmake utilities
                           Default = install
   --with-openmpi          OpenMPI, important if you want a parallel version of CP2K.
@@ -158,7 +160,7 @@ The --with-PKG options follow the rules:
                           use only one of OpenMPI, MPICH or Intel MPI.
                           Default = system
   --with-mpich-device     Select the MPICH device, implies the use of MPICH as MPI library
-                          Default = ch3
+                          Default = ch4
   --with-intelmpi         Intel MPI, MPI library like OpenMPI. one should
                           use only one of OpenMPI, MPICH or Intel MPI.
                           Default = system
@@ -188,6 +190,8 @@ The --with-PKG options follow the rules:
   --with-elpa             Eigenvalue SoLvers for Petaflop-Applications library.
                           Fast library for large parallel jobs.
                           Default = install
+  --with-cusolvermp       NVIDIA cusolverMp: CUDA library for distributed dense linear algebra.
+                          Default = no
   --with-ptscotch         PT-SCOTCH, only used if PEXSI is used
                           Default = no
   --with-superlu          SuperLU DIST, used only if PEXSI is used
@@ -218,7 +222,7 @@ The --with-PKG options follow the rules:
                           Default = install
   --with-libvori          Enable libvori for the Voronoi integration (and the BQB compressed trajectory format)
                           Default = install
-  --with-libtorch         Enable libtorch the machine learning framework needed for NequIP.
+  --with-libtorch         Enable libtorch the machine learning framework needed for NequIP and Allegro
                           Default = no
 
 FURTHER INSTRUCTIONS
@@ -255,7 +259,7 @@ EOF
 tool_list="gcc intel cmake"
 mpi_list="mpich openmpi intelmpi"
 math_list="mkl acml openblas"
-lib_list="fftw libint libxc libxsmm cosma scalapack elpa plumed \
+lib_list="fftw libint libxc libxsmm cosma scalapack elpa cusolvermp plumed \
           spfft spla ptscotch superlu pexsi quip gsl spglib hdf5 libvdwxc sirius
           libvori libtorch"
 package_list="${tool_list} ${mpi_list} ${math_list} ${lib_list}"
@@ -298,6 +302,7 @@ with_gsl="__DONTUSE__"
 with_spglib="__INSTALL__"
 with_hdf5="__DONTUSE__"
 with_elpa="__INSTALL__"
+with_cusolvermp="__DONTUSE__"
 with_libvdwxc="__DONTUSE__"
 with_spfft="__DONTUSE__"
 with_spla="__DONTUSE__"
@@ -305,17 +310,17 @@ with_cosma="__INSTALL__"
 with_libvori="__INSTALL__"
 with_libtorch="__DONTUSE__"
 # for MPI, we try to detect system MPI variant
-if (command -v mpirun > /dev/null 2>&1); then
+if (command -v mpiexec > /dev/null 2>&1); then
   # check if we are dealing with openmpi, mpich or intelmpi
-  if (mpirun --version 2>&1 | grep -s -q "HYDRA"); then
+  if (mpiexec --version 2>&1 | grep -s -q "HYDRA"); then
     echo "MPI is detected and it appears to be MPICH"
     export MPI_MODE="mpich"
     with_mpich="__SYSTEM__"
-  elif (mpirun --version 2>&1 | grep -s -q "Open MPI"); then
+  elif (mpiexec --version 2>&1 | grep -s -q "OpenRTE"); then
     echo "MPI is detected and it appears to be OpenMPI"
     export MPI_MODE="openmpi"
     with_openmpi="__SYSTEM__"
-  elif (mpirun --version 2>&1 | grep -s -q "Intel"); then
+  elif (mpiexec --version 2>&1 | grep -s -q "Intel"); then
     echo "MPI is detected and it appears to be Intel MPI"
     with_gcc="__DONTUSE__"
     with_intel="__SYSTEM__"
@@ -338,8 +343,9 @@ enable_tsan="__FALSE__"
 enable_opencl="__FALSE__"
 enable_cuda="__FALSE__"
 enable_hip="__FALSE__"
+export intel_classic="no"
 export GPUVER="no"
-export MPICH_DEVICE="ch3"
+export MPICH_DEVICE="ch4"
 export TARGET_CPU="native"
 
 # default for libint
@@ -373,14 +379,26 @@ fi
 while [ $# -ge 1 ]; do
   case ${1} in
     -j)
-      shift
-      export NPROCS_OVERWRITE="${1}"
+      case "${2}" in
+        -*)
+          export NPROCS_OVERWRITE="$(get_nprocs)"
+          ;;
+        [0-9]*)
+          shift
+          export NPROCS_OVERWRITE="${1}"
+          ;;
+        *)
+          report_error ${LINENO} \
+            "The -j flag can only be followed by an integer number, found ${2}."
+          exit 1
+          ;;
+      esac
       ;;
     -j[0-9]*)
       export NPROCS_OVERWRITE="${1#-j}"
       ;;
     --no-check-certificate)
-      export DOWNLOADER_FLAGS="-n"
+      export DOWNLOADER_FLAGS="--no-check-certificate"
       ;;
     --install-all)
       # set all package to the default installation status
@@ -530,6 +548,9 @@ while [ $# -ge 1 ]; do
         export MPI_MODE=intelmpi
       fi
       ;;
+    --with-intel-classic*)
+      intel_classic=$(read_with "${1}" "yes")
+      ;;
     --with-intel*)
       with_intel=$(read_with "${1}" "__SYSTEM__")
       ;;
@@ -568,6 +589,9 @@ while [ $# -ge 1 ]; do
       ;;
     --with-elpa*)
       with_elpa=$(read_with "${1}")
+      ;;
+    --with-cusolvermp*)
+      with_cusolvermp=$(read_with "${1}")
       ;;
     --with-ptscotch*)
       with_ptscotch=$(read_with "${1}")
@@ -824,7 +848,7 @@ if [ "${ENABLE_CRAY}" = "__TRUE__" ]; then
   export MPICC="${CC}"
   export MPICXX="${CXX}"
   export MPIFC="${FC}"
-  export MPIF90="${MPIFC}"
+  export MPIFORT="${MPIFC}"
   export MPIF77="${MPIFC}"
   # CRAY libsci should contains core math libraries, scalapack
   # doesn't need LDFLAGS or CFLAGS, nor do the one need to
@@ -847,7 +871,7 @@ if [ "${ENABLE_CRAY}" = "__TRUE__" ]; then
         export MPI_CFLAGS
         export MPI_LDFLAGS
         export MPI_LIBS=" "
-        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel -D__MPI_VERSION=3|)"
+        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel|)"
       fi
       ;;
     openmpi)
@@ -857,7 +881,7 @@ if [ "${ENABLE_CRAY}" = "__TRUE__" ]; then
         export MPI_CFLAGS
         export MPI_LDFLAGS
         export MPI_LIBS="-lmpi -lmpi_cxx"
-        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel -D__MPI_VERSION=3|)"
+        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel|)"
       fi
       ;;
     intelmpi)
@@ -869,7 +893,7 @@ if [ "${ENABLE_CRAY}" = "__TRUE__" ]; then
         export MPI_CFLAGS
         export MPI_LDFLAGS
         export MPI_LIBS="-lmpi -lmpi_cxx"
-        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel -D__MPI_VERSION=3|)"
+        export CP_DFLAGS="${CP_DFLAGS} IF_MPI(-D__parallel|)"
       fi
       ;;
   esac

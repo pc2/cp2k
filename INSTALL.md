@@ -38,6 +38,26 @@ cd tools/toolchain/
   toolchain are for the GNU compiler, users must adapt them for other compilers.
   It is possible to use the provided [arch files](./arch) as guidance.
 
+There are [arch files](./arch) for a few specific platforms (e.g.
+[Linux-gnu-x86_64](./arch/Linux-gnu-x86_64.psmp),
+[Linux-intel-x86_64](./arch/Linux-intel-x86_64.psmp))
+which include a toolchain build.
+Sourcing such an arch file in the cp2k folder launches a toolchain build, e.g.
+
+```
+source ./arch/Linux-gnu-x86_64.psmp
+```
+
+After a successful toolchain build, run one of the suggested `make` commands
+
+```
+make -j ARCH=Linux-gnu-x86_64 VERSION=psmp
+```
+
+Check also the corresponding [HowTos](https://www.cp2k.org/howto/) for
+[Apple M1 (macOS)](https://www.cp2k.org/howto:compile_on_macos/) and
+[Cray XC40/50 (Piz Daint, CSCS)](https://www.cp2k.org/howto:compile_on_cray_cscs/).
+
 Sub-points here discuss prerequisites needed to build CP2K. Copies of the
 recommended versions of 3rd party software can be downloaded from <https://www.cp2k.org/static/downloads/>.
 
@@ -96,12 +116,12 @@ If using this framework, `-D__ACCELERATE` must be defined to account for some
 interface incompatibilities between Accelerate and reference BLAS/LAPACK.
 
 When building on/for Windows using the Minimalist GNU for Windows (MinGW) environment,
-you must set `-D__MINGW`,  `-D__NO_STATM_ACCESS` and `-D__NO_IPI_DRIVER` to avoid
+you must set `-D__MINGW`, `-D__NO_STATM_ACCESS` and `-D__NO_SOCKETS` to avoid
 undefined references during linking, respectively errors while printing the statistics.
 
 ### 2e. MPI and SCALAPACK (optional, required for MPI parallel builds)
 
-MPI (version 2) and SCALAPACK are needed for parallel code.
+MPI (version 3) and SCALAPACK are needed for parallel code.
 (Use the latest versions available and download all patches!).
 
 :warning: Note that your MPI installation must match the used Fortran compiler.
@@ -119,9 +139,10 @@ there are several freely available alternatives:
   - Recently a [ScaLAPACK installer](http://www.netlib.org/scalapack/scalapack_installer.tgz)
     has been added that simplifies the installation.
 
-CP2K assumes that the MPI library implements MPI version 3. If you have an older
-version of MPI (e.g., MPI 2.0) available you must define `-D__MPI_VERSION=2` in
-the arch file.
+CP2K assumes that the MPI library implements MPI version 3. Older
+versions of MPI (e.g., MPI 2.0) are not supported and the old flag `-D__MPI_VERSION` in
+the arch file will be ignored. CP2K can make use of the mpi_f08 module. If its use is requested,
+set the flag `-D__MPI_F08`.
 
 ### 2f. FFTW (optional, improved performance of FFTs)
 
@@ -179,7 +200,7 @@ the FFTW3 threading library libfftw3_threads (or libfftw3_omp) is required.
   accelerator support for matrix multiplications.
 - Add `-lstdc++ -lcudart -lnvrtc -lcuda -lcublas` to LIBS.
 - Specify the GPU type (e.g., `GPUVER = P100`),
-  possible values are K20X, K40, K80, P100, V100.
+  possible values are K20X, K40, K80, P100, V100, A100.
 - Specify the C++ compiler (e.g., `CXX = g++`) and the CXXFLAGS to support
   the C++11 standard.
 - CUFFT 7.0 has a known bug and is therefore disabled by default.
@@ -222,7 +243,17 @@ Library ELPA for the solution of the eigenvalue problem
 - For specific architectures it can be better to install specifically optimized
   kernels (see BG) and/or employ a higher optimization level to compile it.
 
-### 2l. PEXSI (optional, low scaling SCF method)
+### 2l. cuSOLVERMp (experimental, improved performance for diagonalization on Nvidia GPUs)
+
+NVIDIA cuSOLVERMp is a high-performance, distributed-memory, GPU-accelerated library
+that provides tools for the solution of dense linear systems and eigenvalue problems.
+
+- cuSOLVERMp replaces the ScaLapack `SYEVD` to improve the performance of the diagonalization
+- A version of cuSOLVERMp can be downloaded from <https://docs.nvidia.com/hpc-sdk/cusolvermp>.
+- Add `-D__CUSOLVERMP` to `DFLAGS`
+- Add `-lcusolverMp -lcusolver -lcal -lnvidia-ml` to `LIBS`
+
+### 2m. PEXSI (optional, low scaling SCF method)
 
 The Pole EXpansion and Selected Inversion (PEXSI) method requires the PEXSI
 library and two dependencies (ParMETIS or PT-Scotch and SuperLU_DIST).
@@ -254,27 +285,27 @@ METISLIB = -lscotchmetis -lscotch -lscotcherr
 PARMETISLIB = -lptscotchparmetis -lptscotch -lptscotcherr
 ```
 
-### 2m. QUIP (optional, wider range of interaction potentials)
+### 2n. QUIP (optional, wider range of interaction potentials)
 
 QUIP - QUantum mechanics and Interatomic Potentials Support for QUIP can be
 enabled via the flag `-D__QUIP`.
 
 For more information see <http://www.libatoms.org>.
 
-### 2n. PLUMED (optional, enables various enhanced sampling methods)
+### 2o. PLUMED (optional, enables various enhanced sampling methods)
 
 CP2K can be compiled with PLUMED 2.x (`-D__PLUMED2`).
 
 See <https://cp2k.org/howto:install_with_plumed> for full instructions.
 
-### 2o. spglib (optional, crystal symmetries tools)
+### 2p. spglib (optional, crystal symmetries tools)
 
 A library for finding and handling crystal symmetries
 
 - The spglib can be downloaded from <https://github.com/atztogo/spglib>
 - For building CP2K with the spglib add `-D__SPGLIB` to DFLAGS
 
-### 2p. SIRIUS (optional, plane wave calculations)
+### 2q. SIRIUS (optional, plane wave calculations)
 
 SIRIUS is a domain specific library for electronic structure calculations.
 
@@ -283,7 +314,7 @@ SIRIUS is a domain specific library for electronic structure calculations.
 - Add `-D__LIBVDWXC` if support is activated in SIRIUS.
 - See <https://electronic-structure.github.io/SIRIUS-doc/> for more information.
 
-### 2q. FPGA (optional, plane wave FFT calculations)
+### 2r. FPGA (optional, plane wave FFT calculations)
 
 - Use `-D__PW_FPGA` to enable FPGA support for PW (fft) calculations.
   Currently tested only for Intel Stratix 10 and Arria 10 GX1150 FPGAs.
@@ -302,14 +333,14 @@ SIRIUS is a domain specific library for electronic structure calculations.
   aocl linker flags to `LDFLAGS` and aocl libs to `LIBS`.
 - When building FPGA and OFFLOAD together then `-D__NO_OFFLOAD_PW` must be used.
 
-### 2r. COSMA (Distributed Communication-Optimal Matrix-Matrix Multiplication Algorithm)
+### 2s. COSMA (Distributed Communication-Optimal Matrix-Matrix Multiplication Algorithm)
 
 - COSMA is an alternative for the pdgemm routine included in ScaLAPACK.
   The library supports both CPU and GPUs.
 - Add `-D__COSMA` to the DFLAGS to enable support for COSMA.
 - See <https://github.com/eth-cscs/COSMA> for more information.
 
-### 2s. LibVori (Voronoi Integration for Electrostatic Properties from Electron Density)
+### 2t. LibVori (Voronoi Integration for Electrostatic Properties from Electron Density)
 
 - LibVori is a library which enables the calculation of electrostatic properties
   (charge, dipole vector, quadrupole tensor, etc.) via integration of the total
@@ -320,12 +351,12 @@ SIRIUS is a domain specific library for electronic structure calculations.
   please see <https://brehm-research.de/bqb> for more information as well as
   the `bqbtool` to inspect BQB files.
 
-### 2t. Torch (Machine Learning Framework needed for NequIP)
+### 2u. Torch (Machine Learning Framework needed for NequIP)
 
 - The C++ API of PyTorch can be downloaded from https://pytorch.org/get-started/locally/.
 - Add `-D__LIBTORCH` to the DFLAGS to enable support for libtorch.
 
-### 2u. ROCM/HIP (Support for AMD GPU)
+### 2v. ROCM/HIP (Support for AMD GPU)
 
 The code for the HIP based grid backend was developed and tested on Mi100 but
 should work out of the box on Nvidia hardware as well.
@@ -354,7 +385,7 @@ should work out of the box on Nvidia hardware as well.
 - Use `-D__OFFLOAD_PROFILING` to turn on the AMD ROC TX and Tracer libray.
   It requires to link `-lroctx64 -lroctracer64`.
 
-### 2v. OpenCL Devices
+### 2w. OpenCL Devices
 
 OpenCL devices are currently supported for DBCSR and can cover GPUs and other devices.
 Kernels can be automatically tuned like for the CUDA/HIP backend in DBCSR.
@@ -399,7 +430,7 @@ Note: the OpenCL backend uses some functionality from LIBXSMM (dependency).
 - Refer to <https://cp2k.github.io/dbcsr/> for, e.g., environment variables,
   or how to tune kernels (auto tuned parameters).
 
-### 2w. matrix-matrix multiplication offloading on GPU using SPLA
+### 2x. matrix-matrix multiplication offloading on GPU using SPLA
 
 The SPLA library is a hard dependency of SIRIUS but can also be used as a
 standalone library. It provides a generic interface to the blas gemm family with
@@ -413,7 +444,7 @@ internal criteria to decide if it is worth to do the operation on GPU or not.
 Calls to `offload_dgemm` also accept pointers on GPU or a combination of them.
 
 <!---
-### 2x. LibMaxwell (External Maxwell Solver)
+### 2y. LibMaxwell (External Maxwell Solver)
 
 - LibMaxwell is a library to solve the time-dependent Maxwell equations
   and use the resulting electric field in MD runs or real-time propagation.
@@ -516,12 +547,15 @@ partially depending on installed libraries (see 2.)
   switch on energy profiling on Cray systems
 - `-D__NO_ABORT` to avoid calling abort, but STOP instead (useful for coverage
   testing, and to avoid core dumps on some systems)
+- `-D__HDF5` enables hdf5 support. This is a hard dependency for SIRIUS, but can also
+  be used by itself to allow read/write functionalities of QCSchema files in the
+  active space module.
 
 Features useful to deal with legacy systems
 
 - `-D__NO_MPI_THREAD_SUPPORT_CHECK`  - Workaround for MPI libraries that do not
   declare they are thread safe (serialized).
-- `-D__NO_IPI_DRIVER` disables the socket interface in case of troubles compiling
+- `-D__NO_SOCKETS` disables the socket interface in case of troubles compiling
   on systems that do not support POSIX sockets.
 - `-D__HAS_IEEE_EXCEPTIONS` disables trapping temporarily for libraries like scalapack.
 - The Makefile automatically compiles in the path to the data directory via the

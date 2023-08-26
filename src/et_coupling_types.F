@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -11,8 +11,8 @@
 ! **************************************************************************************************
 MODULE et_coupling_types
 
-   USE cp_fm_types,                     ONLY: cp_fm_p_type,&
-                                              cp_fm_release
+   USE cp_fm_types,                     ONLY: cp_fm_release,&
+                                              cp_fm_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE kinds,                           ONLY: dp
 #include "./base/base_uses.f90"
@@ -39,11 +39,11 @@ MODULE et_coupling_types
 !> \author fschiff
 ! **************************************************************************************************
    TYPE et_coupling_type
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER           :: et_mo_coeff
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER     :: rest_mat
-      LOGICAL                                            :: first_run
-      LOGICAL                                            :: keep_matrix
-      REAL(KIND=dp)                                    :: energy, e1, order_p
+      TYPE(cp_fm_type), DIMENSION(:), POINTER           :: et_mo_coeff => NULL()
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER     :: rest_mat => NULL()
+      LOGICAL                                            :: first_run = .FALSE.
+      LOGICAL                                            :: keep_matrix = .FALSE.
+      REAL(KIND=dp)                                    :: energy = 0.0_dp, e1 = 0.0_dp, order_p = 0.0_dp
    END TYPE
 
 CONTAINS
@@ -73,8 +73,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE get_et_coupling_type(et_coupling, et_mo_coeff, rest_mat)
       TYPE(et_coupling_type), POINTER                    :: et_coupling
-      TYPE(cp_fm_p_type), DIMENSION(:), OPTIONAL, &
-         POINTER                                         :: et_mo_coeff
+      TYPE(cp_fm_type), DIMENSION(:), OPTIONAL, POINTER  :: et_mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: rest_mat
 
@@ -91,8 +90,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE set_et_coupling_type(et_coupling, et_mo_coeff, rest_mat)
       TYPE(et_coupling_type), POINTER                    :: et_coupling
-      TYPE(cp_fm_p_type), DIMENSION(:), OPTIONAL, &
-         POINTER                                         :: et_mo_coeff
+      TYPE(cp_fm_type), DIMENSION(:), OPTIONAL, POINTER  :: et_mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: rest_mat
 
@@ -108,16 +106,7 @@ CONTAINS
    SUBROUTINE et_coupling_release(et_coupling)
       TYPE(et_coupling_type), POINTER                    :: et_coupling
 
-      INTEGER                                            :: i
-
-      IF (ASSOCIATED(et_coupling%et_mo_coeff)) THEN
-         DO i = 1, SIZE(et_coupling%et_mo_coeff)
-            CALL cp_fm_release(et_coupling%et_mo_coeff(i)%matrix)
-            DEALLOCATE (et_coupling%et_mo_coeff(i)%matrix)
-            NULLIFY (et_coupling%et_mo_coeff(i)%matrix)
-         END DO
-         DEALLOCATE (et_coupling%et_mo_coeff)
-      END IF
+      CALL cp_fm_release(et_coupling%et_mo_coeff)
       IF (ASSOCIATED(et_coupling%rest_mat)) THEN
 !         CALL deallocate_matrix_set(et_coupling%rest_mat)
          DEALLOCATE (et_coupling%rest_mat)

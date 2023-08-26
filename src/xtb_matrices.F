@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -39,7 +39,6 @@ MODULE xtb_matrices
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_dot, dbcsr_finalize, dbcsr_get_block_p, &
         dbcsr_multiply, dbcsr_p_type, dbcsr_type
@@ -55,8 +54,7 @@ MODULE xtb_matrices
                                               dp
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_type
-   USE message_passing,                 ONLY: mp_minloc,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mulliken,                        ONLY: ao_charges
    USE orbital_pointers,                ONLY: ncoset
    USE pair_potential,                  ONLY: init_genpot
@@ -135,7 +133,7 @@ CONTAINS
    SUBROUTINE build_xtb_matrices(qs_env, para_env, calculate_forces)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN)                                :: calculate_forces
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'build_xtb_matrices'
@@ -251,7 +249,6 @@ CONTAINS
       NULLIFY (particle_set)
       CALL get_qs_env(qs_env=qs_env, particle_set=particle_set)
       natom = SIZE(particle_set)
-      ALLOCATE (atom_of_kind(natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, atom_of_kind=atom_of_kind)
       CALL get_qs_kind_set(qs_kind_set=qs_kind_set, maxsgf=maxs, basis_type="ORB")
 
@@ -330,7 +327,7 @@ CONTAINS
       CALL d3_cnumber(qs_env, dispersion_env, cnumbers, dcnum, ghost, floating, atomnumber, &
                       calculate_forces, .FALSE.)
       DEALLOCATE (ghost, floating, atomnumber)
-      CALL mp_sum(cnumbers, para_env%group)
+      CALL para_env%sum(cnumbers)
       IF (calculate_forces) THEN
          CALL dcnum_distribute(dcnum, para_env)
       END IF
@@ -355,7 +352,7 @@ CONTAINS
             kcnlk(3, ikind) = 0.0_dp
          END IF
       END DO
-      ALLOCATE (huckel(5, natom), kind_of(natom))
+      ALLOCATE (huckel(5, natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, kind_of=kind_of)
       DO iatom = 1, natom
          ikind = kind_of(iatom)
@@ -879,14 +876,14 @@ CONTAINS
       ! set repulsive energy
       erep = erep + exb + enonbonded
       IF (xb_inter) THEN
-         CALL mp_sum(exb, para_env%group)
+         CALL para_env%sum(exb)
          energy%xtb_xb_inter = exb
       END IF
       IF (do_nonbonded) THEN
-         CALL mp_sum(enonbonded, para_env%group)
+         CALL para_env%sum(enonbonded)
          energy%xtb_nonbonded = enonbonded
       END IF
-      CALL mp_sum(erep, para_env%group)
+      CALL para_env%sum(erep)
       energy%repulsive = erep
 
       ! deallocate coordination numbers
@@ -952,8 +949,6 @@ CONTAINS
       END IF
 
       DEALLOCATE (basis_set_list)
-      DEALLOCATE (kind_of)
-      DEALLOCATE (atom_of_kind)
       IF (calculate_forces) THEN
          IF (SIZE(matrix_p, 1) == 2) THEN
             DO img = 1, nimg
@@ -1025,12 +1020,12 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(block_p_type), DIMENSION(2:4)                 :: dsblocks
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_h, matrix_s
       TYPE(dcnum_type), ALLOCATABLE, DIMENSION(:)        :: dcnum
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_list
       TYPE(gto_basis_set_type), POINTER                  :: basis_set_a, basis_set_b
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -1081,7 +1076,6 @@ CONTAINS
       NULLIFY (particle_set)
       CALL get_qs_env(qs_env=qs_env, particle_set=particle_set)
       natom = SIZE(particle_set)
-      ALLOCATE (atom_of_kind(natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, atom_of_kind=atom_of_kind)
       CALL get_qs_kind_set(qs_kind_set=qs_kind_set, maxsgf=maxs, basis_type="ORB")
 
@@ -1131,7 +1125,7 @@ CONTAINS
       CALL d3_cnumber(qs_env, dispersion_env, cnumbers, dcnum, ghost, floating, atomnumber, &
                       .TRUE., .FALSE.)
       DEALLOCATE (ghost, floating, atomnumber)
-      CALL mp_sum(cnumbers, para_env%group)
+      CALL para_env%sum(cnumbers)
       CALL dcnum_distribute(dcnum, para_env)
 
       ! Calculate Huckel parameters
@@ -1154,7 +1148,7 @@ CONTAINS
             kcnlk(3, ikind) = 0.0_dp
          END IF
       END DO
-      ALLOCATE (huckel(5, natom), kind_of(natom))
+      ALLOCATE (huckel(5, natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, kind_of=kind_of)
       DO iatom = 1, natom
          ikind = kind_of(iatom)
@@ -1511,8 +1505,6 @@ CONTAINS
       DEALLOCATE (kijab)
 
       DEALLOCATE (basis_set_list)
-      DEALLOCATE (kind_of)
-      DEALLOCATE (atom_of_kind)
 
       CALL timestop(handle)
 
@@ -1544,11 +1536,11 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: aocg, charges
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_p1, mo_derivs, p_matrix
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ks_matrix, matrix_h, matrix_p, matrix_s
       TYPE(dbcsr_type), POINTER                          :: mo_coeff, s_matrix
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -1776,7 +1768,7 @@ CONTAINS
    SUBROUTINE xb_neighbors(neighbor_atoms, para_env)
       TYPE(neighbor_atoms_type), DIMENSION(:), &
          INTENT(INOUT)                                   :: neighbor_atoms
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: iatom, ikind, natom, nkind
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: matom
@@ -1793,7 +1785,7 @@ CONTAINS
                dmloc(2*iatom - 1) = neighbor_atoms(ikind)%rab(iatom)
                dmloc(2*iatom) = REAL(para_env%mepos, KIND=dp)
             END DO
-            CALL mp_minloc(dmloc, para_env%group)
+            CALL para_env%minloc(dmloc)
             coord = 0.0_dp
             matom = 0
             DO iatom = 1, natom
@@ -1803,9 +1795,9 @@ CONTAINS
                   matom(iatom) = neighbor_atoms(ikind)%katom(iatom)
                END IF
             END DO
-            CALL mp_sum(coord, para_env%group)
+            CALL para_env%sum(coord)
             neighbor_atoms(ikind)%coord(1:3, :) = coord(1:3, :)
-            CALL mp_sum(matom, para_env%group)
+            CALL para_env%sum(matom)
             neighbor_atoms(ikind)%katom(:) = matom(:)
             DEALLOCATE (dmloc, matom, coord)
          END IF

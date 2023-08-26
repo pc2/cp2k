@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -40,10 +40,11 @@ MODULE orbital_transformation_matrices
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'orbital_transformation_matrices'
 
    TYPE orbtramat_type
-      REAL(KIND=dp), DIMENSION(:, :), POINTER :: c2s, slm, slm_inv, s2c
+      REAL(KIND=dp), DIMENSION(:, :), POINTER :: c2s => NULL(), slm => NULL(), &
+                                                 slm_inv => NULL(), s2c => NULL()
    END TYPE orbtramat_type
 
-   TYPE(orbtramat_type), DIMENSION(:), POINTER :: orbtramat
+   TYPE(orbtramat_type), DIMENSION(:), POINTER :: orbtramat => NULL()
 
    INTEGER, SAVE :: current_maxl = -1
 
@@ -323,7 +324,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE write_matrix(matrix, l, lunit, headline)
 
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: matrix
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: matrix
       INTEGER, INTENT(IN)                                :: l, lunit
       CHARACTER(LEN=*), INTENT(IN)                       :: headline
 

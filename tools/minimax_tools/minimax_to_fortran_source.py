@@ -103,7 +103,6 @@ def format_array(
     begin: str = "[",
     end: str = "]",
 ) -> List[str]:
-
     lines: List[str] = [" " * indent + begin]
     for i, x in enumerate(array):
         if i % wrap == 0 and i > 0:
@@ -204,7 +203,7 @@ def generate_fortran_code(approx: List[Approximation]) -> str:
     output += [
         "!--------------------------------------------------------------------------------------------------!",
         "!   CP2K: A general program to perform molecular dynamics simulations                              !",
-        "!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !",
+        "!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !",
         "!                                                                                                  !",
         "!   SPDX-License-Identifier: GPL-2.0-or-later                                                      !",
         "!--------------------------------------------------------------------------------------------------!",

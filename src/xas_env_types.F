@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,8 +20,7 @@ MODULE xas_env_types
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
                                               fm_pools_give_back_fm_vect
-   USE cp_fm_types,                     ONLY: cp_fm_p_type,&
-                                              cp_fm_release,&
+   USE cp_fm_types,                     ONLY: cp_fm_release,&
                                               cp_fm_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE kinds,                           ONLY: dp
@@ -68,39 +67,39 @@ MODULE xas_env_types
 !> \author MI
 ! **************************************************************************************************
    TYPE xas_environment_type
-      INTEGER :: nao, exc_state, xas_estate
-      INTEGER :: nexc_search, nexc_atoms
-      INTEGER :: spin_channel
-      INTEGER :: nvirtual, nvirtual2
-      INTEGER :: unoccupied_max_iter
+      INTEGER :: nao = 0, exc_state = 0, xas_estate = 0
+      INTEGER :: nexc_search = 0, nexc_atoms = 0
+      INTEGER :: spin_channel = 0
+      INTEGER :: nvirtual = 0, nvirtual2 = 0
+      INTEGER :: unoccupied_max_iter = 0
 
-      INTEGER, DIMENSION(:), POINTER :: atom_of_state
-      INTEGER, DIMENSION(:), POINTER :: type_of_state
-      INTEGER, DIMENSION(:), POINTER :: mykind_of_atom
-      INTEGER, DIMENSION(:), POINTER :: mykind_of_kind
-      INTEGER, DIMENSION(:), POINTER :: exc_atoms
-      INTEGER, DIMENSION(:), POINTER :: nexc_states
-      INTEGER, DIMENSION(:, :), POINTER :: state_of_atom
+      INTEGER, DIMENSION(:), POINTER :: atom_of_state => NULL()
+      INTEGER, DIMENSION(:), POINTER :: type_of_state => NULL()
+      INTEGER, DIMENSION(:), POINTER :: mykind_of_atom => NULL()
+      INTEGER, DIMENSION(:), POINTER :: mykind_of_kind => NULL()
+      INTEGER, DIMENSION(:), POINTER :: exc_atoms => NULL()
+      INTEGER, DIMENSION(:), POINTER :: nexc_states => NULL()
+      INTEGER, DIMENSION(:, :), POINTER :: state_of_atom => NULL()
 
-      REAL(dp) :: ip_energy, occ_estate, unoccupied_eps, xas_nelectron, homo_occ
-      REAL(dp), DIMENSION(:), POINTER :: all_evals
-      REAL(dp), DIMENSION(:), POINTER :: unoccupied_evals
-      REAL(dp), DIMENSION(:, :), POINTER :: spectrum
-      REAL(dp), DIMENSION(:, :), POINTER :: centers_wfn
-      TYPE(cp_2d_r_p_type), DIMENSION(:), POINTER :: stogto_overlap
-      TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER :: my_gto_basis
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER :: groundstate_coeff
-      TYPE(cp_fm_p_type), DIMENSION(:, :), POINTER :: dip_fm_set
+      REAL(dp) :: ip_energy = 0.0_dp, occ_estate = 0.0_dp, unoccupied_eps = 0.0_dp, xas_nelectron = 0.0_dp, homo_occ = 0.0_dp
+      REAL(dp), DIMENSION(:), POINTER :: all_evals => NULL()
+      REAL(dp), DIMENSION(:), POINTER :: unoccupied_evals => NULL()
+      REAL(dp), DIMENSION(:, :), POINTER :: spectrum => NULL()
+      REAL(dp), DIMENSION(:, :), POINTER :: centers_wfn => NULL()
+      TYPE(cp_2d_r_p_type), DIMENSION(:), POINTER :: stogto_overlap => NULL()
+      TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER :: my_gto_basis => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER :: groundstate_coeff => NULL()
+      TYPE(cp_fm_type), DIMENSION(:, :), POINTER :: dip_fm_set => NULL()
       TYPE(cp_fm_pool_p_type), DIMENSION(:), &
-         POINTER                                   :: ao_mo_fm_pools
-      TYPE(cp_fm_type), POINTER :: excvec_coeff
-      TYPE(cp_fm_type), POINTER :: excvec_overlap
-      TYPE(cp_fm_type), POINTER :: unoccupied_orbs
-      TYPE(cp_fm_type), POINTER :: all_vectors
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: ostrength_sm
-      TYPE(qs_loc_env_type), POINTER :: qs_loc_env
-      TYPE(qs_scf_env_type), POINTER                        :: scf_env
-      TYPE(scf_control_type), POINTER          :: scf_control
+         POINTER                                   :: ao_mo_fm_pools => NULL()
+      TYPE(cp_fm_type), POINTER :: excvec_coeff => NULL()
+      TYPE(cp_fm_type), POINTER :: excvec_overlap => NULL()
+      TYPE(cp_fm_type), POINTER :: unoccupied_orbs => NULL()
+      TYPE(cp_fm_type), POINTER :: all_vectors => NULL()
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: ostrength_sm => NULL()
+      TYPE(qs_loc_env_type), POINTER :: qs_loc_env => NULL()
+      TYPE(qs_scf_env_type), POINTER                        :: scf_env => NULL()
+      TYPE(scf_control_type), POINTER          :: scf_control => NULL()
 
    END TYPE xas_environment_type
 
@@ -161,11 +160,10 @@ CONTAINS
                                                             mykind_of_kind
       INTEGER, DIMENSION(:, :), OPTIONAL, POINTER        :: state_of_atom
       REAL(dp), DIMENSION(:, :), OPTIONAL, POINTER       :: spectrum
-      TYPE(cp_fm_p_type), DIMENSION(:), OPTIONAL, &
-         POINTER                                         :: groundstate_coeff
+      TYPE(cp_fm_type), DIMENSION(:), OPTIONAL, POINTER  :: groundstate_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: ostrength_sm
-      TYPE(cp_fm_p_type), DIMENSION(:, :), OPTIONAL, &
+      TYPE(cp_fm_type), DIMENSION(:, :), OPTIONAL, &
          POINTER                                         :: dip_fm_set
       TYPE(cp_fm_type), OPTIONAL, POINTER                :: excvec_coeff, excvec_overlap, &
                                                             unoccupied_orbs
@@ -331,7 +329,7 @@ CONTAINS
 
       TYPE(xas_environment_type), INTENT(INOUT)          :: xas_env
 
-      INTEGER                                            :: i, ik, j
+      INTEGER                                            :: ik
 
       DEALLOCATE (xas_env%state_of_atom, xas_env%atom_of_state)
       DEALLOCATE (xas_env%nexc_states)
@@ -348,15 +346,8 @@ CONTAINS
       END IF
       CALL fm_pools_give_back_fm_vect(xas_env%ao_mo_fm_pools, &
                                       xas_env%groundstate_coeff)
-      IF (ASSOCIATED(xas_env%dip_fm_set)) THEN
-         DO i = 1, SIZE(xas_env%dip_fm_set, 2)
-            DO j = 1, SIZE(xas_env%dip_fm_set, 1)
-               CALL cp_fm_release(xas_env%dip_fm_set(j, i)%matrix)
-               DEALLOCATE (xas_env%dip_fm_set(j, i)%matrix)
-            END DO
-         END DO
-         DEALLOCATE (xas_env%dip_fm_set)
-      END IF
+
+      CALL cp_fm_release(xas_env%dip_fm_set)
 
       IF (ASSOCIATED(xas_env%excvec_coeff)) THEN
          CALL cp_fm_release(xas_env%excvec_coeff)

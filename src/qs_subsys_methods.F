@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,13 +15,12 @@ MODULE qs_subsys_methods
                                               get_atomic_kind
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
-   USE cell_methods,                    ONLY: read_cell,&
+   USE cell_methods,                    ONLY: cell_create,&
+                                              read_cell,&
                                               write_cell
    USE cell_types,                      ONLY: cell_clone,&
-                                              cell_create,&
                                               cell_release,&
                                               cell_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_methods,               ONLY: cp_subsys_create
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_release,&
@@ -34,6 +33,7 @@ MODULE qs_subsys_methods
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: get_molecule_kind,&
                                               molecule_kind_type,&
                                               set_molecule_kind
@@ -70,7 +70,7 @@ CONTAINS
    SUBROUTINE qs_subsys_create(subsys, para_env, root_section, force_env_section, subsys_section, &
                                use_motion_section, cp_subsys, cell, cell_ref, elkind)
       TYPE(qs_subsys_type), INTENT(OUT)                  :: subsys
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), OPTIONAL, POINTER         :: root_section
       TYPE(section_vals_type), POINTER                   :: force_env_section, subsys_section
       LOGICAL, INTENT(IN)                                :: use_motion_section
@@ -102,6 +102,7 @@ CONTAINS
 
       ! create cp_subsys%cell
       !TODO: moved to cp_subsys_create(), needs further disentanglement of cell_ref.
+      use_ref_cell = .FALSE.
       IF (PRESENT(cell)) THEN
          my_cell => cell
          IF (PRESENT(cell_ref)) THEN
@@ -109,8 +110,7 @@ CONTAINS
             use_ref_cell = .TRUE.
          ELSE
             CALL cell_create(my_cell_ref)
-            CALL cell_clone(my_cell, my_cell_ref)
-            use_ref_cell = .FALSE.
+            CALL cell_clone(my_cell, my_cell_ref, tag="CELL_REF")
          END IF
       ELSE
          cell_section => section_vals_get_subs_vals(subsys_section, "CELL")
@@ -118,7 +118,8 @@ CONTAINS
                         cell_section=cell_section, para_env=para_env)
       END IF
       CALL cp_subsys_set(my_cp_subsys, cell=my_cell)
-      CALL write_cell(my_cell, subsys_section, cell_ref=my_cell_ref)
+      CALL write_cell(my_cell, subsys_section)
+      CALL write_cell(my_cell_ref, subsys_section)
 
       ! setup qs_kinds
       CALL cp_subsys_get(my_cp_subsys, atomic_kind_set=atomic_kind_set)

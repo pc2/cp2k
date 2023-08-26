@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,14 +17,10 @@ MODULE qs_ks_types
    USE atprop_types,                    ONLY: atprop_type
    USE cell_types,                      ONLY: cell_type
    USE cp_blacs_env,                    ONLY: cp_blacs_env_release,&
-                                              cp_blacs_env_retain,&
                                               cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_release,&
                                               dft_control_type
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_result_types,                 ONLY: cp_result_type
    USE cp_subsys_types,                 ONLY: cp_subsys_type
    USE dbcsr_api,                       ONLY: dbcsr_distribution_release,&
@@ -42,6 +38,8 @@ MODULE qs_ks_types
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: kpoint_release,&
                                               kpoint_type
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
    USE molecule_kind_types,             ONLY: molecule_kind_type
    USE molecule_types,                  ONLY: molecule_type
    USE particle_types,                  ONLY: particle_type
@@ -138,7 +136,8 @@ MODULE qs_ks_types
       LOGICAL                                               :: s_mstruct_changed = .TRUE., &
                                                                rho_changed = .TRUE., &
                                                                potential_changed = .TRUE., &
-                                                               forces_up_to_date = .FALSE.
+                                                               forces_up_to_date = .FALSE., &
+                                                               complex_ks = .FALSE.
       INTEGER                                               :: n_evals = 0
 
       ! hartree is supposed to contain the hartree potential (for cube output)
@@ -197,7 +196,7 @@ MODULE qs_ks_types
       TYPE(dbcsr_distribution_type), POINTER                 :: dbcsr_dist => Null()
       TYPE(distribution_2d_type), POINTER                   :: distribution_2d => Null()
       TYPE(pw_env_type), POINTER                            :: pw_env => Null()
-      TYPE(cp_para_env_type), POINTER                       :: para_env => Null()
+      TYPE(mp_para_env_type), POINTER                       :: para_env => Null()
       TYPE(cp_blacs_env_type), POINTER                      :: blacs_env => Null()
    END TYPE qs_ks_env_type
 
@@ -225,6 +224,7 @@ CONTAINS
 !> \param rho_changed ...
 !> \param potential_changed ...
 !> \param forces_up_to_date ...
+!> \param complex_ks ...
 !> \param matrix_h ...
 !> \param matrix_h_im ...
 !> \param matrix_ks ...
@@ -305,7 +305,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE get_ks_env(ks_env, v_hartree_rspace, &
                          s_mstruct_changed, rho_changed, &
-                         potential_changed, forces_up_to_date, &
+                         potential_changed, forces_up_to_date, complex_ks, &
                          matrix_h, matrix_h_im, matrix_ks, matrix_ks_im, matrix_vxc, &
                          kinetic, matrix_s, &
                          matrix_s_RI_aux, matrix_w, matrix_p_mp2, matrix_p_mp2_admm, &
@@ -327,7 +327,8 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_type), OPTIONAL, POINTER                   :: v_hartree_rspace
       LOGICAL, OPTIONAL                                  :: s_mstruct_changed, rho_changed, &
-                                                            potential_changed, forces_up_to_date
+                                                            potential_changed, forces_up_to_date, &
+                                                            complex_ks
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, POINTER :: matrix_h, matrix_h_im, matrix_ks, &
          matrix_ks_im, matrix_vxc, kinetic, matrix_s, matrix_s_RI_aux, matrix_w, matrix_p_mp2, &
          matrix_p_mp2_admm
@@ -369,7 +370,7 @@ CONTAINS
       TYPE(dbcsr_distribution_type), OPTIONAL, POINTER   :: dbcsr_dist
       TYPE(distribution_2d_type), OPTIONAL, POINTER      :: distribution_2d
       TYPE(pw_env_type), OPTIONAL, POINTER               :: pw_env
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env
       INTEGER, OPTIONAL                                  :: nelectron_total
       INTEGER, DIMENSION(2), OPTIONAL                    :: nelectron_spin
@@ -380,6 +381,7 @@ CONTAINS
       IF (PRESENT(rho_changed)) rho_changed = ks_env%rho_changed
       IF (PRESENT(potential_changed)) potential_changed = ks_env%potential_changed
       IF (PRESENT(forces_up_to_date)) forces_up_to_date = ks_env%forces_up_to_date
+      IF (PRESENT(complex_ks)) complex_ks = ks_env%complex_ks
       IF (PRESENT(v_hartree_rspace)) v_hartree_rspace => ks_env%v_hartree_rspace
 
       IF (PRESENT(matrix_ks)) matrix_ks => get_1d_pointer(ks_env%matrix_ks)
@@ -479,6 +481,7 @@ CONTAINS
 !> \param rho_changed ...
 !> \param potential_changed ...
 !> \param forces_up_to_date ...
+!> \param complex_ks ...
 !> \param matrix_h ...
 !> \param matrix_h_im ...
 !> \param matrix_ks ...
@@ -536,7 +539,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE set_ks_env(ks_env, v_hartree_rspace, &
                          s_mstruct_changed, rho_changed, &
-                         potential_changed, forces_up_to_date, &
+                         potential_changed, forces_up_to_date, complex_ks, &
                          matrix_h, matrix_h_im, matrix_ks, matrix_ks_im, matrix_vxc, &
                          kinetic, matrix_s, &
                          matrix_s_RI_aux, matrix_w, matrix_p_mp2, matrix_p_mp2_admm, &
@@ -554,7 +557,8 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       TYPE(pw_type), OPTIONAL, POINTER                   :: v_hartree_rspace
       LOGICAL, OPTIONAL                                  :: s_mstruct_changed, rho_changed, &
-                                                            potential_changed, forces_up_to_date
+                                                            potential_changed, forces_up_to_date, &
+                                                            complex_ks
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, POINTER :: matrix_h, matrix_h_im, matrix_ks, &
          matrix_ks_im, matrix_vxc, kinetic, matrix_s, matrix_s_RI_aux, matrix_w, matrix_p_mp2, &
          matrix_p_mp2_admm
@@ -573,13 +577,14 @@ CONTAINS
       TYPE(dbcsr_distribution_type), OPTIONAL, POINTER   :: dbcsr_dist
       TYPE(distribution_2d_type), OPTIONAL, POINTER      :: distribution_2d
       TYPE(pw_env_type), OPTIONAL, POINTER               :: pw_env
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env
 
       IF (PRESENT(s_mstruct_changed)) ks_env%s_mstruct_changed = s_mstruct_changed
       IF (PRESENT(rho_changed)) ks_env%rho_changed = rho_changed
       IF (PRESENT(potential_changed)) ks_env%potential_changed = potential_changed
       IF (PRESENT(forces_up_to_date)) ks_env%forces_up_to_date = forces_up_to_date
+      IF (PRESENT(complex_ks)) ks_env%complex_ks = complex_ks
       IF (ks_env%s_mstruct_changed .OR. ks_env%potential_changed .OR. ks_env%rho_changed) &
          ks_env%forces_up_to_date = .FALSE.
       IF (PRESENT(v_hartree_rspace)) ks_env%v_hartree_rspace => v_hartree_rspace
@@ -681,12 +686,12 @@ CONTAINS
          ks_env%pw_env => pw_env
       END IF
       IF (PRESENT(para_env)) THEN
-         CALL cp_para_env_retain(para_env)
-         CALL cp_para_env_release(ks_env%para_env)
+         CALL para_env%retain()
+         CALL mp_para_env_release(ks_env%para_env)
          ks_env%para_env => para_env
       END IF
       IF (PRESENT(blacs_env)) THEN
-         CALL cp_blacs_env_retain(blacs_env)
+         CALL blacs_env%retain()
          CALL cp_blacs_env_release(ks_env%blacs_env)
          ks_env%blacs_env => blacs_env
       END IF
@@ -789,7 +794,7 @@ CONTAINS
          DEALLOCATE (ks_env%subsys)
       END IF
       CALL pw_env_release(ks_env%pw_env)
-      CALL cp_para_env_release(ks_env%para_env)
+      CALL mp_para_env_release(ks_env%para_env)
       CALL cp_blacs_env_release(ks_env%blacs_env)
 
    END SUBROUTINE qs_ks_release
@@ -929,6 +934,9 @@ CONTAINS
          ! *** deallocate matrices that will have the wrong structure ***
          CALL kpoint_transitional_release(ks_env%matrix_ks)
          !TODO: deallocate imaginary parts as well
+         IF (ks_env%complex_ks) THEN
+            CALL kpoint_transitional_release(ks_env%matrix_ks_im)
+         END IF
          !CALL dbcsr_deallocate_matrix_set(ks_env%matrix_ks_im)
          !CALL dbcsr_deallocate_matrix_set(ks_env%matrix_ks_aux_fit_im)
       END IF

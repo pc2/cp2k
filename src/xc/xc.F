@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -33,7 +33,6 @@ MODULE xc
                         accurate_sum
    USE kinds, ONLY: default_path_length, &
                     dp
-   USE message_passing, ONLY: mp_sum
    USE pw_grid_types, ONLY: PW_MODE_DISTRIBUTED, &
                             pw_grid_type
    USE pw_methods, ONLY: pw_axpy, &
@@ -83,6 +82,7 @@ MODULE xc
              xc_exc_calc, xc_calc_2nd_deriv_analytical, xc_calc_2nd_deriv_numerical, &
              xc_calc_2nd_deriv, xc_prep_2nd_deriv, divide_by_norm_drho, smooth_cutoff, &
              xc_uses_kinetic_energy_density, xc_uses_norm_drho
+   PUBLIC :: calc_xc_density
 
    LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .TRUE.
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'xc'
@@ -1063,6 +1063,44 @@ CONTAINS
       END IF
    END SUBROUTINE smooth_cutoff
 
+   SUBROUTINE calc_xc_density(pot, rho, rho_cutoff)
+      TYPE(pw_type), INTENT(INOUT)                       :: pot
+      TYPE(pw_type), DIMENSION(:), INTENT(INOUT)         :: rho
+      REAL(kind=dp), INTENT(in)                          :: rho_cutoff
+
+      INTEGER                                            :: i, j, k, nspins
+      INTEGER, DIMENSION(2, 3)                           :: bo
+      REAL(kind=dp)                                      :: eps1, eps2, my_rho, my_pot
+
+      bo(1, :) = LBOUND(pot%cr3d)
+      bo(2, :) = UBOUND(pot%cr3d)
+      nspins = SIZE(rho)
+
+      eps1 = rho_cutoff*1.E-4_dp
+      eps2 = rho_cutoff
+
+      DO k = bo(1, 3), bo(2, 3)
+         DO j = bo(1, 2), bo(2, 2)
+            DO i = bo(1, 1), bo(2, 1)
+               my_pot = pot%cr3d(i, j, k)
+               IF (nspins == 2) THEN
+                  my_rho = rho(1)%cr3d(i, j, k) + rho(2)%cr3d(i, j, k)
+               ELSE
+                  my_rho = rho(1)%cr3d(i, j, k)
+               END IF
+               IF (my_rho > eps1) THEN
+                  pot%cr3d(i, j, k) = my_pot/my_rho
+               ELSE IF (my_rho < eps2) THEN
+                  pot%cr3d(i, j, k) = 0.0_dp
+               ELSE
+                  pot%cr3d(i, j, k) = MIN(my_pot/my_rho, my_rho**(1._dp/3._dp))
+               END IF
+            END DO
+         END DO
+      END DO
+
+   END SUBROUTINE calc_xc_density
+
 ! **************************************************************************************************
 !> \brief Exchange and Correlation functional calculations
 !> \param vxc_rho will contain the v_xc part that depend on rho
@@ -1458,7 +1496,7 @@ CONTAINS
 
          exc = accurate_sum(e_0)*rho_r(1)%pw_grid%dvol
          IF (rho_r(1)%pw_grid%para%mode == PW_MODE_DISTRIBUTED) THEN
-            CALL mp_sum(exc, rho_r(1)%pw_grid%para%group)
+            CALL rho_r(1)%pw_grid%para%group%sum(exc)
          END IF
 
          CALL xc_rho_set_release(rho_set, pw_pool=pw_pool)
@@ -2624,7 +2662,7 @@ CONTAINS
       INTEGER, DIMENSION(2, 3)                           :: bo
       LOGICAL                                            :: gradient_f, lsd, my_compute_virial, &
                                                             my_gapw, tau_f, laplace_f, rho_f
-      REAL(KIND=dp)                                      :: fac, gradient_cut, tmp
+      REAL(KIND=dp)                                      :: fac, gradient_cut, tmp, factor2
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: dr1dr, dra1dra, drb1drb
       REAL(kind=dp), DIMENSION(:, :, :), POINTER         :: deriv_data, e_drhoa, e_drhob, &
                                                             e_drho, norm_drho, norm_drhoa, &
@@ -2662,7 +2700,9 @@ CONTAINS
       nspins = SIZE(v_xc)
       lsd = ASSOCIATED(rho_set%rhoa)
       fac = 0.0_dp
+      factor2 = 1.0_dp
       IF (PRESENT(tddfpt_fac)) fac = tddfpt_fac
+      IF (PRESENT(tddfpt_fac)) factor2 = tddfpt_fac
 
       bo = rho_set%local_bounds
 
@@ -2939,12 +2979,12 @@ CONTAINS
 
                DO idir = 1, 3
 !$OMP               PARALLEL DO PRIVATE(ia,ir) DEFAULT(NONE) &
-!$OMP               SHARED(bo,vxg,drho,v_drho,e_drho,drho1,idir) COLLAPSE(2)
+!$OMP               SHARED(bo,vxg,drho,v_drho,e_drho,drho1,idir,factor2) COLLAPSE(2)
                   DO ia = bo(1, 1), bo(2, 1)
                      DO ir = bo(1, 2), bo(2, 2)
                         vxg(idir, ia, ir, 1) = -drho(idir)%array(ia, ir, 1)*v_drho(1)%cr3d(ia, ir, 1)
                         IF (ASSOCIATED(e_drho)) THEN
-                           vxg(idir, ia, ir, 1) = vxg(idir, ia, ir, 1) + drho1(idir)%array(ia, ir, 1)*e_drho(ia, ir, 1)
+                           vxg(idir, ia, ir, 1) = vxg(idir, ia, ir, 1) + factor2*drho1(idir)%array(ia, ir, 1)*e_drho(ia, ir, 1)
                         END IF
                      END DO
                   END DO
@@ -3402,7 +3442,7 @@ CONTAINS
    SUBROUTINE prepare_dr1dr_ab(dr1dr, drhoa, drhob, drho1a, drho1b, fac)
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :), &
          INTENT(OUT)                                     :: dr1dr
-      TYPE(cp_3d_r_cp_type), DIMENSION(3), INTENT(IN)     :: drhoa, drhob, drho1a, drho1b
+      TYPE(cp_3d_r_cp_type), DIMENSION(3), INTENT(IN)    :: drhoa, drhob, drho1a, drho1b
       REAL(KIND=dp), INTENT(IN)                          :: fac
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'prepare_dr1dr_ab'

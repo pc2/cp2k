@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -40,9 +40,9 @@ MODULE mp2
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_get_info,&
                                               dbcsr_p_type
+   USE hfx_exx,                         ONLY: calculate_exx
    USE hfx_types,                       ONLY: &
         alloc_containers, dealloc_containers, hfx_basis_info_type, hfx_basis_type, &
         hfx_container_type, hfx_create_basis_types, hfx_init_container, hfx_release_basis_types, &
@@ -60,7 +60,7 @@ MODULE mp2
    USE machine,                         ONLY: m_flush,&
                                               m_memory,&
                                               m_walltime
-   USE message_passing,                 ONLY: mp_max
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mp2_direct_method,               ONLY: mp2_direct_energy
    USE mp2_gpw,                         ONLY: mp2_gpw_main
    USE mp2_optimize_ri_basis,           ONLY: optimize_ri_basis_main
@@ -86,7 +86,6 @@ MODULE mp2
                                               eigensolver_symm
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE rpa_gw_sigma_x,                  ONLY: compute_vec_Sigma_x_minus_vxc_gw
-   USE rpa_hfx,                         ONLY: calculate_exx
    USE scf_control_types,               ONLY: scf_control_type
    USE virial_types,                    ONLY: virial_type
 
@@ -122,7 +121,7 @@ CONTAINS
       INTEGER(KIND=int_8)                                :: mem
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: kind_of, nelec
       LOGICAL :: calc_ex, do_admm, do_admm_rpa_exx, do_dynamic_load_balancing, do_exx, do_gw, &
-         do_kpoints_cubic_RPA, free_hfx_buffer, update_xc_energy
+         do_im_time, do_kpoints_cubic_RPA, free_hfx_buffer, reuse_hfx, update_xc_energy
       REAL(KIND=dp) :: E_admm_from_GW(2), E_ex_from_GW, Emp2, Emp2_AA, Emp2_AA_Cou, Emp2_AA_ex, &
          Emp2_AB, Emp2_AB_Cou, Emp2_AB_ex, Emp2_BB, Emp2_BB_Cou, Emp2_BB_ex, Emp2_Cou, Emp2_ex, &
          Emp2_S, Emp2_T, maxocc, mem_real, t1, t2, t3
@@ -136,7 +135,6 @@ CONTAINS
       TYPE(cp_fm_type)                                   :: fm_matrix_ks, fm_matrix_s, fm_matrix_work
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks_transl, matrix_s_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -150,6 +148,7 @@ CONTAINS
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
       TYPE(mp2_biel_type)                                :: mp2_biel
       TYPE(mp2_type), POINTER                            :: mp2_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -275,7 +274,7 @@ IF (.NOT. (mp2_env%method == ri_mp2_method_gpw .OR. mp2_env%method == ri_rpa_met
           (mp2_env%method .NE. ri_mp2_laplace)) THEN
          CALL m_memory(mem)
          mem_real = (mem + 1024*1024 - 1)/(1024*1024)
-         CALL mp_max(mem_real, para_env%group)
+         CALL para_env%max(mem_real)
          mp2_env%mp2_memory = mp2_env%mp2_memory - mem_real
          IF (mp2_env%mp2_memory < 0.0_dp) mp2_env%mp2_memory = 1.0_dp
 
@@ -287,8 +286,6 @@ IF (.NOT. (mp2_env%method == ri_mp2_method_gpw .OR. mp2_env%method == ri_rpa_met
 
       nspins = dft_control%nspins
       natom = SIZE(particle_set, 1)
-
-      ALLOCATE (kind_of(natom))
 
       CALL get_atomic_kind_set(atomic_kind_set, kind_of=kind_of)
       nkind = SIZE(atomic_kind_set, 1)
@@ -729,7 +726,22 @@ IF (.NOT. (mp2_env%method == ri_mp2_method_gpw .OR. mp2_env%method == ri_rpa_met
          IF (do_exx) THEN
             do_gw = mp2_env%ri_rpa%do_ri_g0w0
             do_admm = mp2_env%ri_rpa%do_admm
-            CALL calculate_exx(qs_env, unit_nr, do_gw, do_admm, .FALSE., E_ex_from_GW, E_admm_from_GW, t3)
+            reuse_hfx = qs_env%mp2_env%ri_rpa%reuse_hfx
+            do_im_time = qs_env%mp2_env%do_im_time
+
+            CALL calculate_exx(qs_env=qs_env, &
+                               unit_nr=unit_nr, &
+                               hfx_sections=hfx_sections, &
+                               x_data=qs_env%mp2_env%ri_rpa%x_data, &
+                               do_gw=do_gw, &
+                               do_admm=do_admm, &
+                               calc_forces=.FALSE., &
+                               reuse_hfx=reuse_hfx, &
+                               do_im_time=do_im_time, &
+                               E_ex_from_GW=E_ex_from_GW, &
+                               E_admm_from_GW=E_admm_from_GW, &
+                               t3=t3)
+
          END IF
       END IF
 

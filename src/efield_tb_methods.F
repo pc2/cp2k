@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,7 +15,6 @@ MODULE efield_tb_methods
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_get_block_p,&
                                               dbcsr_iterator_blocks_left,&
                                               dbcsr_iterator_next_block,&
@@ -28,7 +27,7 @@ MODULE efield_tb_methods
                                               kpoint_type
    USE mathconstants,                   ONLY: pi,&
                                               twopi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -141,10 +140,10 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: ds_block, ks_block, p_block, s_block
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_p, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -181,7 +180,6 @@ CONTAINS
 
          IF (calculate_forces) THEN
             CALL get_qs_env(qs_env=qs_env, atomic_kind_set=atomic_kind_set, force=force)
-            ALLOCATE (atom_of_kind(natom), kind_of(natom))
             CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
             IF (para_env%mepos == 0) THEN
                DO ia = 1, natom
@@ -248,9 +246,8 @@ CONTAINS
 
          IF (calculate_forces) THEN
             DO ikind = 1, SIZE(atomic_kind_set)
-               CALL mp_sum(force(ikind)%efield, para_env%group)
+               CALL para_env%sum(force(ikind)%efield)
             END DO
-            DEALLOCATE (atom_of_kind, kind_of)
          END IF
 
       END IF
@@ -297,11 +294,11 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: dsint
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -364,7 +361,6 @@ CONTAINS
 
          IF (calculate_forces) THEN
             CALL get_qs_env(qs_env=qs_env, atomic_kind_set=atomic_kind_set, force=force)
-            ALLOCATE (atom_of_kind(natom), kind_of(natom))
             CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
             IF (para_env%mepos == 0) THEN
                DO ia = 1, natom
@@ -574,9 +570,8 @@ CONTAINS
 
          IF (calculate_forces) THEN
             DO ikind = 1, SIZE(atomic_kind_set)
-               CALL mp_sum(force(ikind)%efield, para_env%group)
+               CALL para_env%sum(force(ikind)%efield)
             END DO
-            DEALLOCATE (atom_of_kind, kind_of)
          END IF
 
       END IF
@@ -622,12 +617,12 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: ds_block, ks_block, p_block, s_block
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(efield_berry_type), POINTER                   :: efield
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -740,7 +735,6 @@ CONTAINS
 
          IF (calculate_forces) THEN
             CALL get_qs_env(qs_env=qs_env, atomic_kind_set=atomic_kind_set, force=force)
-            ALLOCATE (atom_of_kind(natom), kind_of(natom))
             CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
             IF (para_env%mepos == 0) THEN
                DO ia = 1, natom
@@ -865,10 +859,6 @@ CONTAINS
 
             END DO
             CALL neighbor_list_iterator_release(nl_iterator)
-         END IF
-
-         IF (calculate_forces) THEN
-            DEALLOCATE (atom_of_kind, kind_of)
          END IF
 
       END IF

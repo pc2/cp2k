@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -33,12 +33,14 @@ MODULE rpa_gw_sigma_x
                                               cp_fm_get_info,&
                                               cp_fm_release,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_desymmetrize, dbcsr_get_diag, dbcsr_multiply, &
         dbcsr_p_type, dbcsr_release, dbcsr_release_p, dbcsr_set, dbcsr_type, &
         dbcsr_type_antisymmetric, dbcsr_type_symmetric
    USE hfx_energy_potential,            ONLY: integrate_four_center
+   USE hfx_exx,                         ONLY: calc_exx_admm_xc_contributions,&
+                                              exx_post_hfx,&
+                                              exx_pre_hfx
    USE hfx_ri,                          ONLY: hfx_ri_update_ks
    USE input_constants,                 ONLY: do_admm_basis_projection,&
                                               do_admm_purify_none,&
@@ -59,10 +61,9 @@ MODULE rpa_gw_sigma_x
    USE mathconstants,                   ONLY: gaussi,&
                                               z_one,&
                                               z_zero
-   USE message_passing,                 ONLY: mp_sum,&
-                                              mp_sync
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mp2_integrals,                   ONLY: compute_kpoints
-   USE mp2_ri_2c,                       ONLY: setup_abs_cutoffs_chi_and_trunc_coulomb_potential
+   USE mp2_ri_2c,                       ONLY: setup_trunc_coulomb_pot_for_exchange_self_energy
    USE mp2_types,                       ONLY: mp2_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE physcon,                         ONLY: evolt
@@ -79,9 +80,6 @@ MODULE rpa_gw_sigma_x
    USE rpa_gw,                          ONLY: compute_minus_vxc_kpoints,&
                                               trafo_to_mo_and_kpoints
    USE rpa_gw_kpoints_util,             ONLY: get_bandstruc_and_k_dependent_MOs
-   USE rpa_hfx,                         ONLY: calc_ri_rpa_admm_xc_contributions,&
-                                              ri_rpa_post_hfx,&
-                                              ri_rpa_pre_hfx
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 
@@ -134,7 +132,6 @@ CONTAINS
                                                             vec_Sigma_x_minus_vxc_gw_im
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), ALLOCATABLE, DIMENSION(:)      :: mat_exchange_for_kp_from_gamma
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_ks_aux_fit, &
                                                             matrix_ks_aux_fit_hfx, rho_ao, &
@@ -145,6 +142,7 @@ CONTAINS
       TYPE(dbcsr_type)                                   :: matrix_tmp, matrix_tmp_2, mo_coeff_b
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints, kpoints_Sigma
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho, rho_aux_fit
@@ -219,13 +217,13 @@ CONTAINS
       ! to T-cell index and then to k-points for band structure calculation
       IF (do_kpoints_from_Gamma) THEN
          ! not yet there: open shell
-         ALLOCATE (qs_env%mp2_env%ri_g0w0%matrix_ks(1))
-         DO ispin = 1, 1
+         ALLOCATE (qs_env%mp2_env%ri_g0w0%matrix_ks(nspins))
+         DO ispin = 1, nspins
             NULLIFY (qs_env%mp2_env%ri_g0w0%matrix_ks(ispin)%matrix)
             ALLOCATE (qs_env%mp2_env%ri_g0w0%matrix_ks(ispin)%matrix)
             CALL dbcsr_create(qs_env%mp2_env%ri_g0w0%matrix_ks(ispin)%matrix, &
                               template=matrix_ks(ispin)%matrix)
-            CALL dbcsr_desymmetrize(matrix_ks(1)%matrix, &
+            CALL dbcsr_desymmetrize(matrix_ks(ispin)%matrix, &
                                     qs_env%mp2_env%ri_g0w0%matrix_ks(ispin)%matrix)
 
          END DO
@@ -426,7 +424,7 @@ CONTAINS
          ehfx = 0.0_dp
          IF (.NOT. do_ri_Sigma_x) THEN
 
-            CALL ri_rpa_pre_hfx(qs_env)
+            CALL exx_pre_hfx(hfx_sections, qs_env%mp2_env%ri_rpa%x_data, qs_env%mp2_env%ri_rpa%reuse_hfx)
             calc_ints = .NOT. qs_env%mp2_env%ri_rpa%reuse_hfx
 
             ! add here HFX (=Sigma_exchange) to matrix_sigma_x_minus_vxc
@@ -462,9 +460,14 @@ CONTAINS
 
             !ADMM XC correction
             IF (do_admm_rpa) THEN
-               CALL calc_ri_rpa_admm_xc_contributions(qs_env, matrix_ks, matrix_ks_aux_fit, &
-                                                      energy_xc_admm(1), energy_xc_admm(2), &
-                                                      .FALSE., .FALSE.)
+               CALL calc_exx_admm_xc_contributions(qs_env=qs_env, &
+                                                   matrix_prim=matrix_ks, &
+                                                   matrix_aux=matrix_ks_aux_fit, &
+                                                   x_data=qs_env%mp2_env%ri_rpa%x_data, &
+                                                   exc=energy_xc_admm(1), &
+                                                   exc_aux_fit=energy_xc_admm(2), &
+                                                   calc_forces=.FALSE., &
+                                                   use_virial=.FALSE.)
             END IF
 
             IF (do_kpoints_from_Gamma .AND. print_exx == gw_print_exx) THEN
@@ -480,7 +483,7 @@ CONTAINS
 
             END IF
 
-            CALL ri_rpa_post_hfx(qs_env)
+            CALL exx_post_hfx(qs_env, qs_env%mp2_env%ri_rpa%x_data, qs_env%mp2_env%ri_rpa%reuse_hfx)
          END IF
 
          energy_ex = ehfx
@@ -499,8 +502,8 @@ CONTAINS
          ! to T-cell index and then to k-points for band structure calculation
          IF (do_kpoints_from_Gamma) THEN
             ! not yet there: open shell
-            ALLOCATE (qs_env%mp2_env%ri_g0w0%matrix_sigma_x_minus_vxc(1))
-            DO ispin = 1, 1
+            ALLOCATE (qs_env%mp2_env%ri_g0w0%matrix_sigma_x_minus_vxc(nspins))
+            DO ispin = 1, nspins
                NULLIFY (qs_env%mp2_env%ri_g0w0%matrix_sigma_x_minus_vxc(ispin)%matrix)
                ALLOCATE (qs_env%mp2_env%ri_g0w0%matrix_sigma_x_minus_vxc(ispin)%matrix)
                CALL dbcsr_create(qs_env%mp2_env%ri_g0w0%matrix_sigma_x_minus_vxc(ispin)%matrix, &
@@ -580,7 +583,7 @@ CONTAINS
 
          END DO
 
-         CALL mp_sum(vec_Sigma_x_minus_vxc_gw, para_env%group)
+         CALL para_env%sum(vec_Sigma_x_minus_vxc_gw)
 
       END IF
 
@@ -612,13 +615,13 @@ CONTAINS
             CALL get_qs_env(qs_env=qs_env, &
                             kpoints=kpoints)
 
-            CALL setup_abs_cutoffs_chi_and_trunc_coulomb_potential(qs_env)
+            CALL setup_trunc_coulomb_pot_for_exchange_self_energy(qs_env)
 
             CALL compute_kpoints(qs_env, kpoints, unit_nr)
 
             ALLOCATE (Eigenval_kp(nmo, 1, nspins))
 
-            CALL get_bandstruc_and_k_dependent_MOs(qs_env, kpoints, Eigenval_kp)
+            CALL get_bandstruc_and_k_dependent_MOs(qs_env, Eigenval_kp)
 
             CALL compute_minus_vxc_kpoints(qs_env)
 
@@ -630,7 +633,7 @@ CONTAINS
             CALL trafo_to_mo_and_kpoints(qs_env, &
                                          mat_exchange_for_kp_from_gamma(1)%matrix, &
                                          vec_Sigma_x(homo - gw_corr_lev_occ + 1:homo + gw_corr_lev_virt, :), &
-                                         homo, gw_corr_lev_occ, gw_corr_lev_virt)
+                                         homo, gw_corr_lev_occ, gw_corr_lev_virt, 1)
 
             CALL dbcsr_release(mat_exchange_for_kp_from_gamma(1)%matrix)
             DEALLOCATE (mat_exchange_for_kp_from_gamma(1)%matrix)
@@ -710,7 +713,7 @@ CONTAINS
             CPABORT('Stop after printing exchange energies.')
 
          ELSE
-            CALL mp_sync(para_env%group)
+            CALL para_env%sync()
          END IF
 
       END IF
@@ -783,7 +786,7 @@ CONTAINS
                                                             matrix_sigma_x_minus_vxc_im
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: vec_Sigma_x_minus_vxc_gw, &
                                                             vec_Sigma_x_minus_vxc_gw_im
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER                                            :: nmo
       TYPE(mp2_type)                                     :: mp2_env
 
@@ -888,8 +891,8 @@ CONTAINS
 
       END DO
 
-      CALL mp_sum(vec_Sigma_x_minus_vxc_gw, para_env%group)
-      CALL mp_sum(vec_Sigma_x_minus_vxc_gw_im, para_env%group)
+      CALL para_env%sum(vec_Sigma_x_minus_vxc_gw)
+      CALL para_env%sum(vec_Sigma_x_minus_vxc_gw_im)
 
       ! also adjust in the case of kpoints too big gw_corr_lev_occ and gw_corr_lev_virt
       DO ispin = 1, nspins

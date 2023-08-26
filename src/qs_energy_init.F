@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -14,7 +14,6 @@
 MODULE qs_energy_init
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_copy,&
                                               dbcsr_p_type,&
                                               dbcsr_set,&
@@ -34,6 +33,7 @@ MODULE qs_energy_init
    USE lri_environment_methods,         ONLY: build_lri_matrices,&
                                               calculate_lri_integrals
    USE lri_environment_types,           ONLY: lri_environment_type
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_types,                  ONLY: molecule_of_atom,&
                                               molecule_type
    USE optimize_embedding_potential,    ONLY: given_embed_pot
@@ -53,7 +53,8 @@ MODULE qs_energy_init
    USE qs_gcp_method,                   ONLY: calculate_gcp_pairpot
    USE qs_gcp_types,                    ONLY: qs_gcp_type
    USE qs_ks_methods,                   ONLY: qs_ks_allocate_basics
-   USE qs_ks_types,                     ONLY: qs_ks_env_type,&
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type,&
                                               set_ks_env
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_neighbor_lists,               ONLY: build_qs_neighbor_lists
@@ -90,7 +91,8 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: calc_forces
 
       INTEGER                                            :: img, ispin, nimg, nspin
-      LOGICAL                                            :: has_unit_metric, molecule_only
+      LOGICAL                                            :: has_unit_metric, ks_is_complex, &
+                                                            molecule_only
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s, matrix_w
       TYPE(dbcsr_type), POINTER                          :: matrix
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -98,7 +100,7 @@ CONTAINS
 
       NULLIFY (ks_env, matrix_w, matrix_s, dft_control)
 
-      CALL get_qs_env(qs_env, dft_control=dft_control)
+      CALL get_qs_env(qs_env, dft_control=dft_control, ks_env=ks_env)
       IF (dft_control%qs_control%do_kg) THEN
          molecule_only = .TRUE.
          CALL qs_energies_init_kg(qs_env)
@@ -106,7 +108,8 @@ CONTAINS
          molecule_only = .FALSE.
       END IF
       CALL qs_energies_init_hamiltonians(qs_env, calc_forces, molecule_only)
-      CALL qs_ks_allocate_basics(qs_env)
+      CALL get_ks_env(ks_env, complex_ks=ks_is_complex)
+      CALL qs_ks_allocate_basics(qs_env, is_complex=ks_is_complex)
 
       ! if need forces allocate energy weighted density matrices
       CALL get_qs_env(qs_env, has_unit_metric=has_unit_metric)
@@ -144,10 +147,10 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_energies_init_kg'
 
       INTEGER                                            :: handle, isubset, natom
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kg_environment_type), POINTER                 :: kg_env
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: soo_list, soo_list1
 
@@ -247,10 +250,10 @@ CONTAINS
 
       INTEGER                                            :: handle
       LOGICAL                                            :: do_kpoints
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(lri_environment_type), POINTER                :: lri_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(qs_dispersion_type), POINTER                  :: dispersion_env

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -21,7 +21,6 @@ MODULE qs_linres_epr_ownutils
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -29,7 +28,7 @@ MODULE qs_linres_epr_ownutils
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE mathlib,                         ONLY: diamat_all
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
@@ -229,9 +228,9 @@ CONTAINS
       INTEGER                                            :: i1, ispin, output_unit
       REAL(KIND=dp)                                      :: epr_g_zke_temp(2)
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: kinetic, rho_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(section_vals_type), POINTER                   :: lr_section
 
@@ -299,12 +298,12 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3)                        :: ra
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(jrho_atom_type), DIMENSION(:), POINTER        :: jrho1_atom_set
       TYPE(jrho_atom_type), POINTER                      :: jrho1_atom
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(nablavks_atom_type), DIMENSION(:), POINTER    :: nablavks_atom_set
       TYPE(nablavks_atom_type), POINTER                  :: nablavks_atom
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -422,7 +421,7 @@ CONTAINS
             bo = get_limit(natom, para_env%num_pe, para_env%mepos)
 
             DO iat = 1, natom !bo(1),bo(2)! this partitioning blocks the interpolation
-               !                         ! routines (i.e. waiting for mp_sum)
+               !                         ! routines (i.e. waiting for parallel sum)
                iatom = atom_list(iat)
                NULLIFY (jrho1_atom, nablavks_atom)
                jrho1_atom => jrho1_atom_set(iatom)
@@ -506,7 +505,7 @@ CONTAINS
             END DO !iat
          END DO !ikind
 
-         CALL mp_sum(temp_so_gapw, para_env%group)
+         CALL para_env%sum(temp_so_gapw)
          temp_so_gapw(:, :) = -1.0_dp*epr_env%g_so_factor_gapw*temp_so_gapw(:, :)
 
          IF (output_unit > 0) THEN
@@ -566,10 +565,10 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3)                        :: ra
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -691,7 +690,7 @@ CONTAINS
             bo = get_limit(natom, para_env%num_pe, para_env%mepos)
 
             DO iat = 1, natom !bo(1),bo(2)! this partitioning blocks the interpolation
-               !                         ! routines (i.e. waiting for mp_sum)
+               !                         ! routines (i.e. waiting for parallel sum)
                iatom = atom_list(iat)
                rho_atom => rho_atom_set(iatom)
                NULLIFY (rho_rad_h, rho_rad_s)
@@ -734,7 +733,7 @@ CONTAINS
             END DO !iat
          END DO !ikind
 
-         CALL mp_sum(temp_soo_gapw, para_env%group)
+         CALL para_env%sum(temp_soo_gapw)
          temp_soo_gapw(:, :) = 1.0_dp*epr_env%g_soo_factor*temp_soo_gapw(:, :)
 
          IF (output_unit > 0) THEN

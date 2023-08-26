@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -31,7 +31,6 @@ MODULE rpa_rse
                                               cp_fm_set_all,&
                                               cp_fm_to_fm_submat,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_copy,&
                                               dbcsr_create,&
                                               dbcsr_init_p,&
@@ -41,13 +40,15 @@ MODULE rpa_rse
                                               dbcsr_set,&
                                               dbcsr_type_symmetric
    USE hfx_energy_potential,            ONLY: integrate_four_center
+   USE hfx_exx,                         ONLY: exx_post_hfx,&
+                                              exx_pre_hfx
    USE hfx_ri,                          ONLY: hfx_ri_update_ks
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mp2_types,                       ONLY: mp2_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE pw_types,                        ONLY: pw_release,&
@@ -61,8 +62,6 @@ MODULE rpa_rse
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_vxc,                          ONLY: qs_vxc_create
-   USE rpa_hfx,                         ONLY: ri_rpa_post_hfx,&
-                                              ri_rpa_pre_hfx
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 
@@ -94,7 +93,7 @@ CONTAINS
                          mo_coeff, nmo, homo, Eigenval)
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
       TYPE(mp2_type), INTENT(INOUT)                      :: mp2_env
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
       TYPE(dft_control_type), INTENT(IN), POINTER        :: dft_control
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: mo_coeff
       INTEGER, INTENT(IN)                                :: nmo
@@ -107,7 +106,7 @@ CONTAINS
                                                             j_global, jjB, n_rep_hf, ncol_local, &
                                                             nrow_local, nspins
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
-      LOGICAL                                            :: beta, do_hfx, hfx_treat_lsd_in_core
+      LOGICAL                                            :: do_hfx, hfx_treat_lsd_in_core
       REAL(KIND=dp)                                      :: coeff, corr, rse_corr
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diag_diff
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -124,7 +123,6 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       nspins = dft_control%nspins
-      beta = (nspins == 2)
 
       ! Pick the diagonal terms
       CALL cp_fm_get_info(matrix=mo_coeff(1), &
@@ -207,9 +205,9 @@ CONTAINS
       ! Obtain density matrix like quantity
 
       coeff = 1.0_dp
-      IF (beta) coeff = 0.5_dp
+      IF (nspins == 1) coeff = 2.0_dp
       DO ispin = 1, nspins
-         CALL parallel_gemm(transa='N', transb='T', m=dimen, n=dimen, k=dimen, alpha=coeff, &
+         CALL parallel_gemm(transa='N', transb='T', m=dimen, n=dimen, k=homo(ispin), alpha=coeff, &
                             matrix_a=mo_coeff(ispin), matrix_b=mo_coeff(ispin), &
                             beta=0.0_dp, matrix_c=fm_P_mu_nu(ispin))
       END DO
@@ -261,13 +259,15 @@ CONTAINS
          rse_corr = rse_corr + corr
       END DO
 
-      CALL mp_sum(rse_corr, para_env%group)
+      CALL para_env%sum(rse_corr)
 
-      rse_corr = rse_corr/nspins
+      IF (nspins == 1) rse_corr = rse_corr*2.0_dp
 
       mp2_env%ri_rpa%rse_corr_diag = rse_corr
 
       CALL non_diag_rse(fm_X_mo, eigenval, dimen, homo, para_env, blacs_env, rse_corr)
+
+      IF (nspins == 1) rse_corr = rse_corr*2.0_dp
 
       mp2_env%ri_rpa%rse_corr = rse_corr
 
@@ -275,14 +275,14 @@ CONTAINS
       DEALLOCATE (diag_diff)
       CALL cp_fm_release(fm_ao)
       CALL cp_fm_release(fm_ao_mo)
+      CALL cp_fm_release(fm_P_mu_nu)
+      CALL cp_fm_release(fm_X_mo)
+      CALL cp_fm_release(fm_XC_mo)
       DO ispin = 1, nspins
-         CALL cp_fm_release(fm_P_mu_nu(ispin))
-         CALL cp_fm_release(fm_X_mo(ispin))
-         CALL cp_fm_release(fm_XC_mo(ispin))
          CALL dbcsr_release(mat_mu_nu(ispin)%matrix)
          DEALLOCATE (mat_mu_nu(ispin)%matrix)
       END DO
-      DEALLOCATE (fm_P_mu_nu, fm_X_mo, fm_XC_mo, mat_mu_nu)
+      DEALLOCATE (mat_mu_nu)
 
       CALL timestop(handle)
 
@@ -310,7 +310,7 @@ CONTAINS
                                     fm_X_ao, fm_X_mo, fm_X_ao_mo, &
                                     recalc_hfx_integrals)
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
       INTEGER, INTENT(IN)                                :: dimen
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: mo_coeff
       TYPE(section_vals_type), INTENT(IN), POINTER       :: hfx_sections
@@ -347,7 +347,7 @@ CONTAINS
          CALL dbcsr_set(P_mu_nu(is)%matrix, 0.0_dp)
       END DO
 
-      CALL ri_rpa_pre_hfx(qs_env)
+      CALL exx_pre_hfx(hfx_sections, qs_env%mp2_env%ri_rpa%x_data, qs_env%mp2_env%ri_rpa%reuse_hfx)
       DO is = 1, ns
          CALL copy_fm_to_dbcsr(fm_P_mu_nu(is), P_mu_nu(1)%matrix, keep_sparsity=.TRUE.)
 
@@ -393,7 +393,7 @@ CONTAINS
                             fm_X_ao_mo, mo_coeff(is), 1.0_dp, fm_X_mo(is))
 
       END DO
-      CALL ri_rpa_post_hfx(qs_env)
+      CALL exx_post_hfx(qs_env, qs_env%mp2_env%ri_rpa%x_data, qs_env%mp2_env%ri_rpa%reuse_hfx)
 
       ! Release dbcsr objects
       DO is = 1, SIZE(P_mu_nu)
@@ -442,33 +442,35 @@ CONTAINS
       CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho, xc_section=xc_section, &
                          vxc_rho=v_rspace, vxc_tau=tau_rspace, exc=exc)
 
-      CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace, matrix_vxc=matrix_vxc)
+      IF (ASSOCIATED(v_rspace)) THEN
+         CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace, matrix_vxc=matrix_vxc)
 
-      DO i = 1, SIZE(v_rspace)
-         CALL pw_release(v_rspace(i))
-      END DO
-      DEALLOCATE (v_rspace)
+         DO i = 1, SIZE(v_rspace)
+            CALL pw_release(v_rspace(i))
+         END DO
+         DEALLOCATE (v_rspace)
 
-      DO i = 1, SIZE(matrix_vxc)
-         CALL cp_fm_set_all(fm_XC_ao, 0.0_dp)
-         CALL copy_dbcsr_to_fm(matrix=matrix_vxc(i)%matrix, fm=fm_XC_ao)
-         CALL cp_fm_set_all(fm_XC_mo(i), 0.0_dp)
+         DO i = 1, SIZE(matrix_vxc)
+            CALL cp_fm_set_all(fm_XC_ao, 0.0_dp)
+            CALL copy_dbcsr_to_fm(matrix=matrix_vxc(i)%matrix, fm=fm_XC_ao)
+            CALL cp_fm_set_all(fm_XC_mo(i), 0.0_dp)
 
-         ! First index
-         CALL parallel_gemm('T', 'N', dimen, dimen, dimen, 1.0_dp, &
-                            mo_coeff(i), fm_XC_ao, 0.0_dp, fm_XC_ao_mo)
+            ! First index
+            CALL parallel_gemm('T', 'N', dimen, dimen, dimen, 1.0_dp, &
+                               mo_coeff(i), fm_XC_ao, 0.0_dp, fm_XC_ao_mo)
 
-         ! Second index
-         CALL parallel_gemm('N', 'N', dimen, dimen, dimen, 1.0_dp, &
-                            fm_XC_ao_mo, mo_coeff(i), 1.0_dp, fm_XC_mo(i))
+            ! Second index
+            CALL parallel_gemm('N', 'N', dimen, dimen, dimen, 1.0_dp, &
+                               fm_XC_ao_mo, mo_coeff(i), 1.0_dp, fm_XC_mo(i))
 
-      END DO
+         END DO
 
-      DO i = 1, SIZE(matrix_vxc)
-         CALL dbcsr_release(matrix_vxc(i)%matrix)
-         DEALLOCATE (matrix_vxc(i)%matrix)
-      END DO
-      DEALLOCATE (matrix_vxc)
+         DO i = 1, SIZE(matrix_vxc)
+            CALL dbcsr_release(matrix_vxc(i)%matrix)
+            DEALLOCATE (matrix_vxc(i)%matrix)
+         END DO
+         DEALLOCATE (matrix_vxc)
+      END IF
 
       CALL timestop(handle)
 
@@ -490,7 +492,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: Eigenval
       INTEGER, INTENT(IN)                                :: dimen
       INTEGER, DIMENSION(:), INTENT(IN)                  :: homo
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
       TYPE(cp_blacs_env_type), INTENT(IN), POINTER       :: blacs_env
       REAL(KIND=dp), INTENT(OUT)                         :: rse_corr
 
@@ -592,7 +594,7 @@ CONTAINS
                                  s_firstrow=1, s_firstcol=homo(ispin) + 1, &
                                  t_firstrow=1, t_firstcol=1)
 
-         CALL parallel_gemm(transa='N', transb='N', m=homo(ispin), n=virtual, k=homo(ispin), alpha=1.0_dp, &
+         CALL parallel_gemm(transa='T', transb='N', m=homo(ispin), n=virtual, k=homo(ispin), alpha=1.0_dp, &
                             matrix_a=fm_O, matrix_b=fm_F_ov, beta=0.0_dp, matrix_c=fm_tmp)
 
          CALL parallel_gemm(transa='N', transb='N', m=homo(ispin), n=virtual, k=virtual, alpha=1.0_dp, &
@@ -634,8 +636,7 @@ CONTAINS
 
       END DO
 
-      CALL mp_sum(rse_corr, para_env%group)
-      rse_corr = rse_corr/nspins
+      CALL para_env%sum(rse_corr)
 
       CALL timestop(handle)
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -19,6 +19,10 @@ MODULE rpa_im_time_force_types
    USE hfx_types,                       ONLY: block_ind_type,&
                                               dealloc_containers,&
                                               hfx_compression_type
+   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type,&
+                                              release_neighbor_list_sets
+   USE qs_tensors,                      ONLY: neighbor_list_3c_destroy
+   USE qs_tensors_types,                ONLY: neighbor_list_3c_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -48,13 +52,13 @@ MODULE rpa_im_time_force_types
       TYPE(dbcsr_type) :: inv_ovlp, G_PQ
 
       !The occupied and virtual density matrices (standard block size, one for each spin)
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: P_occ, P_virt
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: P_occ => NULL(), P_virt => NULL()
 
-      !The weighted sum of the O(tau) matrices for thre response and associated kernel densities
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: sum_O_tau, sum_ker_tau
+      !The weighted sum of the O(tau) matrices for thre response
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: sum_O_tau => NULL()
 
       !The weigthed sum of the YP matrices for the trace with the Fockian derivative
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: sum_YP_tau
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: sum_YP_tau => NULL()
 
       !Split block size info
       INTEGER, DIMENSION(:), ALLOCATABLE  :: bsizes_RI_split, bsizes_AO_split
@@ -63,7 +67,17 @@ MODULE rpa_im_time_force_types
       INTEGER, DIMENSION(:), ALLOCATABLE  :: idx_to_at_AO, idx_to_at_RI
 
       !Is it a periodic calculation
-      LOGICAL :: do_periodic
+      LOGICAL :: do_periodic = .FALSE.
+
+      !Necessary stuff for the on-the fly calculation of the virial
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), POINTER :: nl_2c_ovlp => Null(), &
+                                                               nl_2c_met => Null(), &
+                                                               nl_2c_pot => Null()
+      TYPE(neighbor_list_3c_type), POINTER                  :: nl_3c => Null()
+      TYPE(dbcsr_type), POINTER                             :: RI_virial_pot => Null(), &
+                                                               RI_virial_met => Null()
+      TYPE(dbt_type), POINTER                               :: t_3c_virial => Null(), &
+                                                               t_3c_virial_split => Null()
 
    END TYPE im_time_force_type
 
@@ -88,7 +102,6 @@ CONTAINS
       CALL dbcsr_deallocate_matrix_set(force_data%P_virt)
       CALL dbcsr_deallocate_matrix_set(force_data%P_occ)
       CALL dbcsr_deallocate_matrix_set(force_data%sum_O_tau)
-      CALL dbcsr_deallocate_matrix_set(force_data%sum_ker_tau)
       CALL dbcsr_deallocate_matrix_set(force_data%sum_YP_tau)
 
       DO i_xyz = 1, 3
@@ -115,6 +128,43 @@ CONTAINS
          END DO
       END DO
       DEALLOCATE (force_data%t_3c_der_AO_ind, force_data%t_3c_der_RI_ind)
+
+      IF (ASSOCIATED(force_data%nl_2c_ovlp)) THEN
+         CALL release_neighbor_list_sets(force_data%nl_2c_ovlp)
+      END IF
+
+      IF (ASSOCIATED(force_data%nl_2c_pot)) THEN
+         CALL release_neighbor_list_sets(force_data%nl_2c_pot)
+      END IF
+
+      IF (ASSOCIATED(force_data%nl_2c_met)) THEN
+         CALL release_neighbor_list_sets(force_data%nl_2c_met)
+      END IF
+
+      IF (ASSOCIATED(force_data%nl_3c)) THEN
+         CALL neighbor_list_3c_destroy(force_data%nl_3c)
+         DEALLOCATE (force_data%nl_3c)
+      END IF
+
+      IF (ASSOCIATED(force_data%RI_virial_pot)) THEN
+         CALL dbcsr_release(force_data%RI_virial_pot)
+         DEALLOCATE (force_data%RI_virial_pot)
+      END IF
+
+      IF (ASSOCIATED(force_data%RI_virial_met)) THEN
+         CALL dbcsr_release(force_data%RI_virial_met)
+         DEALLOCATE (force_data%RI_virial_met)
+      END IF
+
+      IF (ASSOCIATED(force_data%t_3c_virial)) THEN
+         CALL dbt_destroy(force_data%t_3c_virial)
+         DEALLOCATE (force_data%t_3c_virial)
+      END IF
+
+      IF (ASSOCIATED(force_data%t_3c_virial_split)) THEN
+         CALL dbt_destroy(force_data%t_3c_virial_split)
+         DEALLOCATE (force_data%t_3c_virial_split)
+      END IF
 
    END SUBROUTINE im_time_force_release
 

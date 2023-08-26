@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,8 +20,6 @@ MODULE force_env_types
    USE cp_log_handling,                 ONLY: cp_add_default_logger,&
                                               cp_logger_type,&
                                               cp_rm_default_logger
-   USE cp_para_env,                     ONLY: cp_para_env_release
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type,&
                                               pack_subsys_particles
@@ -45,6 +43,8 @@ MODULE force_env_types
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
    USE metadynamics_types,              ONLY: meta_env_release,&
                                               meta_env_type
    USE mixed_energy_types,              ONLY: mixed_energy_type
@@ -137,24 +137,24 @@ MODULE force_env_types
 !> \author fawzi
 ! **************************************************************************************************
    TYPE force_env_type
-      INTEGER :: ref_count, in_use, method_name_id
-      REAL(KIND=dp)                                    :: additional_potential
-      TYPE(fist_environment_type), POINTER             :: fist_env
-      TYPE(meta_env_type), POINTER                     :: meta_env
-      TYPE(fp_type), POINTER                           :: fp_env
-      TYPE(qs_environment_type), POINTER               :: qs_env
-      TYPE(eip_environment_type), POINTER              :: eip_env
-      TYPE(pwdft_environment_type), POINTER            :: pwdft_env
-      TYPE(global_environment_type), POINTER           :: globenv
-      TYPE(cp_para_env_type), POINTER                  :: para_env
-      TYPE(force_env_p_type), DIMENSION(:), POINTER    :: sub_force_env
-      TYPE(qmmm_env_type), POINTER                     :: qmmm_env
-      TYPE(qmmmx_env_type), POINTER                    :: qmmmx_env
-      TYPE(mixed_environment_type), POINTER            :: mixed_env
-      TYPE(nnp_type), POINTER                          :: nnp_env
-      TYPE(embed_env_type), POINTER                    :: embed_env
-      TYPE(section_vals_type), POINTER                 :: force_env_section
-      TYPE(section_vals_type), POINTER                 :: root_section
+      INTEGER :: ref_count = 0, in_use = 0, method_name_id = 0
+      REAL(KIND=dp)                                    :: additional_potential = 0.0_dp
+      TYPE(fist_environment_type), POINTER             :: fist_env => NULL()
+      TYPE(meta_env_type), POINTER                     :: meta_env => NULL()
+      TYPE(fp_type), POINTER                           :: fp_env => NULL()
+      TYPE(qs_environment_type), POINTER               :: qs_env => NULL()
+      TYPE(eip_environment_type), POINTER              :: eip_env => NULL()
+      TYPE(pwdft_environment_type), POINTER            :: pwdft_env => NULL()
+      TYPE(global_environment_type), POINTER           :: globenv => NULL()
+      TYPE(mp_para_env_type), POINTER                  :: para_env => NULL()
+      TYPE(force_env_p_type), DIMENSION(:), POINTER    :: sub_force_env => NULL()
+      TYPE(qmmm_env_type), POINTER                     :: qmmm_env => NULL()
+      TYPE(qmmmx_env_type), POINTER                    :: qmmmx_env => NULL()
+      TYPE(mixed_environment_type), POINTER            :: mixed_env => NULL()
+      TYPE(nnp_type), POINTER                          :: nnp_env => NULL()
+      TYPE(embed_env_type), POINTER                    :: embed_env => NULL()
+      TYPE(section_vals_type), POINTER                 :: force_env_section => NULL()
+      TYPE(section_vals_type), POINTER                 :: root_section => NULL()
    END TYPE force_env_type
 
 ! **************************************************************************************************
@@ -165,7 +165,7 @@ MODULE force_env_types
 !> \author MJM
 ! **************************************************************************************************
    TYPE force_env_p_type
-      TYPE(force_env_type), POINTER :: force_env
+      TYPE(force_env_type), POINTER :: force_env => NULL()
    END TYPE force_env_p_type
 
 CONTAINS
@@ -255,7 +255,7 @@ CONTAINS
                DEALLOCATE (force_env%embed_env)
             END SELECT
             CALL globenv_release(force_env%globenv)
-            CALL cp_para_env_release(force_env%para_env)
+            CALL mp_para_env_release(force_env%para_env)
             ! Not deallocated
             CPASSERT(.NOT. ASSOCIATED(force_env%fist_env))
             CPASSERT(.NOT. ASSOCIATED(force_env%qs_env))
@@ -333,7 +333,7 @@ CONTAINS
       TYPE(meta_env_type), OPTIONAL, POINTER             :: meta_env
       TYPE(fp_type), OPTIONAL, POINTER                   :: fp_env
       TYPE(cp_subsys_type), OPTIONAL, POINTER            :: subsys
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: potential_energy, additional_potential, &
                                                             kinetic_energy, harmonic_shell, &
                                                             kinetic_shell

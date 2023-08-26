@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -21,14 +21,12 @@ MODULE qs_epr_hyp
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
-   USE message_passing,                 ONLY: mp_sum,&
-                                              mp_sync
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE periodic_table,                  ONLY: ptable
    USE physcon,                         ONLY: a_bohr,&
@@ -82,10 +80,10 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
 
       CHARACTER(LEN=2)                                   :: element_symbol
-      INTEGER                                            :: bo(2), group, ia, iat, iatom, idir1, &
-                                                            idir2, ig, ikind, ir, iso, jatom, &
-                                                            mepos, natom, natomkind, nkind, &
-                                                            num_pe, output_unit, z
+      INTEGER                                            :: bo(2), ia, iat, iatom, idir1, idir2, ig, &
+                                                            ikind, ir, iso, jatom, mepos, natom, &
+                                                            natomkind, nkind, num_pe, output_unit, &
+                                                            z
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
       LOGICAL                                            :: lsd, paw_atom
       REAL(dp)                                           :: arg, esum, hard_radius, hypanisotemp, &
@@ -96,10 +94,10 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_grid_type), POINTER                        :: pw_grid
@@ -143,7 +141,6 @@ CONTAINS
                       rho=rho, atomic_kind_set=atomic_kind_set, qs_kind_set=qs_kind_set, &
                       rho_atom_set=rho_atom_set, pw_env=pw_env, &
                       particle_set=particle_set, para_env=para_env)
-      group = para_env%group
 
       IF (output_unit > 0) THEN
          WRITE (UNIT=output_unit, FMT="(/,T2,A,/,T2,A)") &
@@ -351,10 +348,10 @@ CONTAINS
       END DO
 
       ! Global sum
-      CALL mp_sync(group)
-      CALL mp_sum(hypaniso, group)
-      CALL mp_sum(hypiso, group)
-      CALL mp_sum(hypiso_one, group)
+      CALL para_env%sync()
+      CALL para_env%sum(hypaniso)
+      CALL para_env%sum(hypiso)
+      CALL para_env%sum(hypiso_one)
 
       ! Print hyperfine matrices
       IF (output_unit > 0) THEN

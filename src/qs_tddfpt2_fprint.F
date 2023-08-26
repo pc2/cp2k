@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,9 +13,9 @@ MODULE qs_tddfpt2_fprint
    USE cp_fm_struct,                    ONLY: cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
-                                              cp_fm_p_type,&
                                               cp_fm_release,&
-                                              cp_fm_to_fm
+                                              cp_fm_to_fm,&
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type
@@ -23,7 +23,6 @@ MODULE qs_tddfpt2_fprint
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE efield_utils,                    ONLY: calculate_ecore_efield
    USE exstates_types,                  ONLY: excited_energy_type
@@ -32,6 +31,7 @@ MODULE qs_tddfpt2_fprint
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
    USE lri_environment_types,           ONLY: lri_environment_type
+   USE message_passing,                 ONLY: mp_para_env_type
    USE physcon,                         ONLY: evolt
    USE qs_core_energies,                ONLY: calculate_ecore_overlap,&
                                               calculate_ecore_self
@@ -100,7 +100,7 @@ CONTAINS
    SUBROUTINE tddfpt_print_forces(qs_env, evects, evals, ostrength, print_section, &
                                   gs_mos, kernel_env, sub_env, work_matrices)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_fm_p_type), DIMENSION(:, :), INTENT(in)    :: evects
+      TYPE(cp_fm_type), DIMENSION(:, :), INTENT(in)      :: evects
       REAL(kind=dp), DIMENSION(:), INTENT(in)            :: evals, ostrength
       TYPE(section_vals_type), POINTER                   :: print_section
       TYPE(tddfpt_ground_state_mos), DIMENSION(:), &
@@ -113,16 +113,15 @@ CONTAINS
       LOGICAL, PARAMETER                                 :: debug_forces = .FALSE.
 
       INTEGER                                            :: handle, iounit, is, ispin, istate, iw, &
-                                                            iwunit, kstate, natom, nkind, nspins, &
-                                                            nstates
+                                                            iwunit, kstate, natom, nspins, nstates
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: alist, natom_of_kind, state_list
       REAL(KIND=dp)                                      :: eener, threshold
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(excited_energy_type), POINTER                 :: ex_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: gs_force, ks_force, td_force
       TYPE(qs_p_env_type)                                :: p_env
       TYPE(section_vals_type), POINTER                   :: force_section
@@ -177,8 +176,6 @@ CONTAINS
 
          ! prepare force array
          CALL get_qs_env(qs_env, atomic_kind_set=atomic_kind_set, natom=natom)
-         nkind = SIZE(atomic_kind_set)
-         ALLOCATE (natom_of_kind(nkind))
          CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, natom_of_kind=natom_of_kind)
          NULLIFY (td_force, gs_force)
          CALL allocate_qs_force(gs_force, natom_of_kind)
@@ -205,19 +202,12 @@ CONTAINS
                END IF
                ex_env%state = istate
                ex_env%evalue = evals(istate)
-               IF (ASSOCIATED(ex_env%evect)) THEN
-                  DO ispin = 1, SIZE(ex_env%evect)
-                     CALL cp_fm_release(ex_env%evect(ispin)%matrix)
-                     DEALLOCATE (ex_env%evect(ispin)%matrix)
-                  END DO
-                  DEALLOCATE (ex_env%evect)
-               END IF
+               CALL cp_fm_release(ex_env%evect)
                ALLOCATE (ex_env%evect(nspins))
                DO ispin = 1, nspins
-                  CALL cp_fm_get_info(matrix=evects(ispin, 1)%matrix, matrix_struct=matrix_struct)
-                  ALLOCATE (ex_env%evect(ispin)%matrix)
-                  CALL cp_fm_create(ex_env%evect(ispin)%matrix, matrix_struct)
-                  CALL cp_fm_to_fm(evects(ispin, istate)%matrix, ex_env%evect(ispin)%matrix)
+                  CALL cp_fm_get_info(matrix=evects(ispin, 1), matrix_struct=matrix_struct)
+                  CALL cp_fm_create(ex_env%evect(ispin), matrix_struct)
+                  CALL cp_fm_to_fm(evects(ispin, istate), ex_env%evect(ispin))
                END DO
                ! force array
                CALL zero_qs_force(td_force)
@@ -261,7 +251,7 @@ CONTAINS
          CALL set_qs_env(qs_env, force=ks_force)
          CALL deallocate_qs_force(gs_force)
          CALL deallocate_qs_force(td_force)
-         DEALLOCATE (natom_of_kind, state_list)
+         DEALLOCATE (state_list)
 
          ex_env%state = kstate
          ex_env%evalue = eener
@@ -295,10 +285,10 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'gs_forces'
 
       INTEGER                                            :: handle
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_w_b, matrix_w_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(lri_environment_type), POINTER                :: lri_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
 

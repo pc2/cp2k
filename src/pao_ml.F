@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,9 +13,8 @@ MODULE pao_ml
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind
    USE basis_set_types,                 ONLY: gto_basis_set_type
-   USE cell_types,                      ONLY: cell_create,&
-                                              cell_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
+   USE cell_methods,                    ONLY: cell_create
+   USE cell_types,                      ONLY: cell_type
    USE dbcsr_api,                       ONLY: dbcsr_iterator_blocks_left,&
                                               dbcsr_iterator_next_block,&
                                               dbcsr_iterator_start,&
@@ -26,8 +25,7 @@ MODULE pao_ml
                                               default_string_length,&
                                               dp
    USE machine,                         ONLY: m_flush
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pao_input,                       ONLY: id2str,&
                                               pao_ml_gp,&
                                               pao_ml_lazy,&
@@ -89,7 +87,7 @@ CONTAINS
 
       INTEGER                                            :: i
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(training_list_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: training_lists
 
@@ -150,7 +148,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: hmat, positions
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pao_ioblock_type), ALLOCATABLE, DIMENSION(:)  :: xblocks
       TYPE(pao_iokind_type), ALLOCATABLE, DIMENSION(:)   :: kinds
       TYPE(particle_type), DIMENSION(:), POINTER         :: my_particle_set
@@ -164,7 +162,7 @@ CONTAINS
       CALL get_qs_env(qs_env, para_env=para_env)
 
       ! parse training data on first rank
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL pao_read_raw(filename, param, hmat, kinds, atom2kind, positions, xblocks, ml_range)
 
          ! check parametrization
@@ -178,19 +176,19 @@ CONTAINS
       END IF
 
       ! broadcast parsed raw training data
-      CALL mp_bcast(nkinds, para_env%source, para_env%group)
-      CALL mp_bcast(natoms, para_env%source, para_env%group)
-      IF (para_env%mepos /= para_env%source) THEN
+      CALL para_env%bcast(nkinds)
+      CALL para_env%bcast(natoms)
+      IF (.NOT. para_env%is_source()) THEN
          ALLOCATE (hmat(3, 3))
          ALLOCATE (kindsmap(nkinds))
          ALLOCATE (positions(natoms, 3))
          ALLOCATE (atom2kind(natoms))
       END IF
-      CALL mp_bcast(hmat, para_env%source, para_env%group)
-      CALL mp_bcast(kindsmap, para_env%source, para_env%group)
-      CALL mp_bcast(atom2kind, para_env%source, para_env%group)
-      CALL mp_bcast(positions, para_env%source, para_env%group)
-      CALL mp_bcast(ml_range, para_env%source, para_env%group)
+      CALL para_env%bcast(hmat)
+      CALL para_env%bcast(kindsmap)
+      CALL para_env%bcast(atom2kind)
+      CALL para_env%bcast(positions)
+      CALL para_env%bcast(ml_range)
 
       IF (ml_range(1) /= 1 .OR. ml_range(2) /= natoms) &
          CPWARN("Skipping some atoms for PAO-ML training.")
@@ -226,7 +224,7 @@ CONTAINS
          END IF
 
          ! copy training-point output on first rank
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             nparams = SIZE(xblocks(iatom)%p, 1)
             ALLOCATE (new_point%output(nparams))
             new_point%output(:) = xblocks(iatom)%p(:, 1)
@@ -319,7 +317,7 @@ CONTAINS
          DIMENSION(:), TARGET                            :: training_lists
       TYPE(training_matrix_type), ALLOCATABLE, &
          DIMENSION(:), TARGET                            :: training_matrices
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: i, ikind, inp_size, ninputs, noutputs, &
                                                             npoints, out_size
@@ -348,8 +346,8 @@ CONTAINS
             inp_size = SIZE(training_list%head%input)
          IF (ALLOCATED(training_list%head%output)) &
             out_size = SIZE(training_list%head%output)
-         CALL mp_sum(inp_size, para_env%group)
-         CALL mp_sum(out_size, para_env%group)
+         CALL para_env%sum(inp_size)
+         CALL para_env%sum(out_size)
 
          ! allocate matices to hold all training points
          ALLOCATE (training_matrix%inputs(inp_size, npoints))
@@ -378,12 +376,12 @@ CONTAINS
          training_list%npoints = 0 ! list is now empty
 
          ! sync training_matrix across ranks
-         CALL mp_sum(training_matrix%inputs, para_env%group)
-         CALL mp_sum(training_matrix%outputs, para_env%group)
+         CALL para_env%sum(training_matrix%inputs)
+         CALL para_env%sum(training_matrix%outputs)
 
          ! sanity check
-         CALL mp_sum(noutputs, para_env%group)
-         CALL mp_sum(ninputs, para_env%group)
+         CALL para_env%sum(noutputs)
+         CALL para_env%sum(ninputs)
          CPASSERT(noutputs == npoints .AND. ninputs == npoints)
       END DO
 
@@ -513,8 +511,8 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_X
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -563,7 +561,7 @@ CONTAINS
 !$OMP END PARALLEL
 
       ! print variances
-      CALL mp_sum(variances, para_env%group)
+      CALL para_env%sum(variances)
       IF (pao%iw_mlvar > 0) THEN
          DO iatom = 1, natoms
             WRITE (pao%iw_mlvar, *) "PAO|ML| atom:", iatom, " prediction variance:", variances(iatom)
@@ -633,8 +631,8 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_G
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,7 +16,6 @@ MODULE negf_integr_cc
                                               cp_cfm_scale_and_add
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_info,&
-                                              cp_cfm_p_type,&
                                               cp_cfm_release,&
                                               cp_cfm_type
    USE cp_fm_basic_linalg,              ONLY: cp_fm_trace
@@ -26,7 +25,9 @@ MODULE negf_integr_cc
                                               cp_fm_get_info,&
                                               cp_fm_release,&
                                               cp_fm_type
-   USE fft_tools,                       ONLY: fft_fw1d
+   USE fft_tools,                       ONLY: fft_alloc,&
+                                              fft_dealloc,&
+                                              fft_fw1d
    USE kahan_sum,                       ONLY: accurate_sum
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -82,7 +83,7 @@ MODULE negf_integr_cc
       TYPE(cp_fm_type), POINTER                          :: weights
       !> integrand value at grid points. Due to symmetry of Clenshaw-Curtis quadratures,
       !> we only need to keep the left half-interval
-      TYPE(cp_cfm_p_type), ALLOCATABLE, DIMENSION(:)     :: zdata_cache
+      TYPE(cp_cfm_type), ALLOCATABLE, DIMENSION(:)     :: zdata_cache
       REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: tnodes
    END TYPE ccquad_type
 
@@ -226,10 +227,7 @@ CONTAINS
 
       IF (ALLOCATED(cc_env%zdata_cache)) THEN
          DO ipoint = SIZE(cc_env%zdata_cache), 1, -1
-            IF (ASSOCIATED(cc_env%zdata_cache(ipoint)%matrix)) THEN
-               CALL cp_cfm_release(cc_env%zdata_cache(ipoint)%matrix)
-               DEALLOCATE (cc_env%zdata_cache(ipoint)%matrix)
-            END IF
+            CALL cp_cfm_release(cc_env%zdata_cache(ipoint))
          END DO
 
          DEALLOCATE (cc_env%zdata_cache)
@@ -333,14 +331,15 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE ccquad_reduce_and_append_zdata(cc_env, zdata_next)
       TYPE(ccquad_type), INTENT(inout)                   :: cc_env
-      TYPE(cp_cfm_p_type), DIMENSION(:), INTENT(inout)   :: zdata_next
+      TYPE(cp_cfm_type), DIMENSION(:), INTENT(inout)     :: zdata_next
 
       CHARACTER(len=*), PARAMETER :: routineN = 'ccquad_reduce_and_append_zdata'
+      TYPE(cp_cfm_type), PARAMETER                       :: cfm_null = cp_cfm_type()
 
       COMPLEX(kind=dp), ALLOCATABLE, DIMENSION(:)        :: zscale
       INTEGER                                            :: handle, ipoint, nnodes_exist, &
                                                             nnodes_half, nnodes_next
-      TYPE(cp_cfm_p_type), ALLOCATABLE, DIMENSION(:)     :: zdata_tmp
+      TYPE(cp_cfm_type), ALLOCATABLE, DIMENSION(:)       :: zdata_tmp
 
       CALL timeset(routineN, handle)
 
@@ -359,7 +358,7 @@ CONTAINS
 
       ! rescale integrand values
       DO ipoint = 1, nnodes_next
-         CALL cp_cfm_scale(zscale(ipoint), zdata_next(ipoint)%matrix)
+         CALL cp_cfm_scale(zscale(ipoint), zdata_next(ipoint))
       END DO
       DEALLOCATE (zscale)
 
@@ -389,7 +388,7 @@ CONTAINS
 
       IF (cc_env%interval_id == cc_interval_full) THEN
          DO ipoint = nnodes_next/2, 1, -1
-            CALL cp_cfm_scale_and_add(z_one, zdata_next(ipoint)%matrix, z_one, zdata_next(nnodes_next - ipoint + 1)%matrix)
+            CALL cp_cfm_scale_and_add(z_one, zdata_next(ipoint), z_one, zdata_next(nnodes_next - ipoint + 1))
          END DO
       END IF
 
@@ -398,22 +397,21 @@ CONTAINS
          ALLOCATE (zdata_tmp(nnodes_half + nnodes_exist))
 
          DO ipoint = 1, nnodes_half
-            zdata_tmp(2*ipoint - 1)%matrix => cc_env%zdata_cache(ipoint)%matrix
-            zdata_tmp(2*ipoint)%matrix => zdata_next(ipoint)%matrix
-            NULLIFY (zdata_next(ipoint)%matrix)
+            zdata_tmp(2*ipoint - 1) = cc_env%zdata_cache(ipoint)
+            zdata_tmp(2*ipoint) = zdata_next(ipoint)
+            zdata_next(ipoint) = cfm_null
          END DO
-         zdata_tmp(nnodes_half + nnodes_exist)%matrix => cc_env%zdata_cache(nnodes_exist)%matrix
+         zdata_tmp(nnodes_half + nnodes_exist) = cc_env%zdata_cache(nnodes_exist)
 
-         DEALLOCATE (cc_env%zdata_cache)
          CALL MOVE_ALLOC(zdata_tmp, cc_env%zdata_cache)
       ELSE
-         CALL cp_cfm_scale(2.0_dp, zdata_next(nnodes_half)%matrix)
+         CALL cp_cfm_scale(2.0_dp, zdata_next(nnodes_half))
 
          ALLOCATE (cc_env%zdata_cache(nnodes_half))
 
          DO ipoint = 1, nnodes_half
-            cc_env%zdata_cache(ipoint)%matrix => zdata_next(ipoint)%matrix
-            NULLIFY (zdata_next(ipoint)%matrix)
+            cc_env%zdata_cache(ipoint) = zdata_next(ipoint)
+            zdata_next(ipoint) = cfm_null
          END DO
       END IF
 
@@ -431,7 +429,8 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'ccquad_refine_integral'
 
-      COMPLEX(kind=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: ztmp, ztmp_dct
+      COMPLEX(kind=dp), CONTIGUOUS, DIMENSION(:, :, :), &
+         POINTER                                         :: ztmp, ztmp_dct
       INTEGER :: handle, icol, ipoint, irow, ncols_local, nintervals, nintervals_half, &
          nintervals_half_plus_1, nintervals_half_plus_2, nintervals_plus_2, nrows_local, stat
       LOGICAL                                            :: equiv
@@ -454,7 +453,7 @@ CONTAINS
       CPASSERT(nintervals_half > 1)
 
       IF (.NOT. ASSOCIATED(cc_env%integral)) THEN
-         CALL cp_cfm_get_info(cc_env%zdata_cache(1)%matrix, matrix_struct=fm_struct)
+         CALL cp_cfm_get_info(cc_env%zdata_cache(1), matrix_struct=fm_struct)
          equiv = cp_fm_struct_equivalent(fm_struct, cc_env%weights%matrix_struct)
          CPASSERT(equiv)
 
@@ -467,7 +466,7 @@ CONTAINS
 
       IF (debug_this_module) THEN
          DO ipoint = 1, nintervals_half_plus_1
-            equiv = cp_fm_struct_equivalent(cc_env%zdata_cache(ipoint)%matrix%matrix_struct, cc_env%integral%matrix_struct)
+            equiv = cp_fm_struct_equivalent(cc_env%zdata_cache(ipoint)%matrix_struct, cc_env%integral%matrix_struct)
             CPASSERT(equiv)
          END DO
       END IF
@@ -488,15 +487,15 @@ CONTAINS
       ! 1.0 / nintervals
       rscale = 1.0_dp/rscale
 
-      ALLOCATE (ztmp(nintervals, nrows_local, ncols_local))
-      ALLOCATE (ztmp_dct(nintervals, nrows_local, ncols_local))
+      CALL fft_alloc(ztmp, [nintervals, nrows_local, ncols_local])
+      CALL fft_alloc(ztmp_dct, [nintervals, nrows_local, ncols_local])
 
 !$OMP PARALLEL DO DEFAULT(NONE), PRIVATE(icol, ipoint, irow), &
 !$OMP             SHARED(cc_env, ncols_local, nintervals_half, nintervals_half_plus_1, nintervals_half_plus_2, nrows_local, ztmp)
       DO icol = 1, ncols_local
          DO irow = 1, nrows_local
             DO ipoint = 1, nintervals_half_plus_1
-               ztmp(ipoint, irow, icol) = cc_env%zdata_cache(ipoint)%matrix%local_data(irow, icol)
+               ztmp(ipoint, irow, icol) = cc_env%zdata_cache(ipoint)%local_data(irow, icol)
             END DO
 
             DO ipoint = 2, nintervals_half
@@ -531,7 +530,8 @@ CONTAINS
       END DO
 !$OMP END PARALLEL DO
 
-      DEALLOCATE (ztmp, ztmp_dct)
+      CALL fft_dealloc(ztmp)
+      CALL fft_dealloc(ztmp_dct)
 
       CALL cp_fm_trace(cc_env%error_fm, cc_env%weights, cc_env%error)
 

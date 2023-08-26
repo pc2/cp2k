@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,15 +16,13 @@
 !> \author Fawzi Mohamed
 ! **************************************************************************************************
 MODULE pw_spline_utils
+
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type,&
                                               cp_to_string
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: twopi
-   USE message_passing,                 ONLY: mp_alltoall,&
-                                              mp_comm_compare,&
-                                              mp_sendrecv,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_comm_congruent
    USE pw_grid_types,                   ONLY: FULLSPACE,&
                                               PW_MODE_LOCAL
    USE pw_methods,                      ONLY: pw_axpy,&
@@ -113,11 +111,11 @@ MODULE pw_spline_utils
 !> \author fawzi
 ! **************************************************************************************************
    TYPE pw_spline_precond_type
-      INTEGER :: kind
-      REAL(kind=dp), DIMENSION(4) :: coeffs
-      REAL(kind=dp), DIMENSION(3) :: coeffs_1d
-      LOGICAL :: sharpen, normalize, pbc, transpose
-      TYPE(pw_pool_type), POINTER :: pool
+      INTEGER :: kind = no_precond
+      REAL(kind=dp), DIMENSION(4) :: coeffs = 0.0_dp
+      REAL(kind=dp), DIMENSION(3) :: coeffs_1d = 0.0_dp
+      LOGICAL :: sharpen = .FALSE., normalize = .FALSE., pbc = .FALSE., transpose = .FALSE.
+      TYPE(pw_pool_type), POINTER :: pool => NULL()
    END TYPE pw_spline_precond_type
 
 CONTAINS
@@ -204,7 +202,7 @@ CONTAINS
 !> \note
 !>      does not work with spherical cutoff
 !>      stupid distribution for cos calculation, it should calculate only the
-!>      needed cos, and avoid the mp_sum
+!>      needed cos, and avoid the mpi_allreduce
 ! **************************************************************************************************
    SUBROUTINE pw_spline3_interpolate_values_g(spline_g)
       TYPE(pw_type), INTENT(IN)                          :: spline_g
@@ -783,17 +781,15 @@ CONTAINS
                    u_boundary(bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), &
                    tmp(bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)))
          tmp(:, :) = pw_in%cr3d(bo(2, 1), :, :)
-         CALL mp_sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          l_boundary, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          pw_in%pw_grid%para%group)
+         CALL pw_in%pw_grid%para%group%sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
+                                                l_boundary, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)))
          tmp(:, :) = pw_in%cr3d(bo(1, 1), :, :)
-         CALL mp_sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          u_boundary, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          pw_in%pw_grid%para%group)
+         CALL pw_in%pw_grid%para%group%sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
+                                                u_boundary, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)))
          DEALLOCATE (tmp)
       END IF
 
@@ -1025,9 +1021,8 @@ CONTAINS
 !    CALL timeset(routineN//"_pre",handle2)
       safe_calc = .FALSE.
       IF (PRESENT(safe_computation)) safe_calc = safe_computation
-      CALL mp_comm_compare(coarse_coeffs_pw%pw_grid%para%group, &
-                           fine_values_pw%pw_grid%para%group, ii)
-      IF (ii > 1) THEN
+      ii = coarse_coeffs_pw%pw_grid%para%group%compare(fine_values_pw%pw_grid%para%group)
+      IF (ii > mp_comm_congruent) THEN
          CPABORT("")
       END IF
       my_coarse_bo = coarse_coeffs_pw%pw_grid%bounds_local
@@ -1264,12 +1259,11 @@ CONTAINS
          CPASSERT(ALL(sent_size(:n_procs - 2) == send_offset(1:)))
          CPASSERT(sent_size(n_procs - 1) == send_tot_size)
          ! test send/rcv sizes
-         CALL mp_alltoall(send_size, real_rcv_size, 1, coarse_coeffs_pw%pw_grid%para%group)
+         CALL coarse_coeffs_pw%pw_grid%para%group%alltoall(send_size, real_rcv_size, 1)
          CPASSERT(ALL(real_rcv_size == rcv_size))
          ! all2all
-         CALL mp_alltoall(sb=send_buf, scount=send_size, sdispl=send_offset, &
-                          rb=rcv_buf, rcount=rcv_size, rdispl=rcv_offset, &
-                          group=coarse_coeffs_pw%pw_grid%para%group)
+         CALL coarse_coeffs_pw%pw_grid%para%group%alltoall(sb=send_buf, scount=send_size, sdispl=send_offset, &
+                                                           rb=rcv_buf, rcount=rcv_size, rdispl=rcv_offset)
 
          ! ** reorder rcv buffer
          ! (actually reordering should be needed only with pbc)
@@ -2414,13 +2408,12 @@ CONTAINS
          CPASSERT(ALL(sent_size(:n_procs - 2) == send_offset(1:)))
          CPASSERT(sent_size(n_procs - 1) == send_tot_size)
          ! test send/rcv sizes
-         CALL mp_alltoall(send_size, real_rcv_size, 1, coarse_coeffs_pw%pw_grid%para%group)
+         CALL coarse_coeffs_pw%pw_grid%para%group%alltoall(send_size, real_rcv_size, 1)
 
          CPASSERT(ALL(real_rcv_size == rcv_size))
          ! all2all
-         CALL mp_alltoall(sb=send_buf, scount=send_size, sdispl=send_offset, &
-                          rb=rcv_buf, rcount=rcv_size, rdispl=rcv_offset, &
-                          group=coarse_coeffs_pw%pw_grid%para%group)
+         CALL coarse_coeffs_pw%pw_grid%para%group%alltoall(sb=send_buf, scount=send_size, sdispl=send_offset, &
+                                                           rb=rcv_buf, rcount=rcv_size, rdispl=rcv_offset)
 
          ! ** sum & reorder rcv buffer
 
@@ -2671,12 +2664,14 @@ CONTAINS
 ! **************************************************************************************************
    FUNCTION find_coeffs(values, coeffs, linOp, preconditioner, pool, &
                         eps_r, eps_x, max_iter, sumtype) RESULT(res)
-      TYPE(pw_type), INTENT(IN)                          :: values, coeffs
+
+      TYPE(pw_type), INTENT(IN)                          :: values
+      TYPE(pw_type), INTENT(INOUT)                       :: coeffs
       INTERFACE
-! **************************************************************************************************
          SUBROUTINE linOp(pw_in, pw_out)
             USE pw_types, ONLY: pw_type
-            TYPE(pw_type), INTENT(IN) :: pw_in, pw_out
+            TYPE(pw_type), INTENT(IN)    :: pw_in
+            TYPE(pw_type), INTENT(INOUT) :: pw_out
          END SUBROUTINE linOp
       END INTERFACE
       TYPE(pw_spline_precond_type), INTENT(IN)           :: preconditioner
@@ -2759,6 +2754,7 @@ CONTAINS
       CALL pw_pool_give_back_pw(pool, z)
       CALL pw_pool_give_back_pw(pool, p)
       CALL pw_pool_give_back_pw(pool, Ap)
+
    END FUNCTION find_coeffs
 
 ! **************************************************************************************************
@@ -2821,17 +2817,15 @@ CONTAINS
                    u_boundary(bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), &
                    tmp(bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)))
          tmp(:, :) = pw_in%cr3d(bo(2, 1), :, :)
-         CALL mp_sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          l_boundary, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          pw_in%pw_grid%para%group)
+         CALL pw_in%pw_grid%para%group%sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
+                                                l_boundary, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)))
          tmp(:, :) = pw_in%cr3d(bo(1, 1), :, :)
-         CALL mp_sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          u_boundary, pw_in%pw_grid%para%pos_of_x( &
-                          gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
-                          pw_in%pw_grid%para%group)
+         CALL pw_in%pw_grid%para%group%sendrecv(tmp, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(1, 1) - 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)), &
+                                                u_boundary, pw_in%pw_grid%para%pos_of_x( &
+                                                gbo(1, 1) + MODULO(bo(2, 1) + 1 - gbo(1, 1), gbo(2, 1) - gbo(1, 1) + 1)))
          DEALLOCATE (tmp)
       END IF
 
@@ -3118,11 +3112,14 @@ CONTAINS
 !> \param pw_out ...
 ! **************************************************************************************************
    SUBROUTINE spl3_nopbc(pw_in, pw_out)
-      TYPE(pw_type), INTENT(IN)                          :: pw_in, pw_out
+
+      TYPE(pw_type), INTENT(IN)                          :: pw_in
+      TYPE(pw_type), INTENT(INOUT)                       :: pw_out
 
       CALL pw_zero(pw_out)
       CALL pw_nn_compose_r_no_pbc(weights_1d=spl3_1d_coeffs0, pw_in=pw_in, &
                                   pw_out=pw_out, sharpen=.FALSE., normalize=.FALSE.)
+
    END SUBROUTINE spl3_nopbc
 
 ! **************************************************************************************************
@@ -3131,11 +3128,14 @@ CONTAINS
 !> \param pw_out ...
 ! **************************************************************************************************
    SUBROUTINE spl3_nopbct(pw_in, pw_out)
-      TYPE(pw_type), INTENT(IN)                          :: pw_in, pw_out
+
+      TYPE(pw_type), INTENT(IN)                          :: pw_in
+      TYPE(pw_type), INTENT(INOUT)                       :: pw_out
 
       CALL pw_zero(pw_out)
       CALL pw_nn_compose_r_no_pbc(weights_1d=spl3_1d_coeffs0, pw_in=pw_in, &
                                   pw_out=pw_out, sharpen=.FALSE., normalize=.FALSE., transpose=.TRUE.)
+
    END SUBROUTINE spl3_nopbct
 
 ! **************************************************************************************************
@@ -3144,10 +3144,13 @@ CONTAINS
 !> \param pw_out ...
 ! **************************************************************************************************
    SUBROUTINE spl3_pbc(pw_in, pw_out)
-      TYPE(pw_type), INTENT(IN)                          :: pw_in, pw_out
+
+      TYPE(pw_type), INTENT(IN)                          :: pw_in
+      TYPE(pw_type), INTENT(INOUT)                       :: pw_out
 
       CALL pw_zero(pw_out)
       CALL pw_nn_smear_r(pw_in, pw_out, coeffs=spline3_coeffs)
+
    END SUBROUTINE spl3_pbc
 
 ! **************************************************************************************************
@@ -3295,7 +3298,7 @@ CONTAINS
              (box(1, 3, 4)*t1 + box(2, 3, 4)*t2 + box(3, 3, 4)*t3 + box(4, 3, 4)*t4)*s3 + &
              (box(1, 4, 4)*t1 + box(2, 4, 4)*t2 + box(3, 4, 4)*t3 + box(4, 4, 4)*t4)*s4)*v4
 
-      IF (my_mpsum) CALL mp_sum(val, pw%pw_grid%para%group)
+      IF (my_mpsum) CALL pw%pw_grid%para%group%sum(val)
 
    END FUNCTION Eval_Interp_Spl3_pbc
 
@@ -3531,7 +3534,7 @@ CONTAINS
                 (box(1, 3, 4)*t1 + box(2, 3, 4)*t2 + box(3, 3, 4)*t3 + box(4, 3, 4)*t4)*s3 + &
                 (box(1, 4, 4)*t1 + box(2, 4, 4)*t2 + box(3, 4, 4)*t3 + box(4, 4, 4)*t4)*s4)*v4
 
-      IF (my_mpsum) CALL mp_sum(val, pw%pw_grid%para%group)
+      IF (my_mpsum) CALL pw%pw_grid%para%group%sum(val)
 
    END FUNCTION Eval_d_Interp_Spl3_pbc
 

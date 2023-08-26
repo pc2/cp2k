@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,10 +20,13 @@ MODULE fist_nonbond_env_types
                                               dp
    USE pair_potential_types,            ONLY: gal21_type,&
                                               gal_type,&
+                                              nequip_type,&
                                               pair_potential_pp_release,&
                                               pair_potential_pp_type,&
                                               siepmann_type,&
                                               tersoff_type
+   USE torch_api,                       ONLY: torch_model_release,&
+                                              torch_model_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -33,42 +36,69 @@ MODULE fist_nonbond_env_types
    PUBLIC :: fist_nonbond_env_type, fist_nonbond_env_set, &
              fist_nonbond_env_get, fist_nonbond_env_create, &
              fist_nonbond_env_release, pos_type, eam_type, &
-             quip_data_type
+             quip_data_type, nequip_data_type, allegro_data_type
 
 ! **************************************************************************************************
    TYPE pos_type
-      REAL(KIND=dp) :: r(3)
+      REAL(KIND=dp) :: r(3) = 0.0_dp
    END TYPE
 
    TYPE eam_type
-      REAL(KIND=dp) :: f_embed, rho
+      REAL(KIND=dp) :: f_embed = 0.0_dp
+      REAL(KIND=dp) :: rho = 0.0_dp
    END TYPE
 
    TYPE quip_data_type
-      INTEGER, POINTER :: use_indices(:)
-      REAL(KIND=dp), POINTER :: force(:, :)
-      REAL(KIND=dp) :: virial(3, 3)
+      INTEGER, POINTER        :: use_indices(:) => NULL()
+      REAL(KIND=dp), POINTER  :: force(:, :) => NULL()
+      REAL(KIND=dp)           :: virial(3, 3) = 0.0_dp
+   END TYPE
+
+   TYPE nequip_data_type
+      INTEGER, POINTER        :: use_indices(:) => NULL()
+      REAL(KIND=dp), POINTER  :: force(:, :) => NULL()
+      REAL(KIND=dp)           :: virial(3, 3) = 0.0_dp
+      TYPE(torch_model_type)  :: model
+   END TYPE
+
+   TYPE allegro_data_type
+      INTEGER, POINTER        :: use_indices(:) => NULL()
+      REAL(KIND=dp), POINTER  :: force(:, :) => NULL()
+      REAL(KIND=dp)           :: virial(3, 3) = 0.0_dp
+      TYPE(torch_model_type)  :: model
    END TYPE
 
 ! **************************************************************************************************
    TYPE fist_nonbond_env_type
-      INTEGER :: natom_types
-      INTEGER :: counter, last_update, num_update
-      LOGICAL :: do_nonbonded, shift_cutoff
-      CHARACTER(len=default_string_length)   :: unit_type
-      REAL(KIND=dp)                              :: lup, aup, ei_scale14, &
-                                                    vdw_scale14
-      REAL(KIND=dp)                              :: long_range_correction
-      REAL(KIND=dp), DIMENSION(:, :), POINTER :: rlist_cut, rlist_lowsq, ij_kind_full_fac
-      REAL(KIND=dp), DIMENSION(:), POINTER    :: charges
-      TYPE(fist_neighbor_type), POINTER           :: nonbonded
-      TYPE(pair_potential_pp_type), POINTER       :: potparm14, potparm
-      TYPE(cell_type), POINTER                    :: cell_last_update
-      TYPE(pos_type), DIMENSION(:), POINTER       :: r_last_update, r_last_update_pbc
-      TYPE(pos_type), DIMENSION(:), POINTER       :: rshell_last_update_pbc
-      TYPE(pos_type), DIMENSION(:), POINTER       :: rcore_last_update_pbc
-      TYPE(eam_type), DIMENSION(:), POINTER       :: eam_data
-      TYPE(quip_data_type), POINTER               :: quip_data
+      INTEGER                                    :: natom_types = -1
+      INTEGER                                    :: counter = -1
+      INTEGER                                    :: last_update = -1
+      INTEGER                                    :: num_update = -1
+      LOGICAL                                    :: do_nonbonded = .FALSE.
+      LOGICAL                                    :: do_electrostatics = .FALSE.
+      LOGICAL                                    :: shift_cutoff = .FALSE.
+      CHARACTER(len=default_string_length)       :: unit_type = ""
+      REAL(KIND=dp)                              :: lup = 0.0_dp
+      REAL(KIND=dp)                              :: aup = 0.0_dp
+      REAL(KIND=dp)                              :: ei_scale14 = 0.0_dp
+      REAL(KIND=dp)                              :: vdw_scale14 = 0.0_dp
+      REAL(KIND=dp)                              :: long_range_correction = 0.0_dp
+      REAL(KIND=dp), DIMENSION(:, :), POINTER    :: rlist_cut => NULL()
+      REAL(KIND=dp), DIMENSION(:, :), POINTER    :: rlist_lowsq => NULL()
+      REAL(KIND=dp), DIMENSION(:, :), POINTER    :: ij_kind_full_fac => NULL()
+      REAL(KIND=dp), DIMENSION(:), POINTER       :: charges => NULL()
+      TYPE(fist_neighbor_type), POINTER          :: nonbonded => NULL()
+      TYPE(pair_potential_pp_type), POINTER      :: potparm14 => NULL()
+      TYPE(pair_potential_pp_type), POINTER      :: potparm => NULL()
+      TYPE(cell_type), POINTER                   :: cell_last_update => NULL()
+      TYPE(pos_type), DIMENSION(:), POINTER      :: r_last_update => NULL()
+      TYPE(pos_type), DIMENSION(:), POINTER      :: r_last_update_pbc => NULL()
+      TYPE(pos_type), DIMENSION(:), POINTER      :: rshell_last_update_pbc => NULL()
+      TYPE(pos_type), DIMENSION(:), POINTER      :: rcore_last_update_pbc => NULL()
+      TYPE(eam_type), DIMENSION(:), POINTER      :: eam_data => NULL()
+      TYPE(quip_data_type), POINTER              :: quip_data => NULL()
+      TYPE(nequip_data_type), POINTER            :: nequip_data => NULL()
+      TYPE(allegro_data_type), POINTER           :: allegro_data => NULL()
    END TYPE fist_nonbond_env_type
 
 CONTAINS
@@ -86,6 +116,7 @@ CONTAINS
 !> \param ei_scale14 ...
 !> \param vdw_scale14 ...
 !> \param shift_cutoff ...
+!> \param do_electrostatics ...
 !> \param r_last_update ...
 !> \param r_last_update_pbc ...
 !> \param rshell_last_update_pbc ...
@@ -99,6 +130,8 @@ CONTAINS
 !> \param ij_kind_full_fac ...
 !> \param eam_data ...
 !> \param quip_data ...
+!> \param nequip_data ...
+!> \param allegro_data ...
 !> \param charges ...
 !> \par History
 !>      12.2002 created [fawzi]
@@ -106,17 +139,17 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE fist_nonbond_env_get(fist_nonbond_env, potparm14, potparm, &
                                    nonbonded, rlist_cut, rlist_lowsq, aup, lup, ei_scale14, vdw_scale14, &
-                                   shift_cutoff, r_last_update, r_last_update_pbc, rshell_last_update_pbc, &
+                                   shift_cutoff, do_electrostatics, r_last_update, r_last_update_pbc, rshell_last_update_pbc, &
                                    rcore_last_update_pbc, cell_last_update, num_update, last_update, &
                                    counter, natom_types, long_range_correction, ij_kind_full_fac, eam_data, &
-                                   quip_data, charges)
+                                   quip_data, nequip_data, allegro_data, charges)
 
       TYPE(fist_nonbond_env_type), INTENT(IN)            :: fist_nonbond_env
       TYPE(pair_potential_pp_type), OPTIONAL, POINTER    :: potparm14, potparm
       TYPE(fist_neighbor_type), OPTIONAL, POINTER        :: nonbonded
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: rlist_cut, rlist_lowsq
       REAL(KIND=dp), OPTIONAL                            :: aup, lup, ei_scale14, vdw_scale14
-      LOGICAL, INTENT(OUT), OPTIONAL                     :: shift_cutoff
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: shift_cutoff, do_electrostatics
       TYPE(pos_type), DIMENSION(:), OPTIONAL, POINTER    :: r_last_update, r_last_update_pbc, &
                                                             rshell_last_update_pbc, &
                                                             rcore_last_update_pbc
@@ -127,12 +160,16 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: ij_kind_full_fac
       TYPE(eam_type), DIMENSION(:), OPTIONAL, POINTER    :: eam_data
       TYPE(quip_data_type), OPTIONAL, POINTER            :: quip_data
+      TYPE(nequip_data_type), OPTIONAL, POINTER          :: nequip_data
+      TYPE(allegro_data_type), OPTIONAL, POINTER         :: allegro_data
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: charges
 
       IF (PRESENT(charges)) charges => fist_nonbond_env%charges
       IF (PRESENT(potparm14)) potparm14 => fist_nonbond_env%potparm14
       IF (PRESENT(eam_data)) eam_data => fist_nonbond_env%eam_data
       IF (PRESENT(quip_data)) quip_data => fist_nonbond_env%quip_data
+      IF (PRESENT(nequip_data)) nequip_data => fist_nonbond_env%nequip_data
+      IF (PRESENT(allegro_data)) allegro_data => fist_nonbond_env%allegro_data
       IF (PRESENT(potparm)) potparm => fist_nonbond_env%potparm
       IF (PRESENT(rlist_cut)) rlist_cut => fist_nonbond_env%rlist_cut
       IF (PRESENT(rlist_lowsq)) rlist_lowsq => fist_nonbond_env%rlist_lowsq
@@ -154,6 +191,7 @@ CONTAINS
       IF (PRESENT(vdw_scale14)) vdw_scale14 = fist_nonbond_env%vdw_scale14
       IF (PRESENT(shift_cutoff)) &
          shift_cutoff = fist_nonbond_env%shift_cutoff
+      IF (PRESENT(do_electrostatics)) do_electrostatics = fist_nonbond_env%do_electrostatics
       IF (PRESENT(natom_types)) natom_types = fist_nonbond_env%natom_types
       IF (PRESENT(counter)) counter = fist_nonbond_env%counter
       IF (PRESENT(last_update)) last_update = fist_nonbond_env%last_update
@@ -175,6 +213,7 @@ CONTAINS
 !> \param ei_scale14 ...
 !> \param vdw_scale14 ...
 !> \param shift_cutoff ...
+!> \param do_electrostatics ...
 !> \param r_last_update ...
 !> \param r_last_update_pbc ...
 !> \param rshell_last_update_pbc ...
@@ -187,6 +226,8 @@ CONTAINS
 !> \param long_range_correction ...
 !> \param eam_data ...
 !> \param quip_data ...
+!> \param nequip_data ...
+!> \param allegro_data ...
 !> \param charges ...
 !> \par History
 !>      12.2002 created [fawzi]
@@ -194,16 +235,17 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE fist_nonbond_env_set(fist_nonbond_env, potparm14, potparm, &
                                    rlist_cut, rlist_lowsq, nonbonded, aup, lup, ei_scale14, vdw_scale14, &
-                                   shift_cutoff, r_last_update, r_last_update_pbc, rshell_last_update_pbc, &
+                                   shift_cutoff, do_electrostatics, r_last_update, r_last_update_pbc, rshell_last_update_pbc, &
                                    rcore_last_update_pbc, cell_last_update, num_update, last_update, &
-                                   counter, natom_types, long_range_correction, eam_data, quip_data, charges)
+                                   counter, natom_types, long_range_correction, eam_data, quip_data, &
+                                   nequip_data, allegro_data, charges)
 
       TYPE(fist_nonbond_env_type), INTENT(INOUT)         :: fist_nonbond_env
       TYPE(pair_potential_pp_type), OPTIONAL, POINTER    :: potparm14, potparm
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: rlist_cut, rlist_lowsq
       TYPE(fist_neighbor_type), OPTIONAL, POINTER        :: nonbonded
       REAL(KIND=dp), OPTIONAL                            :: aup, lup, ei_scale14, vdw_scale14
-      LOGICAL, INTENT(IN), OPTIONAL                      :: shift_cutoff
+      LOGICAL, INTENT(IN), OPTIONAL                      :: shift_cutoff, do_electrostatics
       TYPE(pos_type), DIMENSION(:), OPTIONAL, POINTER    :: r_last_update, r_last_update_pbc, &
                                                             rshell_last_update_pbc, &
                                                             rcore_last_update_pbc
@@ -213,11 +255,15 @@ CONTAINS
       REAL(KIND=dp), OPTIONAL                            :: long_range_correction
       TYPE(eam_type), DIMENSION(:), OPTIONAL, POINTER    :: eam_data
       TYPE(quip_data_type), OPTIONAL, POINTER            :: quip_data
+      TYPE(nequip_data_type), OPTIONAL, POINTER          :: nequip_data
+      TYPE(allegro_data_type), OPTIONAL, POINTER         :: allegro_data
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: charges
 
       IF (PRESENT(potparm14)) fist_nonbond_env%potparm14 => potparm14
       IF (PRESENT(eam_data)) fist_nonbond_env%eam_data => eam_data
       IF (PRESENT(quip_data)) fist_nonbond_env%quip_data => quip_data
+      IF (PRESENT(nequip_data)) fist_nonbond_env%nequip_data => nequip_data
+      IF (PRESENT(allegro_data)) fist_nonbond_env%allegro_data => allegro_data
       IF (PRESENT(potparm)) fist_nonbond_env%potparm => potparm
       IF (PRESENT(rlist_cut)) fist_nonbond_env%rlist_cut => rlist_cut
       IF (PRESENT(charges)) fist_nonbond_env%charges => charges
@@ -239,6 +285,7 @@ CONTAINS
       IF (PRESENT(vdw_scale14)) fist_nonbond_env%vdw_scale14 = vdw_scale14
       IF (PRESENT(shift_cutoff)) &
          fist_nonbond_env%shift_cutoff = shift_cutoff
+      IF (PRESENT(do_electrostatics)) fist_nonbond_env%do_electrostatics = do_electrostatics
       IF (PRESENT(natom_types)) fist_nonbond_env%natom_types = natom_types
       IF (PRESENT(counter)) fist_nonbond_env%counter = counter
       IF (PRESENT(last_update)) fist_nonbond_env%last_update = last_update
@@ -254,6 +301,7 @@ CONTAINS
 !> \param potparm14 ...
 !> \param potparm ...
 !> \param do_nonbonded ...
+!> \param do_electrostatics ...
 !> \param verlet_skin ...
 !> \param ewald_rcut ...
 !> \param ei_scale14 ...
@@ -264,12 +312,12 @@ CONTAINS
 !> \author Fawzi Mohamed
 ! **************************************************************************************************
    SUBROUTINE fist_nonbond_env_create(fist_nonbond_env, atomic_kind_set, &
-                                      potparm14, potparm, do_nonbonded, verlet_skin, ewald_rcut, ei_scale14, &
-                                      vdw_scale14, shift_cutoff)
+                                      potparm14, potparm, do_nonbonded, do_electrostatics, verlet_skin, ewald_rcut, &
+                                      ei_scale14, vdw_scale14, shift_cutoff)
       TYPE(fist_nonbond_env_type), INTENT(OUT)           :: fist_nonbond_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(pair_potential_pp_type), OPTIONAL, POINTER    :: potparm14, potparm
-      LOGICAL, INTENT(IN)                                :: do_nonbonded
+      LOGICAL, INTENT(IN)                                :: do_nonbonded, do_electrostatics
       REAL(KIND=dp), INTENT(IN)                          :: verlet_skin, ewald_rcut, ei_scale14, &
                                                             vdw_scale14
       LOGICAL, INTENT(IN)                                :: shift_cutoff
@@ -287,10 +335,12 @@ CONTAINS
       NULLIFY (fist_nonbond_env%rcore_last_update_pbc)
       NULLIFY (fist_nonbond_env%eam_data)
       NULLIFY (fist_nonbond_env%quip_data)
+      NULLIFY (fist_nonbond_env%nequip_data)
+      NULLIFY (fist_nonbond_env%allegro_data)
       NULLIFY (fist_nonbond_env%charges)
       CALL init_fist_nonbond_env(fist_nonbond_env, atomic_kind_set, potparm14, &
-                                 potparm, do_nonbonded, verlet_skin, ewald_rcut, ei_scale14, vdw_scale14, &
-                                 shift_cutoff)
+                                 potparm, do_nonbonded, do_electrostatics, verlet_skin, ewald_rcut, ei_scale14, &
+                                 vdw_scale14, shift_cutoff)
    END SUBROUTINE fist_nonbond_env_create
 
 ! **************************************************************************************************
@@ -300,6 +350,7 @@ CONTAINS
 !> \param potparm14 ...
 !> \param potparm ...
 !> \param do_nonbonded ...
+!> \param do_electrostatics ...
 !> \param verlet_skin ...
 !> \param ewald_rcut ...
 !> \param ei_scale14 ...
@@ -307,13 +358,13 @@ CONTAINS
 !> \param shift_cutoff ...
 ! **************************************************************************************************
    SUBROUTINE init_fist_nonbond_env(fist_nonbond_env, atomic_kind_set, &
-                                    potparm14, potparm, do_nonbonded, verlet_skin, ewald_rcut, ei_scale14, &
+                                    potparm14, potparm, do_nonbonded, do_electrostatics, verlet_skin, ewald_rcut, ei_scale14, &
                                     vdw_scale14, shift_cutoff)
 
       TYPE(fist_nonbond_env_type), INTENT(INOUT)         :: fist_nonbond_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(pair_potential_pp_type), OPTIONAL, POINTER    :: potparm14, potparm
-      LOGICAL, INTENT(IN)                                :: do_nonbonded
+      LOGICAL, INTENT(IN)                                :: do_nonbonded, do_electrostatics
       REAL(KIND=dp), INTENT(IN)                          :: verlet_skin, ewald_rcut, ei_scale14, &
                                                             vdw_scale14
       LOGICAL, INTENT(IN)                                :: shift_cutoff
@@ -337,6 +388,7 @@ CONTAINS
       NULLIFY (fist_nonbond_env%ij_kind_full_fac)
       fist_nonbond_env%unit_type = "ANGSTROM"
       fist_nonbond_env%do_nonbonded = do_nonbonded
+      fist_nonbond_env%do_electrostatics = do_electrostatics
       fist_nonbond_env%lup = 0
       fist_nonbond_env%aup = 0
       fist_nonbond_env%ei_scale14 = ei_scale14
@@ -409,6 +461,10 @@ CONTAINS
                      fist_nonbond_env%ij_kind_full_fac(idim, jdim) = 0.5_dp
                      fist_nonbond_env%ij_kind_full_fac(idim, jdim) = 0.5_dp
                   END IF
+                  IF (ANY(potparm%pot(idim, jdim)%pot%type == nequip_type)) THEN
+                     fist_nonbond_env%ij_kind_full_fac(idim, jdim) = 0.5_dp
+                     fist_nonbond_env%ij_kind_full_fac(idim, jdim) = 0.5_dp
+                  END IF
                ELSE
                   ! In case we don't use potparm for initialization let's account
                   ! only for the real-space part of the Ewald sum.
@@ -465,6 +521,26 @@ CONTAINS
             DEALLOCATE (fist_nonbond_env%quip_data%use_indices)
          END IF
          DEALLOCATE (fist_nonbond_env%quip_data)
+      END IF
+      IF (ASSOCIATED(fist_nonbond_env%nequip_data)) THEN
+         IF (ASSOCIATED(fist_nonbond_env%nequip_data%force)) THEN
+            DEALLOCATE (fist_nonbond_env%nequip_data%force)
+         END IF
+         IF (ASSOCIATED(fist_nonbond_env%nequip_data%use_indices)) THEN
+            DEALLOCATE (fist_nonbond_env%nequip_data%use_indices)
+         END IF
+         CALL torch_model_release(fist_nonbond_env%nequip_data%model)
+         DEALLOCATE (fist_nonbond_env%nequip_data)
+      END IF
+      IF (ASSOCIATED(fist_nonbond_env%allegro_data)) THEN
+         IF (ASSOCIATED(fist_nonbond_env%allegro_data%force)) THEN
+            DEALLOCATE (fist_nonbond_env%allegro_data%force)
+         END IF
+         IF (ASSOCIATED(fist_nonbond_env%allegro_data%use_indices)) THEN
+            DEALLOCATE (fist_nonbond_env%allegro_data%use_indices)
+         END IF
+         CALL torch_model_release(fist_nonbond_env%allegro_data%model)
+         DEALLOCATE (fist_nonbond_env%allegro_data)
       END IF
       IF (ASSOCIATED(fist_nonbond_env%rshell_last_update_pbc)) THEN
          DEALLOCATE (fist_nonbond_env%rshell_last_update_pbc)

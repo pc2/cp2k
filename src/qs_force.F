@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,7 +23,6 @@ MODULE qs_force
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_copy,&
                                               dbcsr_p_type,&
                                               dbcsr_set
@@ -32,6 +31,7 @@ MODULE qs_force
    USE efield_utils,                    ONLY: calculate_ecore_efield
    USE energy_corrections,              ONLY: energy_correction
    USE excited_states,                  ONLY: excited_state_energy
+   USE hfx_exx,                         ONLY: calculate_exx
    USE input_constants,                 ONLY: ri_mp2_laplace,&
                                               ri_mp2_method_gpw,&
                                               ri_rpa_method_gpw
@@ -41,7 +41,7 @@ MODULE qs_force
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
    USE lri_environment_types,           ONLY: lri_environment_type
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mp2_cphf,                        ONLY: update_mp2_forces
    USE mulliken,                        ONLY: mulliken_restraint
    USE particle_types,                  ONLY: particle_type
@@ -70,7 +70,6 @@ MODULE qs_force
    USE qs_subsys_types,                 ONLY: qs_subsys_set,&
                                               qs_subsys_type
    USE ri_environment_methods,          ONLY: build_ri_matrices
-   USE rpa_hfx,                         ONLY: calculate_exx
    USE rt_propagation_forces,           ONLY: calc_c_mat_force,&
                                               rt_admm_force
    USE se_core_core,                    ONLY: se_core_core_interaction
@@ -132,17 +131,18 @@ CONTAINS
                                                             ispin, iw, natom, nkind, nspin, &
                                                             output_unit
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of, natom_of_kind
-      LOGICAL                                            :: do_admm, do_exx, do_gw, has_unit_metric, &
-                                                            omit_headers, perform_ec
+      LOGICAL                                            :: do_admm, do_exx, do_gw, do_im_time, &
+                                                            has_unit_metric, omit_headers, &
+                                                            perform_ec, reuse_hfx
       REAL(dp)                                           :: dummy_real, dummy_real2(2)
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s, matrix_w, rho_ao
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_w_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(energy_correction_type), POINTER              :: ec_env
       TYPE(lri_environment_type), POINTER                :: lri_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
@@ -169,7 +169,6 @@ CONTAINS
       ! get atom mapping
       NULLIFY (atomic_kind_set)
       CALL get_qs_env(qs_env, atomic_kind_set=atomic_kind_set)
-      ALLOCATE (atom_of_kind(natom), kind_of(natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                atom_of_kind=atom_of_kind, &
                                kind_of=kind_of)
@@ -182,9 +181,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(force)) THEN
          !   *** Allocate the force data structure ***
          nkind = SIZE(atomic_kind_set)
-         ALLOCATE (natom_of_kind(nkind))
-         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
-                                  natom_of_kind=natom_of_kind)
+         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, natom_of_kind=natom_of_kind)
          CALL allocate_qs_force(force, natom_of_kind)
          DEALLOCATE (natom_of_kind)
          CALL qs_subsys_set(subsys, force=force)
@@ -331,9 +328,23 @@ CONTAINS
             IF (do_exx) THEN
                do_gw = qs_env%mp2_env%ri_rpa%do_ri_g0w0
                do_admm = qs_env%mp2_env%ri_rpa%do_admm
+               reuse_hfx = qs_env%mp2_env%ri_rpa%reuse_hfx
+               do_im_time = qs_env%mp2_env%do_im_time
                output_unit = cp_logger_get_default_io_unit()
                dummy_real = 0.0_dp
-               CALL calculate_exx(qs_env, output_unit, do_gw, do_admm, .TRUE., dummy_real, dummy_real2, dummy_real)
+
+               CALL calculate_exx(qs_env=qs_env, &
+                                  unit_nr=output_unit, &
+                                  hfx_sections=hfx_sections, &
+                                  x_data=qs_env%mp2_env%ri_rpa%x_data, &
+                                  do_gw=do_gw, &
+                                  do_admm=do_admm, &
+                                  calc_forces=.TRUE., &
+                                  reuse_hfx=reuse_hfx, &
+                                  do_im_time=do_im_time, &
+                                  E_ex_from_GW=dummy_real, &
+                                  E_admm_from_GW=dummy_real2, &
+                                  t3=dummy_real)
             END IF
          END IF
       ELSEIF (.NOT. perform_ec) THEN
@@ -365,20 +376,20 @@ CONTAINS
       NULLIFY (virial, energy)
       CALL get_qs_env(qs_env=qs_env, virial=virial, energy=energy)
       IF (virial%pv_availability) THEN
-         CALL mp_sum(virial%pv_overlap, para_env%group)
-         CALL mp_sum(virial%pv_ekinetic, para_env%group)
-         CALL mp_sum(virial%pv_ppl, para_env%group)
-         CALL mp_sum(virial%pv_ppnl, para_env%group)
-         CALL mp_sum(virial%pv_ecore_overlap, para_env%group)
-         CALL mp_sum(virial%pv_ehartree, para_env%group)
-         CALL mp_sum(virial%pv_exc, para_env%group)
-         CALL mp_sum(virial%pv_exx, para_env%group)
-         CALL mp_sum(virial%pv_vdw, para_env%group)
-         CALL mp_sum(virial%pv_mp2, para_env%group)
-         CALL mp_sum(virial%pv_nlcc, para_env%group)
-         CALL mp_sum(virial%pv_gapw, para_env%group)
-         CALL mp_sum(virial%pv_lrigpw, para_env%group)
-         CALL mp_sum(virial%pv_virial, para_env%group)
+         CALL para_env%sum(virial%pv_overlap)
+         CALL para_env%sum(virial%pv_ekinetic)
+         CALL para_env%sum(virial%pv_ppl)
+         CALL para_env%sum(virial%pv_ppnl)
+         CALL para_env%sum(virial%pv_ecore_overlap)
+         CALL para_env%sum(virial%pv_ehartree)
+         CALL para_env%sum(virial%pv_exc)
+         CALL para_env%sum(virial%pv_exx)
+         CALL para_env%sum(virial%pv_vdw)
+         CALL para_env%sum(virial%pv_mp2)
+         CALL para_env%sum(virial%pv_nlcc)
+         CALL para_env%sum(virial%pv_gapw)
+         CALL para_env%sum(virial%pv_lrigpw)
+         CALL para_env%sum(virial%pv_virial)
          CALL symmetrize_virial(virial)
          ! Add the volume terms of the virial
          IF ((.NOT. virial%pv_numer) .AND. &
@@ -487,13 +498,8 @@ CONTAINS
                           "and cannot be printed")
          END IF
 
-         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
-                                  natom=natom)
-         ALLOCATE (atom_of_kind(natom))
-         ALLOCATE (kind_of(natom))
-         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
-                                  atom_of_kind=atom_of_kind, &
-                                  kind_of=kind_of)
+         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, atom_of_kind=atom_of_kind, &
+                                  kind_of=kind_of, natom=natom)
 
          ! Variable precision output of the forces
          CALL section_vals_val_get(print_section, "NDIGITS", &

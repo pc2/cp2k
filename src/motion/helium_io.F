@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,7 +20,6 @@ MODULE helium_io
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_get_next_line,&
                                               parser_get_object
    USE cp_parser_types,                 ONLY: cp_parser_type,&
@@ -52,9 +51,7 @@ MODULE helium_io
                                               int_8
    USE machine,                         ONLY: m_flush
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_gather,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE physcon,                         ONLY: angstrom,&
                                               massunit
    USE pint_types,                      ONLY: pint_env_type
@@ -105,7 +102,7 @@ CONTAINS
 
       REAL(KIND=dp), DIMENSION(:), POINTER               :: coords
       CHARACTER(LEN=default_path_length)                 :: file_name
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'helium_read_xyz'
 
@@ -200,7 +197,7 @@ CONTAINS
       logger => cp_get_default_logger()
       my_label = "HELIUM| "
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger)
 
          WRITE (unit_nr, *)
@@ -454,7 +451,7 @@ CONTAINS
       logger => cp_get_default_logger()
       my_label = "HELIUM|"
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger)
          WRITE (unit_nr, '(T2,A)') TRIM(my_label)//" "//TRIM(line)
       END IF
@@ -488,7 +485,7 @@ CONTAINS
       NULLIFY (logger, print_key)
       logger => cp_get_default_logger()
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          print_key => section_vals_get_subs_vals(helium_env(1)%helium%input, &
                                                  "MOTION%PINT%HELIUM%PRINT%ENERGY")
          should_output = BTEST(cp_print_key_should_output( &
@@ -496,8 +493,8 @@ CONTAINS
                                basis_section=print_key), cp_p_file)
          cepsample = helium_env(1)%helium%sampling_method == helium_sampling_ceperley
       END IF
-      CALL mp_bcast(should_output, logger%para_env%source, helium_env(1)%comm)
-      CALL mp_bcast(cepsample, logger%para_env%source, helium_env(1)%comm)
+      CALL helium_env(1)%comm%bcast(should_output, logger%para_env%source)
+      CALL helium_env(1)%comm%bcast(cepsample, logger%para_env%source)
 
       IF (should_output) THEN
 
@@ -517,10 +514,10 @@ CONTAINS
                ntot = ntot + helium_env(k)%helium%num_accepted(2, 1)
             END DO
          END IF
-         CALL mp_sum(naccptd, helium_env(1)%comm)
-         CALL mp_sum(ntot, helium_env(1)%comm)
+         CALL helium_env(1)%comm%sum(naccptd)
+         CALL helium_env(1)%comm%sum(ntot)
 
-         IF (logger%para_env%ionode) THEN
+         IF (logger%para_env%is_source()) THEN
             my_energy => helium_env(1)%helium%energy_avrg
             iteration = logger%iter_info%iteration(2)
 
@@ -636,7 +633,7 @@ CONTAINS
          DO i = 0, SIZE(helium_env) - 1
             avg_data(:) = avg_data(:) + DATA(msglen*i + 1:msglen*(i + 1))
          END DO
-         CALL mp_sum(avg_data, helium_env(1)%comm)
+         CALL helium_env(1)%comm%sum(avg_data)
          nenv = helium_env(1)%helium%num_env
          avg_data(:) = avg_data(:)/REAL(nenv, dp)
       ELSE
@@ -651,8 +648,7 @@ CONTAINS
          DO i = 0, SIZE(helium_env) - 1
             helium_env(1)%helium%rtmp_3_np_1d(msglen*(offset + i) + 1:msglen*(offset + i + 1)) = DATA(msglen*i + 1:msglen*(i + 1))
          END DO
-         CALL mp_sum(helium_env(1)%helium%rtmp_3_np_1d, &
-                     helium_env(1)%comm)
+         CALL helium_env(1)%comm%sum(helium_env(1)%helium%rtmp_3_np_1d)
       END IF
 
       unit_nr = cp_print_key_unit_nr( &
@@ -663,7 +659,7 @@ CONTAINS
                 file_position=my_fpos, &
                 is_new_file=is_new)
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
 
          IF (is_new) THEN
             ! comment
@@ -738,7 +734,7 @@ CONTAINS
       NULLIFY (logger, print_key)
       logger => cp_get_default_logger()
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          print_key => section_vals_get_subs_vals(helium_env(1)%helium%input, &
                                                  "MOTION%PINT%HELIUM%PRINT%ACCEPTS")
          should_output = BTEST(cp_print_key_should_output( &
@@ -839,8 +835,7 @@ CONTAINS
             helium_env(1)%helium%rtmp_3_atoms_beads_np_1d(j*(offset + i - 1) + 1:j*(offset + i)) = &
                PACK(helium_env(i)%helium%pos(:, :, 1:helium_env(1)%helium%beads), .TRUE.)
          END DO
-         CALL mp_sum(helium_env(1)%helium%rtmp_3_atoms_beads_np_1d, &
-                     helium_env(1)%comm)
+         CALL helium_env(1)%comm%sum(helium_env(1)%helium%rtmp_3_atoms_beads_np_1d)
          ! set logical mask for unpacking coordinates gathered from other ranks
          helium_env(1)%helium%ltmp_3_atoms_beads_3d(:, :, :) = .TRUE.
       END IF
@@ -852,10 +847,9 @@ CONTAINS
          helium_env(1)%helium%itmp_atoms_np_1d(msglen*(offset + i - 1) + 1:msglen*(offset + i)) = helium_env(i)%helium%permutation
       END DO
 
-      CALL mp_sum(helium_env(1)%helium%itmp_atoms_np_1d, &
-                  helium_env(1)%comm)
+      CALL helium_env(1)%comm%sum(helium_env(1)%helium%itmp_atoms_np_1d)
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
 
          ! iterate over helium environments
          DO irank = 1, helium_env(1)%helium%num_env
@@ -1045,11 +1039,11 @@ CONTAINS
          tmp_pair_action(offset + k) = helium_env(k)%helium%pair_action
          tmp_inter_action(offset + k) = helium_env(k)%helium%inter_action
       END DO
-      CALL mp_sum(tmp_link_action, helium_env(1)%comm)
-      CALL mp_sum(tmp_pair_action, helium_env(1)%comm)
-      CALL mp_sum(tmp_inter_action, helium_env(1)%comm)
+      CALL helium_env(1)%comm%sum(tmp_link_action)
+      CALL helium_env(1)%comm%sum(tmp_pair_action)
+      CALL helium_env(1)%comm%sum(tmp_inter_action)
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          iteration = logger%iter_info%iteration(2)
          ! iterate over processors/helium environments
          DO irank = 1, helium_env(1)%helium%num_env
@@ -1177,8 +1171,7 @@ CONTAINS
          helium_env(1)%helium%rtmp_3_atoms_beads_np_1d(j*(offset + i - 1) + 1:j*(offset + i)) = &
             PACK(helium_env(i)%helium%pos(:, :, 1:helium_env(1)%helium%beads), .TRUE.)
       END DO
-      CALL mp_sum(helium_env(1)%helium%rtmp_3_atoms_beads_np_1d, &
-                  helium_env(1)%comm)
+      CALL helium_env(1)%comm%sum(helium_env(1)%helium%rtmp_3_atoms_beads_np_1d)
 
       ! gather permutation state from all processors to logger%para_env%source
       helium_env(1)%helium%itmp_atoms_np_1d(:) = 0
@@ -1187,13 +1180,12 @@ CONTAINS
          helium_env(1)%helium%itmp_atoms_np_1d(j*(offset + i - 1) + 1:j*(offset + i)) = helium_env(i)%helium%permutation
       END DO
 
-      CALL mp_sum(helium_env(1)%helium%itmp_atoms_np_1d, &
-                  helium_env(1)%comm)
+      CALL helium_env(1)%comm%sum(helium_env(1)%helium%itmp_atoms_np_1d)
 
       ! set logical mask for unpacking coordinates gathered from other ranks
       helium_env(1)%helium%ltmp_3_atoms_beads_3d(:, :, :) = .TRUE.
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
 
          CALL section_vals_val_get(print_key, "FORMAT", i_val=outformat)
 
@@ -1423,14 +1415,14 @@ CONTAINS
       NULLIFY (logger, print_key)
       logger => cp_get_default_logger()
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          print_key => section_vals_get_subs_vals(helium_env(1)%helium%input, &
                                                  "MOTION%PINT%HELIUM%PRINT%RDF")
          should_output = BTEST(cp_print_key_should_output( &
                                iteration_info=logger%iter_info, &
                                basis_section=print_key), cp_p_file)
       END IF
-      CALL mp_bcast(should_output, logger%para_env%source, helium_env(1)%comm)
+      CALL helium_env(1)%comm%bcast(should_output, logger%para_env%source)
 
       IF (should_output) THEN
          ! work on the temporary array so that accumulated data remains intact
@@ -1444,7 +1436,7 @@ CONTAINS
          ! average over processors
          NULLIFY (message)
          message => helium_env(1)%helium%rdf_inst(:, :)
-         CALL mp_sum(message, helium_env(1)%comm)
+         CALL helium_env(1)%comm%sum(message)
          itmp = helium_env(1)%helium%num_env
          inv_norm = 1.0_dp/REAL(itmp, dp)
          helium_env(1)%helium%rdf_inst(:, :) = helium_env(1)%helium%rdf_inst(:, :)*inv_norm
@@ -1460,7 +1452,7 @@ CONTAINS
                                                iweight*helium_env(1)%helium%rdf_rstr(:, :)
          helium_env(1)%helium%rdf_inst(:, :) = helium_env(1)%helium%rdf_inst(:, :)/REAL(nsteps + iweight, dp)
 
-         IF (logger%para_env%ionode) THEN
+         IF (logger%para_env%is_source()) THEN
 
             ia = 0
             rtmp = cp_unit_from_cp2k(1.0_dp, "angstrom")
@@ -1575,7 +1567,7 @@ CONTAINS
       END DO
 
       ! average over processors
-      CALL mp_sum(helium_env(1)%helium%rho_inst, helium_env(1)%comm)
+      CALL helium_env(1)%comm%sum(helium_env(1)%helium%rho_inst)
       itmp = helium_env(1)%helium%num_env
       invproc = 1.0_dp/REAL(itmp, dp)
       helium_env(1)%helium%rho_inst(:, :, :, :) = helium_env(1)%helium%rho_inst(:, :, :, :)*invproc
@@ -1630,7 +1622,7 @@ CONTAINS
                       file_position="REWIND", &
                       do_backup=.FALSE.)
 
-            IF (logger%para_env%ionode) THEN
+            IF (logger%para_env%is_source()) THEN
                CALL helium_write_cubefile( &
                   unit_nr, &
                   comment, &
@@ -1742,7 +1734,7 @@ CONTAINS
       NULLIFY (logger, print_key)
       logger => cp_get_default_logger()
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          print_key => section_vals_get_subs_vals(helium_env(1)%helium%input, &
                                                  "MOTION%PINT%HELIUM%PRINT%PLENGTH")
          should_output = BTEST(cp_print_key_should_output( &
@@ -1821,7 +1813,7 @@ CONTAINS
          RETURN
       END IF
 
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
 
          unit_nr = cp_print_key_unit_nr( &
                    logger, &
@@ -1901,10 +1893,9 @@ CONTAINS
 
          ! pass the message from all processors to logger%para_env%source
          helium%rtmp_p_ndim_np_1d(:) = 0.0_dp
-         CALL mp_gather(helium%rtmp_p_ndim_1d, helium%rtmp_p_ndim_np_1d, &
-                        logger%para_env%source, logger%para_env%group)
+         CALL logger%para_env%gather(helium%rtmp_p_ndim_1d, helium%rtmp_p_ndim_np_1d)
 
-         IF (logger%para_env%ionode) THEN
+         IF (logger%para_env%is_source()) THEN
 
             ! iterate over processors/helium environments
             DO irank = 1, helium%num_env

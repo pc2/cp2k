@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -48,7 +48,6 @@ MODULE qs_linres_epr_utils
                                               qs_environment_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_linres_types,                 ONLY: deallocate_nablavks_atom_set,&
-                                              epr_env_create,&
                                               epr_env_type,&
                                               init_nablavks_atom_set,&
                                               linres_control_type,&
@@ -119,7 +118,6 @@ CONTAINS
       nmoloc = 0
 
       logger => cp_get_default_logger()
-      !ionode = logger%para_env%mepos==logger%para_env%source
       lr_section => section_vals_get_subs_vals(qs_env%input, "PROPERTIES%LINRES")
 
       output_unit = cp_print_key_unit_nr(logger, lr_section, "PRINT%PROGRAM_RUN_INFO", &
@@ -131,8 +129,6 @@ CONTAINS
          WRITE (output_unit, "(/,T20,A,/)") "*** Start EPR g tensor calculation ***"
          WRITE (output_unit, "(T10,A,/)") "Initialization of the EPR environment"
       END IF
-
-      CALL epr_env_create(epr_env)
 
       CALL get_qs_env(qs_env=qs_env, &
                       atomic_kind_set=atomic_kind_set, &

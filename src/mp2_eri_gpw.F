@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -18,7 +18,6 @@ MODULE mp2_eri_gpw
                                               pbc
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_fm_types,                     ONLY: cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type,&
                                               dbcsr_set
    USE gaussian_gridlevels,             ONLY: gaussian_gridlevel
@@ -31,7 +30,7 @@ MODULE mp2_eri_gpw
    USE kinds,                           ONLY: dp
    USE libint_2c_3c,                    ONLY: libint_potential_type
    USE mathconstants,                   ONLY: fourpi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: ncoset
    USE particle_types,                  ONLY: particle_type
    USE pw_env_methods,                  ONLY: pw_env_create,&
@@ -41,6 +40,7 @@ MODULE mp2_eri_gpw
                                               pw_env_type
    USE pw_methods,                      ONLY: &
         pw_compl_gauss_damp, pw_copy, pw_derive, pw_gauss_damp, pw_gauss_damp_mix, pw_integral_ab, &
+        pw_log_deriv_compl_gauss, pw_log_deriv_gauss, pw_log_deriv_mix_cl, pw_log_deriv_trunc, &
         pw_scale, pw_transfer, pw_truncated, pw_zero
    USE pw_poisson_methods,              ONLY: pw_poisson_solve
    USE pw_poisson_types,                ONLY: pw_poisson_type
@@ -172,7 +172,7 @@ CONTAINS
                                        natom, potential_parameter, sab_orb_sub, L_local_col, kind_of)
 
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
       INTEGER, INTENT(IN)                                :: my_group_L_start, my_group_L_end, natom
       TYPE(libint_potential_type), INTENT(IN)            :: potential_parameter
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -341,7 +341,7 @@ CONTAINS
 
       END DO
 
-      CALL mp_sum(L_local_col, para_env_sub%group)
+      CALL para_env_sub%sum(L_local_col)
 
       CALL cleanup_gpw(qs_env, e_cutoff_old, cutoff_old, relative_cutoff_old, para_env_sub, pw_env_sub, &
                        task_list_sub, auxbas_pw_pool, rho_r, rho_g, pot_g, psi_L)
@@ -405,7 +405,7 @@ CONTAINS
       TYPE(qs_force_type), DIMENSION(:), INTENT(IN), &
          POINTER                                         :: force
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(INOUT)      :: h_stress
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_sub
       TYPE(dft_control_type), INTENT(IN), POINTER        :: dft_control
       TYPE(pw_type), INTENT(INOUT)                       :: psi_L
       REAL(KIND=dp), INTENT(IN)                          :: factor
@@ -539,7 +539,7 @@ CONTAINS
       TYPE(pw_type), INTENT(INOUT)                       :: rho_g_copy
       TYPE(pw_type), INTENT(IN)                          :: dvg(3)
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(INOUT)      :: h_stress
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_sub
       INTEGER, DIMENSION(:), INTENT(IN)                  :: kind_of, atom_of_kind
       TYPE(qs_kind_type), DIMENSION(:), INTENT(IN), &
          POINTER                                         :: qs_kind_set
@@ -725,7 +725,7 @@ CONTAINS
       TYPE(pw_type), INTENT(IN)                          :: dvg(3)
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(INOUT)      :: h_stress
       TYPE(libint_potential_type), INTENT(IN)            :: potential_parameter
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_sub
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'virial_gpw_potential'
 
@@ -762,12 +762,8 @@ CONTAINS
 !> \param potential_parameter parameters of potential V(g)
 ! **************************************************************************************************
    SUBROUTINE factor_virial_gpw(pw, potential_parameter)
-      TYPE(pw_type), INTENT(IN)                          :: pw
+      TYPE(pw_type), INTENT(INOUT)                       :: pw
       TYPE(libint_potential_type), INTENT(IN)            :: potential_parameter
-
-      INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: omega_2, rchalf, scale_coul, scale_long, &
-                                                            tmp
 
       IF (.NOT. (pw%in_space == RECIPROCALSPACE .AND. pw%in_use == COMPLEXDATA1D)) &
          CPABORT("pw in wrong space or wrong data type")
@@ -775,51 +771,16 @@ CONTAINS
       CASE (do_potential_coulomb)
          RETURN
       CASE (do_potential_long)
-         omega_2 = 1.0_dp/(2.0_dp*potential_parameter%omega)**2
-!$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(pw,potential_parameter,omega_2)
-         pw%cc(:) = pw%cc(:)*(1.0_dp + omega_2*pw%pw_grid%gsq(:))
-!$OMP END PARALLEL WORKSHARE
+         CALL pw_log_deriv_gauss(pw, potential_parameter%omega)
       CASE (do_potential_short)
-         omega_2 = 1.0_dp/(2.0_dp*potential_parameter%omega)**2
-!$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(i,tmp) &
-!$OMP             SHARED(pw,omega_2)
-         DO i = 1, SIZE(pw%cc)
-            tmp = omega_2*pw%pw_grid%gsq(i)
-            ! For too small arguments, use the Taylor polynomial to prevent division by zero
-            IF (ABS(tmp) >= 0.003_dp) THEN
-               pw%cc(i) = pw%cc(i)*(1.0_dp - tmp*EXP(-tmp)/(1.0_dp - EXP(-tmp)))
-            ELSE
-               pw%cc(i) = pw%cc(i)*(0.5_dp*tmp - tmp**2/12.0_dp)
-            END IF
-         END DO
-!$OMP END PARALLEL DO
+         CALL pw_log_deriv_compl_gauss(pw, potential_parameter%omega)
       CASE (do_potential_mix_cl)
-         omega_2 = 1.0_dp/(2.0_dp*potential_parameter%omega)**2
-         scale_coul = potential_parameter%scale_coulomb
-         scale_long = potential_parameter%scale_longrange
-!$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(i,tmp) &
-!$OMP             SHARED(pw,omega_2,scale_long,scale_coul)
-         DO i = 1, SIZE(pw%cc)
-            tmp = omega_2*pw%pw_grid%gsq(i)
-            pw%cc(i) = pw%cc(i)*(1.0_dp + scale_long*tmp*EXP(-tmp)/(scale_coul + scale_long*EXP(-tmp)))
-         END DO
-!$OMP END PARALLEL DO
+         CALL pw_log_deriv_mix_cl(pw, potential_parameter%omega, &
+                                  potential_parameter%scale_coulomb, potential_parameter%scale_longrange)
       CASE (do_potential_truncated)
-         rchalf = 0.5_dp*potential_parameter%cutoff_radius
-!$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(i,tmp) &
-!$OMP             SHARED(pw,rchalf)
-         DO i = 1, SIZE(pw%cc)
-            tmp = rchalf*SQRT(pw%pw_grid%gsq(i))
-            ! For too small arguments, use the Taylor polynomial to prevent division by zero
-            IF (ABS(tmp) >= 0.0001_dp) THEN
-               pw%cc(i) = pw%cc(i)*(1.0_dp - tmp/TAN(tmp))
-            ELSE
-               pw%cc(i) = pw%cc(i)*tmp**2*(1.0_dp + tmp**2/15.0_dp)/3.0_dp
-            END IF
-         END DO
-!$OMP END PARALLEL DO
+         CALL pw_log_deriv_trunc(pw, potential_parameter%cutoff_radius)
       CASE (do_potential_id)
-         pw%cc = 0.0_dp
+         CALL pw_zero(pw)
       CASE DEFAULT
          CPABORT("Unknown potential type")
       END SELECT
@@ -855,7 +816,7 @@ CONTAINS
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       LOGICAL, INTENT(IN)                                :: use_virial
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(INOUT)      :: h_stress
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_sub
       TYPE(dft_control_type), INTENT(IN), POINTER        :: dft_control
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'integrate_potential'
@@ -1011,7 +972,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
          INTENT(OUT)                                     :: e_cutoff_old
       REAL(KIND=dp), INTENT(OUT)                         :: cutoff_old, relative_cutoff_old
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
       TYPE(pw_env_type), POINTER                         :: pw_env_sub
       TYPE(pw_pool_type), INTENT(IN), POINTER            :: auxbas_pw_pool
       TYPE(pw_poisson_type), INTENT(IN), POINTER         :: poisson_env
@@ -1081,7 +1042,7 @@ CONTAINS
                              in_space=REALSPACE)
 
       ! run the FFT once, to set up buffers and to take into account the memory
-      rho_r%cr3d = 0.0D0
+      CALL pw_zero(rho_r)
       CALL pw_transfer(rho_r, rho_g)
 
       CALL timestop(handle)
@@ -1109,7 +1070,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
          INTENT(IN)                                      :: e_cutoff_old
       REAL(KIND=dp), INTENT(IN)                          :: cutoff_old, relative_cutoff_old
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_sub
       TYPE(pw_env_type), POINTER                         :: pw_env_sub
       TYPE(task_list_type), POINTER                      :: task_list_sub
       TYPE(pw_pool_type), INTENT(IN), POINTER            :: auxbas_pw_pool

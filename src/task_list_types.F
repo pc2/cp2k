@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -57,9 +57,9 @@ MODULE task_list_types
 
    TYPE task_list_type
       TYPE(task_type), DIMENSION(:), POINTER        :: tasks => Null()
-      INTEGER                                       :: ntasks
-      INTEGER, DIMENSION(:, :), POINTER             :: taskstart, taskstop
-      INTEGER, DIMENSION(:), POINTER                :: npairs
+      INTEGER                                       :: ntasks = 0
+      INTEGER, DIMENSION(:, :), POINTER             :: taskstart => Null(), taskstop => Null()
+      INTEGER, DIMENSION(:), POINTER                :: npairs => Null()
 
       TYPE(atom_pair_type), DIMENSION(:), POINTER   :: atom_pair_send => Null()
       INTEGER, DIMENSION(:), POINTER                :: pair_offsets_send => Null()
@@ -74,9 +74,9 @@ MODULE task_list_types
       INTEGER                                       :: buffer_size_recv = 0
 
       TYPE(grid_basis_set_type), DIMENSION(:), POINTER :: grid_basis_sets => Null()
-      TYPE(grid_task_list_type)                     :: grid_task_list
-      TYPE(offload_buffer_type)                     :: pab_buffer
-      TYPE(offload_buffer_type)                     :: hab_buffer
+      TYPE(grid_task_list_type)                     :: grid_task_list = grid_task_list_type()
+      TYPE(offload_buffer_type)                     :: pab_buffer = offload_buffer_type()
+      TYPE(offload_buffer_type)                     :: hab_buffer = offload_buffer_type()
    END TYPE task_list_type
 
    INTEGER, PARAMETER                               :: task_size_in_int8 = 17

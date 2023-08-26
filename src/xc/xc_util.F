@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -195,9 +195,7 @@ CONTAINS
    SUBROUTINE xc_pw_divergence(xc_deriv_method_id, pw_to_deriv, tmp_g, vxc_g, vxc_r)
       INTEGER, INTENT(IN)                                :: xc_deriv_method_id
       TYPE(pw_type), DIMENSION(3), INTENT(INOUT)         :: pw_to_deriv
-      TYPE(pw_type), INTENT(INOUT)                       :: tmp_g
-      TYPE(pw_type), INTENT(IN)                          :: vxc_g
-      TYPE(pw_type), INTENT(INOUT)                       :: vxc_r
+      TYPE(pw_type), INTENT(INOUT)                       :: tmp_g, vxc_g, vxc_r
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'xc_pw_divergence'
 

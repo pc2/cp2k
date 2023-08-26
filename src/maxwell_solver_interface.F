@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -18,11 +18,6 @@ MODULE maxwell_solver_interface
                               cp_logger_type
    USE kinds, ONLY: dp
    USE pw_types, ONLY: pw_type
-   USE message_passing, ONLY: &
-      file_amode_rdonly, file_offset, mp_bcast, mp_file_close, mp_file_descriptor_type, &
-      mp_file_get_position, mp_file_open, mp_file_read_all_chv, mp_file_type_free, &
-      mp_file_type_hindexed_make_chv, mp_file_type_set_view_chv, mp_file_write_all_chv, &
-      mp_file_write_at, mp_maxloc, mp_recv, mp_send, mp_sum, mp_sync, mpi_character_size
    USE ISO_C_BINDING, ONLY: C_INT, C_DOUBLE
 
 #include "./base/base_uses.f90"
@@ -153,27 +148,11 @@ CONTAINS
       END IF
 
       ! The following code block is copied from src/pw/realspace_grid_cube.F
+      CALL gid%bcast(buffer(lbounds(3):ubounds(3)), 0)
 
       !master sends all data to everyone
       DO i = lbounds(1), ubounds(1)
          DO j = lbounds(2), ubounds(2)
-
-            IF (my_rank == 0) THEN
-               !buffer(lbounds(3)) = 23.0;
-               !buffer(lbounds(3)+1) = 42.0;
-               !buffer(lbounds(3)+2) = 69.0;
-               res = libcp2kmw_getzrow(buffer, i - lbounds(1) + 1, j - lbounds(2) + 1, 1, ubounds(3) - lbounds(3) + 1)
-               IF (num_pe > 1) THEN
-                  DO ip = 1, num_pe - 1
-                     CALL mp_send(buffer(lbounds(3):ubounds(3)), ip, tag, gid)
-                  END DO
-               END IF
-            ELSE
-               master = 0
-               CALL mp_recv(buffer(lbounds(3):ubounds(3)), master, tag, gid)
-            END IF
-
-            CALL mp_sync(gid)
 
             !only use data that is local to me - i.e. in slice of pencil I own
             IF ((lbounds_local(1) <= i) .AND. (i <= ubounds_local(1)) .AND. &

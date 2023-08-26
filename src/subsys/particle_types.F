@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -19,7 +19,7 @@
 MODULE particle_types
    USE atomic_kind_types,               ONLY: atomic_kind_type
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -38,9 +38,9 @@ MODULE particle_types
                                                r = 0.0_dp, & ! position
                                                v = 0.0_dp ! velocity
       ! Particle dependent terms for shell-model
-      INTEGER                               :: atom_index = -1, &
-                                               t_region_index = -1, &
-                                               shell_index = -1
+      INTEGER                               :: atom_index = 0, &
+                                               t_region_index = 0, &
+                                               shell_index = 0
    END TYPE particle_type
 
    ! Public data types
@@ -69,22 +69,10 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       INTEGER, INTENT(IN)                                :: nparticle
 
-      INTEGER                                            :: iparticle
-
       IF (ASSOCIATED(particle_set)) THEN
          CALL deallocate_particle_set(particle_set)
       END IF
       ALLOCATE (particle_set(nparticle))
-
-      DO iparticle = 1, nparticle
-         NULLIFY (particle_set(iparticle)%atomic_kind)
-         particle_set(iparticle)%f(:) = 0.0_dp
-         particle_set(iparticle)%r(:) = 0.0_dp
-         particle_set(iparticle)%v(:) = 0.0_dp
-         particle_set(iparticle)%shell_index = 0
-         particle_set(iparticle)%atom_index = 0
-         particle_set(iparticle)%t_region_index = 0
-      END DO
 
    END SUBROUTINE allocate_particle_set
 
@@ -100,10 +88,7 @@ CONTAINS
 
       IF (ASSOCIATED(particle_set)) THEN
          DEALLOCATE (particle_set)
-      ELSE
-         CALL cp_abort(__LOCATION__, &
-                       "The pointer particle_set is not associated and "// &
-                       "cannot be deallocated")
+         NULLIFY (particle_set)
       END IF
 
    END SUBROUTINE deallocate_particle_set
@@ -120,7 +105,8 @@ CONTAINS
    SUBROUTINE update_particle_set(particle_set, int_group, pos, vel, for, add)
 
       TYPE(particle_type), INTENT(INOUT)                 :: particle_set(:)
-      INTEGER, INTENT(IN)                                :: int_group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: int_group
       REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: pos(:, :), vel(:, :), for(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: add
 
@@ -140,7 +126,7 @@ CONTAINS
       IF (PRESENT(add)) my_add = add
 
       IF (update_pos) THEN
-         CALL mp_sum(pos, int_group)
+         CALL int_group%sum(pos)
          IF (my_add) THEN
             DO iparticle = 1, nparticle
                particle_set(iparticle)%r(:) = particle_set(iparticle)%r(:) + pos(:, iparticle)
@@ -152,7 +138,7 @@ CONTAINS
          END IF
       END IF
       IF (update_vel) THEN
-         CALL mp_sum(vel, int_group)
+         CALL int_group%sum(vel)
          IF (my_add) THEN
             DO iparticle = 1, nparticle
                particle_set(iparticle)%v(:) = particle_set(iparticle)%v(:) + vel(:, iparticle)
@@ -164,7 +150,7 @@ CONTAINS
          END IF
       END IF
       IF (update_for) THEN
-         CALL mp_sum(for, int_group)
+         CALL int_group%sum(for)
          IF (my_add) THEN
             DO iparticle = 1, nparticle
                particle_set(iparticle)%f(:) = particle_set(iparticle)%f(:) + for(:, iparticle)
@@ -191,7 +177,7 @@ CONTAINS
 !> \author  Matthias Krack
 !> \version 1.0
 ! **************************************************************************************************
-   FUNCTION get_particle_pos_or_vel(iatom, particle_set, vector) RESULT(x)
+   PURE FUNCTION get_particle_pos_or_vel(iatom, particle_set, vector) RESULT(x)
 
       INTEGER, INTENT(IN)                                :: iatom
       TYPE(particle_type), DIMENSION(:), INTENT(IN)      :: particle_set
@@ -228,7 +214,7 @@ CONTAINS
 !> \note    particle-set is not changed, only the positions or velocities in
 !>          the packed vector are updated
 ! **************************************************************************************************
-   SUBROUTINE update_particle_pos_or_vel(iatom, particle_set, x, vector)
+   PURE SUBROUTINE update_particle_pos_or_vel(iatom, particle_set, x, vector)
 
       INTEGER, INTENT(IN)                                :: iatom
       TYPE(particle_type), DIMENSION(:), INTENT(IN)      :: particle_set

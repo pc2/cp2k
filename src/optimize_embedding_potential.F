@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -36,7 +36,6 @@ MODULE optimize_embedding_potential
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_cube,          ONLY: cp_cube_to_pw,&
                                               cp_pw_to_cube,&
                                               cp_pw_to_simple_volumetric
@@ -56,9 +55,7 @@ MODULE optimize_embedding_potential
                                               dp
    USE lri_environment_types,           ONLY: lri_kind_type
    USE mathconstants,                   ONLY: pi
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_max,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mixed_environment_utils,         ONLY: get_subsys_map_index
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE particle_list_types,             ONLY: particle_list_type
@@ -312,7 +309,7 @@ CONTAINS
       INTEGER                                            :: diff_size, i_dens, size_prev_dens
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
 
@@ -567,7 +564,7 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       INTEGER                                            :: dimen_aux
 
-      INTEGER                                            :: iatom, ikind, natom, nsgf
+      INTEGER                                            :: iatom, ikind, nsgf
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: kind_of
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -579,19 +576,14 @@ CONTAINS
                       qs_kind_set=qs_kind_set, &
                       atomic_kind_set=atomic_kind_set)
 
-      natom = SIZE(particle_set)
-      ALLOCATE (kind_of(natom))
-
       CALL get_atomic_kind_set(atomic_kind_set, kind_of=kind_of)
 
       dimen_aux = 0
-      DO iatom = 1, natom
+      DO iatom = 1, SIZE(particle_set)
          ikind = kind_of(iatom)
          CALL get_qs_kind(qs_kind=qs_kind_set(ikind), nsgf=nsgf, basis_type="RI_AUX")
          dimen_aux = dimen_aux + nsgf
       END DO
-
-      DEALLOCATE (kind_of)
 
    END SUBROUTINE find_aux_dimen
 
@@ -772,7 +764,7 @@ CONTAINS
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
       TYPE(cp_fm_type)                                   :: my_embed_pot_coef
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       ! Get the vector dimension
       CALL find_aux_dimen(qs_env, dimen_aux)
@@ -802,7 +794,7 @@ CONTAINS
       ALLOCATE (coef(dimen_var_aux))
       coef = 0.0_dp
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
 
          ! Get the restart file name
          CALL embed_restart_file_name(filename, section)
@@ -831,7 +823,7 @@ CONTAINS
       END IF
 
       ! Broadcast the coefficients on all processes
-      CALL mp_bcast(coef, para_env%source, para_env%group)
+      CALL para_env%bcast(coef)
 
       ! Copy to fm_type structure
       ! Information about full matrix gradient
@@ -1035,7 +1027,7 @@ CONTAINS
       CALL pw_scale(v_resp_rspace, normalize_factor)
 
       ! Hard copy potential
-      v_rspace%cr3d(:, :, :) = v_resp_rspace%cr3d(:, :, :)
+      CALL pw_copy(v_resp_rspace, v_rspace)
 
       ! Release plane waves
       CALL pw_release(v_resp_gspace)
@@ -1087,7 +1079,7 @@ CONTAINS
                              in_space=REALSPACE)
 
       ! Hard copy the grid
-      embed_pot_subsys%cr3d(:, :, :) = embed_pot%cr3d(:, :, :)
+      CALL pw_copy(embed_pot, embed_pot_subsys)
 
       IF (open_shell_embed) THEN
          NULLIFY (spin_embed_pot_subsys)
@@ -1097,9 +1089,9 @@ CONTAINS
                                 in_space=REALSPACE)
          ! Hard copy the grid
          IF (change_spin_sign) THEN
-            spin_embed_pot_subsys%cr3d(:, :, :) = -spin_embed_pot%cr3d(:, :, :)
+            CALL pw_axpy(spin_embed_pot, spin_embed_pot_subsys, -1.0_dp, 0.0_dp, allow_noncompatible_grids=.TRUE.)
          ELSE
-            spin_embed_pot_subsys%cr3d(:, :, :) = spin_embed_pot%cr3d(:, :, :)
+            CALL pw_copy(spin_embed_pot, spin_embed_pot_subsys)
          END IF
       END IF
 
@@ -1127,7 +1119,7 @@ CONTAINS
       TYPE(cp_fm_type)                                   :: embed_pot_coeff_spin, &
                                                             embed_pot_coeff_spinless, &
                                                             regular_term, spin_reg, spinless_reg
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
 
@@ -1267,8 +1259,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: pot_grad
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -1299,7 +1291,7 @@ CONTAINS
       CALL integrate_v_rspace_one_center(rho_r, qs_env, lri, &
                                          .FALSE., "RI_AUX")
       DO ikind = 1, SIZE(lri)
-         CALL mp_sum(lri(ikind)%v_int, para_env%group)
+         CALL para_env%sum(lri(ikind)%v_int)
       END DO
 
       pot_grad = 0.0_dp
@@ -1321,7 +1313,7 @@ CONTAINS
          CALL integrate_v_rspace_one_center(rho_spin, qs_env, lri, &
                                             .FALSE., "RI_AUX")
          DO ikind = 1, SIZE(lri)
-            CALL mp_sum(lri(ikind)%v_int, para_env%group)
+            CALL para_env%sum(lri(ikind)%v_int)
          END DO
 
          start_pos = dimen_aux + 1
@@ -1403,7 +1395,8 @@ CONTAINS
 !> \param reg_term ...
 ! **************************************************************************************************
    SUBROUTINE grid_regularize(potential, pw_env, lambda, reg_term)
-      TYPE(pw_type), INTENT(IN)                          :: potential
+
+      TYPE(pw_type), INTENT(INOUT)                       :: potential
       TYPE(pw_env_type), POINTER                         :: pw_env
       REAL(KIND=dp)                                      :: lambda, reg_term
 
@@ -1478,9 +1471,9 @@ CONTAINS
 
       lb(1:3) = square_norm_dpot%pw_grid%bounds_local(1, 1:3)
       ub(1:3) = square_norm_dpot%pw_grid%bounds_local(2, 1:3)
-!$OMP    PARALLEL DO DEFAULT(NONE) &
-!$OMP                PRIVATE(i,j,k) &
-!$OMP                SHARED(dpot,lb,square_norm_dpot,ub)
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP             PRIVATE(i,j,k) &
+!$OMP             SHARED(dpot, lb, square_norm_dpot, ub)
       DO k = lb(3), ub(3)
          DO j = lb(2), ub(2)
             DO i = lb(1), ub(1)
@@ -1493,7 +1486,7 @@ CONTAINS
             END DO
          END DO
       END DO
-!$OMP    END PARALLEL DO
+!$OMP END PARALLEL DO
 
       reg_term = 2*lambda*pw_integrate_function(fun=square_norm_dpot)
 
@@ -1522,7 +1515,8 @@ CONTAINS
 !> \author Vladimir Rybkin
 ! **************************************************************************************************
    SUBROUTINE opt_embed_step(diff_rho_r, diff_rho_spin, opt_embed, embed_pot, spin_embed_pot, rho_r_ref, qs_env)
-      TYPE(pw_type), INTENT(IN)                          :: diff_rho_r, diff_rho_spin
+
+      TYPE(pw_type), INTENT(INOUT)                       :: diff_rho_r, diff_rho_spin
       TYPE(opt_embed_pot_type)                           :: opt_embed
       TYPE(pw_type), INTENT(INOUT)                       :: embed_pot
       TYPE(pw_type), INTENT(IN), POINTER                 :: spin_embed_pot
@@ -1713,11 +1707,12 @@ CONTAINS
 !> \param spin_embed_pot ...
 ! **************************************************************************************************
    SUBROUTINE grid_based_step(diff_rho_r, diff_rho_spin, pw_env, opt_embed, embed_pot, spin_embed_pot)
-      TYPE(pw_type), INTENT(IN)                          :: diff_rho_r, diff_rho_spin
+
+      TYPE(pw_type), INTENT(INOUT)                       :: diff_rho_r, diff_rho_spin
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(opt_embed_pot_type)                           :: opt_embed
-      TYPE(pw_type), INTENT(IN)                          :: embed_pot
-      TYPE(pw_type), INTENT(IN), POINTER                 :: spin_embed_pot
+      TYPE(pw_type), INTENT(INOUT)                       :: embed_pot
+      TYPE(pw_type), POINTER                             :: spin_embed_pot
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'grid_based_step'
 
@@ -1777,9 +1772,9 @@ CONTAINS
       TYPE(cp_fm_type)                                   :: embed_pot_coef_spin, &
                                                             embed_pot_coef_spinless
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -1847,7 +1842,7 @@ CONTAINS
             l_global = row_indices(LLL)
             wf_vector(l_global) = embed_pot_coef_spinless%local_data(LLL, 1)
          END DO
-         CALL mp_sum(wf_vector, para_env%group)
+         CALL para_env%sum(wf_vector)
 
          ! Calculate the variable part of the embedding potential
          CALL calculate_wavefunction(mo_coeff, 1, psi_L, rho_g, atomic_kind_set, &
@@ -1874,7 +1869,7 @@ CONTAINS
             l_global = row_indices(LLL)
             wf_vector(l_global) = embed_pot_coef_spin%local_data(LLL, 1)
          END DO
-         CALL mp_sum(wf_vector, para_env%group)
+         CALL para_env%sum(wf_vector)
 
          ! Calculate the variable part of the embedding potential
          CALL calculate_wavefunction(mo_coeff, 1, psi_L, rho_g, atomic_kind_set, &
@@ -1896,7 +1891,7 @@ CONTAINS
             l_global = row_indices(LLL)
             wf_vector(l_global) = embed_pot_coef%local_data(LLL, 1)
          END DO
-         CALL mp_sum(wf_vector, para_env%group)
+         CALL para_env%sum(wf_vector)
 
          ! Calculate the variable part of the embedding potential
          CALL calculate_wavefunction(mo_coeff, 1, psi_L, rho_g, atomic_kind_set, &
@@ -2056,7 +2051,7 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_mat, fm_struct_vec, &
                                                             fm_struct_vec_t
       TYPE(cp_fm_type)                                   :: B_s, B_s_s_B, s_t_B, y, y_y_t
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       ! Recover the dimension
       CALL cp_fm_get_info(matrix=Hess, &
@@ -2314,7 +2309,7 @@ CONTAINS
       LOGICAL                                            :: converged, do_shift
       REAL(KIND=dp) :: diag_grad_norm, grad_min, hess_min, shift, shift_max, shift_min, step_len, &
          step_minus_trad, step_minus_trad_first, step_minus_trad_max, step_minus_trad_min
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
 
@@ -2397,7 +2392,7 @@ CONTAINS
                red_eigenval_map(l_global) = 1
             END IF
          END DO
-         CALL mp_sum(red_eigenval_map, para_env%group)
+         CALL para_env%sum(red_eigenval_map)
 
          ! Set shift as -hess_min and find step on the reduced space of negative-value
          ! eigenvectors
@@ -2445,7 +2440,7 @@ CONTAINS
       INTEGER                                            :: l_global, LLL, nrow_local
       INTEGER, DIMENSION(:), POINTER                     :: row_indices
       REAL(KIND=dp)                                      :: step, step_1d
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL cp_fm_get_info(matrix=diag_grad, &
                           nrow_local=nrow_local, &
@@ -2461,7 +2456,7 @@ CONTAINS
          END IF
       END DO
 
-      CALL mp_sum(step, para_env%group)
+      CALL para_env%sum(step)
 
       step_minus_trad = SQRT(step) - trust_rad
 
@@ -3070,7 +3065,7 @@ CONTAINS
       ! Find the maximum absolute value
       max_diff = MAXVAL(ABS(grid_3d))
       total_max_diff = max_diff
-      CALL mp_max(total_max_diff, diff_rho_r%pw_grid%para%group)
+      CALL diff_rho_r%pw_grid%para%group%max(total_max_diff)
 
       ! Deallocate the density
       DEALLOCATE (grid_3d)
@@ -3540,8 +3535,8 @@ CONTAINS
       i_dens_start = SUM(opt_embed%all_nspins(1:subsys_num)) - nspins + 1
 
       DO i_spin = 1, nspins
-         opt_embed%prev_subsys_dens(i_dens_start + i_spin - 1)%cr3d(:, :, :) = &
-            rho_r(i_spin)%cr3d(:, :, :) - opt_embed%prev_subsys_dens(i_dens_start + i_spin - 1)%cr3d(:, :, :)
+         CALL pw_axpy(rho_r(i_spin), opt_embed%prev_subsys_dens(i_dens_start + i_spin - 1), 1.0_dp, -1.0_dp, &
+                      allow_noncompatible_grids=.TRUE.)
          opt_embed%max_subsys_dens_diff(i_dens_start + i_spin - 1) = &
             max_dens_diff(opt_embed%prev_subsys_dens(i_dens_start + i_spin - 1))
       END DO

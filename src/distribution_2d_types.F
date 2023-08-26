@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,9 +17,7 @@ MODULE distribution_2d_types
    USE cp_array_utils,                  ONLY: cp_1d_i_p_type,&
                                               cp_1d_i_write
    USE cp_blacs_env,                    ONLY: cp_blacs_env_release,&
-                                              cp_blacs_env_retain,&
-                                              cp_blacs_env_type,&
-                                              cp_blacs_env_write
+                                              cp_blacs_env_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE machine,                         ONLY: m_flush
@@ -62,18 +60,18 @@ MODULE distribution_2d_types
 !> \author Joost & Fawzi
 ! **************************************************************************************************
    TYPE distribution_2d_type
-      INTEGER, DIMENSION(:, :), POINTER     :: row_distribution
-      INTEGER, DIMENSION(:, :), POINTER     :: col_distribution
-      INTEGER                              :: n_row_distribution
-      INTEGER                              :: n_col_distribution
-      INTEGER, DIMENSION(:), POINTER       :: n_local_rows
-      INTEGER, DIMENSION(:), POINTER       :: n_local_cols
-      TYPE(cp_1d_i_p_type), DIMENSION(:), POINTER :: local_rows
-      TYPE(cp_1d_i_p_type), DIMENSION(:), POINTER :: local_cols
-      INTEGER, DIMENSION(:), POINTER       :: flat_local_rows
-      INTEGER, DIMENSION(:), POINTER       :: flat_local_cols
-      TYPE(cp_blacs_env_type), POINTER     :: blacs_env
-      INTEGER                              :: ref_count
+      INTEGER, DIMENSION(:, :), POINTER     :: row_distribution => NULL()
+      INTEGER, DIMENSION(:, :), POINTER     :: col_distribution => NULL()
+      INTEGER                              :: n_row_distribution = 0
+      INTEGER                              :: n_col_distribution = 0
+      INTEGER, DIMENSION(:), POINTER       :: n_local_rows => NULL()
+      INTEGER, DIMENSION(:), POINTER       :: n_local_cols => NULL()
+      TYPE(cp_1d_i_p_type), DIMENSION(:), POINTER :: local_rows => NULL()
+      TYPE(cp_1d_i_p_type), DIMENSION(:), POINTER :: local_cols => NULL()
+      INTEGER, DIMENSION(:), POINTER       :: flat_local_rows => NULL()
+      INTEGER, DIMENSION(:), POINTER       :: flat_local_cols => NULL()
+      TYPE(cp_blacs_env_type), POINTER     :: blacs_env => NULL()
+      INTEGER                              :: ref_count = 0
    END TYPE distribution_2d_type
 
 CONTAINS
@@ -207,7 +205,7 @@ CONTAINS
       END IF
 
       distribution_2d%blacs_env => blacs_env
-      CALL cp_blacs_env_retain(distribution_2d%blacs_env)
+      CALL distribution_2d%blacs_env%retain()
 
    END SUBROUTINE distribution_2d_create
 
@@ -301,7 +299,7 @@ CONTAINS
       IF (PRESENT(long_description)) my_long_description = long_description
       my_local = .FALSE.
       IF (PRESENT(local)) my_local = local
-      IF (.NOT. my_local) my_local = logger%para_env%ionode
+      IF (.NOT. my_local) my_local = logger%para_env%is_source()
 
       IF (ASSOCIATED(distribution_2d)) THEN
          IF (my_local) THEN
@@ -434,10 +432,10 @@ CONTAINS
             IF (ASSOCIATED(distribution_2d%blacs_env)) THEN
                IF (my_long_description) THEN
                   WRITE (unit=unit_nr, fmt="('    blacs_env=')", advance="no")
-                  CALL cp_blacs_env_write(distribution_2d%blacs_env, unit_nr=unit_nr)
+                  CALL distribution_2d%blacs_env%write(unit_nr)
                ELSE
                   WRITE (unit=unit_nr, fmt="('    blacs_env=<blacs_env id=',i6,'>')") &
-                     distribution_2d%blacs_env%group
+                     distribution_2d%blacs_env%get_handle()
                END IF
             ELSE
                WRITE (unit=unit_nr, fmt="('    blacs_env=*null*')")

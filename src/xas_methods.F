@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -36,9 +36,14 @@ MODULE xas_methods
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
-   USE cp_fm_types,                     ONLY: &
-        cp_fm_create, cp_fm_get_element, cp_fm_get_submatrix, cp_fm_p_type, cp_fm_release, &
-        cp_fm_set_all, cp_fm_set_submatrix, cp_fm_to_fm, cp_fm_type
+   USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_get_element,&
+                                              cp_fm_get_submatrix,&
+                                              cp_fm_release,&
+                                              cp_fm_set_all,&
+                                              cp_fm_set_submatrix,&
+                                              cp_fm_to_fm,&
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type,&
@@ -47,7 +52,6 @@ MODULE xas_methods
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_convert_offsets_to_sizes,&
                                               dbcsr_copy,&
                                               dbcsr_create,&
@@ -68,6 +72,7 @@ MODULE xas_methods
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: ncoset
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE particle_methods,                ONLY: get_particle_set
@@ -81,8 +86,8 @@ MODULE xas_methods
                                               set_qs_env
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
-   USE qs_loc_methods,                  ONLY: qs_loc_driver,&
-                                              qs_print_cubes
+   USE qs_loc_main,                     ONLY: qs_loc_driver
+   USE qs_loc_methods,                  ONLY: qs_print_cubes
    USE qs_loc_types,                    ONLY: localized_wfn_control_type,&
                                               qs_loc_env_create,&
                                               qs_loc_env_type
@@ -173,13 +178,13 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: vecbuffer
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: groundstate_coeff
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: groundstate_coeff
       TYPE(cp_fm_type), POINTER                          :: all_vectors, excvec_coeff, mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, op_sm, ostrength_sm
       TYPE(dbcsr_type), POINTER                          :: mo_coeff_b
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_loc_env_type), POINTER                     :: qs_loc_env
@@ -322,7 +327,7 @@ CONTAINS
       CPASSERT(ASSOCIATED(groundstate_coeff))
       DO ispin = 1, nspins
          CALL get_mo_set(mos(ispin), mo_coeff=mo_coeff, mo_coeff_b=mo_coeff_b, nmo=nmo)
-         CALL cp_fm_to_fm(mo_coeff, groundstate_coeff(ispin)%matrix, nmo, 1, 1)
+         CALL cp_fm_to_fm(mo_coeff, groundstate_coeff(ispin), nmo, 1, 1)
          IF (ASSOCIATED(mo_coeff_b)) THEN
 
          END IF
@@ -365,7 +370,7 @@ CONTAINS
                CALL set_mo_set(mos(ispin), homo=my_homo(ispin), &
                                uniform_occupation=my_uocc(ispin), nelectron=my_nelectron(ispin))
                CALL get_mo_set(mos(ispin), mo_coeff=mo_coeff, nmo=nmo)
-               CALL cp_fm_to_fm(groundstate_coeff(ispin)%matrix, mos(ispin)%mo_coeff, nmo, 1, 1)
+               CALL cp_fm_to_fm(groundstate_coeff(ispin), mos(ispin)%mo_coeff, nmo, 1, 1)
             END DO
 
             IF (output_unit > 0) THEN
@@ -535,7 +540,7 @@ CONTAINS
                CALL get_qs_env(qs_env, mos=mos)
                DO ispin = 1, nspins
                   CALL get_mo_set(mos(ispin), mo_coeff=mo_coeff, nmo=nmo)
-                  CALL cp_fm_to_fm(groundstate_coeff(ispin)%matrix, mos(ispin)%mo_coeff, nmo, 1, 1)
+                  CALL cp_fm_to_fm(groundstate_coeff(ispin), mos(ispin)%mo_coeff, nmo, 1, 1)
                END DO
                IF (iat == nexc_atoms) THEN
                   CALL scf_env_cleanup(scf_env)
@@ -559,7 +564,7 @@ CONTAINS
          CALL set_mo_set(mos(ispin), homo=my_homo(ispin), &
                          uniform_occupation=my_uocc(ispin), nelectron=my_nelectron(ispin))
          CALL get_mo_set(mos(ispin), mo_coeff=mo_coeff, nmo=nmo)
-         CALL cp_fm_to_fm(groundstate_coeff(ispin)%matrix, mos(ispin)%mo_coeff, nmo, 1, 1)
+         CALL cp_fm_to_fm(groundstate_coeff(ispin), mos(ispin)%mo_coeff, nmo, 1, 1)
       END DO
 
       IF (output_unit > 0) THEN
@@ -612,12 +617,12 @@ CONTAINS
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
       TYPE(cp_fm_struct_type), POINTER                   :: tmp_fm_struct
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_distribution_type), POINTER             :: dbcsr_dist
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_orb
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -803,10 +808,9 @@ CONTAINS
       NULLIFY (tmp_fm_struct)
       ALLOCATE (xas_env%groundstate_coeff(nspins))
       DO ispin = 1, nspins
-         ALLOCATE (xas_env%groundstate_coeff(ispin)%matrix)
          CALL get_mo_set(mos(ispin), nao=nao, nmo=nmo)
          CALL fm_pool_create_fm(xas_env%ao_mo_fm_pools(ispin)%pool, &
-                                xas_env%groundstate_coeff(ispin)%matrix, &
+                                xas_env%groundstate_coeff(ispin), &
                                 name="xas_env%mo0"//TRIM(ADJUSTL(cp_to_string(ispin))))
       END DO ! ispin
 
@@ -817,8 +821,7 @@ CONTAINS
       ALLOCATE (xas_env%dip_fm_set(2, 3))
       DO i = 1, 3
          DO j = 1, 2
-            ALLOCATE (xas_env%dip_fm_set(j, i)%matrix)
-            CALL cp_fm_create(xas_env%dip_fm_set(j, i)%matrix, tmp_fm_struct)
+            CALL cp_fm_create(xas_env%dip_fm_set(j, i), tmp_fm_struct)
          END DO
       END DO
       CALL cp_fm_struct_release(tmp_fm_struct)
@@ -1048,7 +1051,7 @@ CONTAINS
       REAL(dp)                                           :: rc(3)
       REAL(dp), DIMENSION(:), POINTER                    :: all_evals
       REAL(dp), DIMENSION(:, :), POINTER                 :: sp_ab, sp_em
-      TYPE(cp_fm_p_type), DIMENSION(:, :), POINTER       :: dip_fm_set
+      TYPE(cp_fm_type), DIMENSION(:, :), POINTER         :: dip_fm_set
       TYPE(cp_fm_type), POINTER                          :: all_vectors, excvec_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: op_sm, ostrength_sm
@@ -1331,7 +1334,7 @@ CONTAINS
    SUBROUTINE spectrum_dip_vel(fm_set, op_sm, mos, excvec, &
                                all_vectors, all_evals, sp_em, sp_ab, estate, nstate, my_spin)
 
-      TYPE(cp_fm_p_type), DIMENSION(:, :), POINTER       :: fm_set
+      TYPE(cp_fm_type), DIMENSION(:, :), POINTER         :: fm_set
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: op_sm
       TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos
       TYPE(cp_fm_type), INTENT(IN)                       :: excvec, all_vectors
@@ -1352,12 +1355,11 @@ CONTAINS
 
       CALL cp_fm_create(fm_work, all_vectors%matrix_struct)
       DO i = 1, SIZE(fm_set, 2)
-         CPASSERT(ASSOCIATED(fm_set(my_spin, i)%matrix))
-         CALL cp_fm_set_all(fm_set(my_spin, i)%matrix, 0.0_dp)
+         CALL cp_fm_set_all(fm_set(my_spin, i), 0.0_dp)
          CALL cp_fm_set_all(fm_work, 0.0_dp)
          CALL cp_dbcsr_sm_fm_multiply(op_sm(i)%matrix, all_vectors, fm_work, ncol=nstate)
          CALL parallel_gemm("T", "N", 1, nstate, nao, 1.0_dp, excvec, &
-                            fm_work, 0.0_dp, fm_set(my_spin, i)%matrix, b_first_col=1)
+                            fm_work, 0.0_dp, fm_set(my_spin, i), b_first_col=1)
       END DO
       CALL cp_fm_release(fm_work)
 
@@ -1367,7 +1369,7 @@ CONTAINS
       DO istate = 1, nstate
          ene_f = all_evals(istate)
          DO i = 1, 3
-            CALL cp_fm_get_element(fm_set(my_spin, i)%matrix, 1, istate, dip(i))
+            CALL cp_fm_get_element(fm_set(my_spin, i), 1, istate, dip(i))
          END DO
          IF (istate <= homo) THEN
             sp_em(1, istate) = ene_f - ene_i

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -40,7 +40,6 @@ MODULE mp2_cphf
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_copy,&
                                               dbcsr_p_type,&
@@ -49,6 +48,7 @@ MODULE mp2_cphf
                                               dbcsr_set
    USE hfx_admm_utils,                  ONLY: tddft_hfx_matrix
    USE hfx_derivatives,                 ONLY: derivatives_four_center
+   USE hfx_exx,                         ONLY: add_exx_to_rhs
    USE hfx_ri,                          ONLY: hfx_ri_update_forces
    USE hfx_types,                       ONLY: alloc_containers,&
                                               hfx_container_type,&
@@ -69,7 +69,7 @@ MODULE mp2_cphf
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
    USE mathconstants,                   ONLY: fourpi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mp2_types,                       ONLY: mp2_type,&
                                               ri_rpa_method_gpw
    USE parallel_gemm_api,               ONLY: parallel_gemm
@@ -112,9 +112,9 @@ MODULE mp2_cphf
    USE qs_ks_reference,                 ONLY: ks_ref_potential
    USE qs_ks_types,                     ONLY: qs_ks_env_type,&
                                               set_ks_env
-   USE qs_linres_types,                 ONLY: linres_control_create,&
-                                              linres_control_type
-   USE qs_mo_types,                     ONLY: mo_set_type
+   USE qs_linres_types,                 ONLY: linres_control_type
+   USE qs_mo_types,                     ONLY: get_mo_set,&
+                                              mo_set_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_overlap,                      ONLY: build_overlap_matrix
    USE qs_p_env_methods,                ONLY: p_env_check_i_alloc,&
@@ -125,7 +125,6 @@ MODULE mp2_cphf
                                               qs_p_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE rpa_hfx,                         ONLY: add_exx_to_rhs
    USE task_list_types,                 ONLY: task_list_type
    USE virial_types,                    ONLY: virial_type,&
                                               zero_virial
@@ -165,7 +164,7 @@ CONTAINS
                                 mo_coeff, nmo, homo, Eigenval, unit_nr)
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
       TYPE(mp2_type), INTENT(INOUT)                      :: mp2_env
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env
       TYPE(dft_control_type), INTENT(IN), POINTER        :: dft_control
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: mo_coeff
       INTEGER, INTENT(IN)                                :: nmo
@@ -330,7 +329,14 @@ CONTAINS
          CALL section_vals_get(hfx_section, explicit=do_exx)
       END IF
       IF (do_exx) THEN
-         CALL add_exx_to_rhs(P_mu_nu, qs_env, mp2_env%ri_grad%free_hfx_buffer)
+         CALL add_exx_to_rhs(rhs=P_mu_nu, &
+                             qs_env=qs_env, &
+                             ext_hfx_section=hfx_section, &
+                             x_data=mp2_env%ri_rpa%x_data, &
+                             recalc_integrals=.FALSE., &
+                             do_admm=mp2_env%ri_rpa%do_admm, &
+                             do_exx=do_exx, &
+                             reuse_hfx=mp2_env%ri_rpa%reuse_hfx)
 
          focc = 1.0_dp
          IF (nspins == 1) focc = 2.0_dp
@@ -350,7 +356,6 @@ CONTAINS
       ! Prepare arrays for linres code
       NULLIFY (linres_control)
       ALLOCATE (linres_control)
-      CALL linres_control_create(linres_control)
       linres_control%do_kernel = .TRUE.
       linres_control%lr_triplet = .FALSE.
       linres_control%linres_restart = .FALSE.
@@ -404,12 +409,9 @@ CONTAINS
 
       ! release fm stuff
       CALL cp_fm_release(fm_G_mu_nu)
-      DO ispin = 1, nspins
-         CALL cp_fm_release(L_jb(ispin))
-         CALL cp_fm_release(mo_coeff_o(ispin))
-         CALL cp_fm_release(mo_coeff_v(ispin))
-      END DO
-      DEALLOCATE (L_jb, mo_coeff_o, mo_coeff_v)
+      CALL cp_fm_release(L_jb)
+      CALL cp_fm_release(mo_coeff_o)
+      CALL cp_fm_release(mo_coeff_v)
 
       DO ispin = 1, nspins
          ! update the MP2-MO density matrix with the occ-virt block
@@ -417,13 +419,12 @@ CONTAINS
                                  nrow=homo(ispin), ncol=virtual(ispin), &
                                  s_firstrow=1, s_firstcol=1, &
                                  t_firstrow=1, t_firstcol=homo(ispin) + 1)
-         CALL cp_fm_release(P_ia(ispin))
          ! transpose P_MO matrix (easy way to symmetrize)
          CALL cp_fm_set_all(fm_back, 0.0_dp)
          ! P_mo now is ready
          CALL cp_fm_upper_to_full(matrix=P_mo(ispin), work=fm_back)
       END DO
-      DEALLOCATE (P_ia)
+      CALL cp_fm_release(P_ia)
 
       ! do the final update to the energy weighted matrix W_MO
       DO ispin = 1, nspins
@@ -473,10 +474,9 @@ CONTAINS
       DO ispin = 1, nspins
          CALL parallel_gemm('N', 'N', dimen, dimen, dimen, 1.0_dp, &
                             mo_coeff(ispin), W_mo(ispin), 0.0_dp, fm_back)
-         CALL cp_fm_release(W_mo(ispin))
          CALL cp_dbcsr_plus_fm_fm_t(p_env%w1(1)%matrix, fm_back, mo_coeff(ispin), dimen, 1.0_dp, .TRUE., 1)
       END DO
-      DEALLOCATE (W_mo)
+      CALL cp_fm_release(W_mo)
 
       CALL qs_rho_get(p_env%rho1, rho_ao=rho1_ao)
 
@@ -485,13 +485,12 @@ CONTAINS
 
          CALL parallel_gemm('N', 'N', dimen, dimen, dimen, 1.0_dp, &
                             mo_coeff(ispin), P_mo(ispin), 0.0_dp, fm_back)
-         CALL cp_fm_release(P_mo(ispin))
          CALL cp_dbcsr_plus_fm_fm_t(p_env%p1(ispin)%matrix, fm_back, mo_coeff(ispin), dimen, 1.0_dp, .TRUE.)
 
          CALL dbcsr_copy(rho1_ao(ispin)%matrix, p_env%p1(ispin)%matrix)
       END DO
+      CALL cp_fm_release(P_mo)
       CALL cp_fm_release(fm_back)
-      DEALLOCATE (P_mo)
 
       CALL p_env_update_rho(p_env, qs_env)
 
@@ -750,10 +749,7 @@ CONTAINS
          CPABORT("Unknown solver")
       END SELECT
 
-      DO ispin = 1, nspins
-         CALL cp_fm_release(precond(ispin))
-      END DO
-      DEALLOCATE (precond)
+      CALL cp_fm_release(precond)
 
       CALL timestop(handle)
 
@@ -897,7 +893,7 @@ CONTAINS
                                   xn(:, iiter), fm_G_mu_nu, fm_back, transf_type_in, &
                                   Ax(:, iiter))
 
-            ! in order to reduce the number of calls to mp_sum here we
+            ! in order to reduce the number of  parallel sums here we
             ! cluster all necessary scalar products into a single vector
             ! temp_vals contains:
             ! 1:iiter -> <Ax_i|x_j>
@@ -992,16 +988,10 @@ CONTAINS
          DEALLOCATE (xi_b)
          DEALLOCATE (xi_Axi)
 
-         DO ispin = 1, nspins
-            CALL cp_fm_release(b_i(ispin))
-            CALL cp_fm_release(residual(ispin))
-
-            DO iiter = 1, cycle_counter
-               CALL cp_fm_release(Ax(ispin, iiter))
-               CALL cp_fm_release(xn(ispin, iiter))
-            END DO
-         END DO
-         DEALLOCATE (b_i, residual, Ax, xn, fm_struct_tmp)
+         CALL cp_fm_release(b_i)
+         CALL cp_fm_release(residual)
+         CALL cp_fm_release(Ax)
+         CALL cp_fm_release(xn)
 
       ELSE
          IF (unit_nr > 0) THEN
@@ -1277,13 +1267,11 @@ CONTAINS
          END IF
       END IF
 
-      DO ispin = 1, nspins
-         CALL cp_fm_release(residual(ispin))
-         CALL cp_fm_release(diff_search_vector(ispin))
-         CALL cp_fm_release(search_vector(ispin))
-         CALL cp_fm_release(A_dot_search_vector(ispin))
-      END DO
-      DEALLOCATE (residual, diff_search_vector, search_vector, A_dot_search_vector, fm_struct_tmp)
+      DEALLOCATE (fm_struct_tmp)
+      CALL cp_fm_release(residual)
+      CALL cp_fm_release(diff_search_vector)
+      CALL cp_fm_release(search_vector)
+      CALL cp_fm_release(A_dot_search_vector)
 
       CALL timestop(handle)
 
@@ -1305,7 +1293,7 @@ CONTAINS
       DO ispin = 1, SIZE(matrix1)
          dotproduct = dotproduct + accurate_dot_product(matrix1(ispin)%local_data, matrix2(ispin)%local_data)
       END DO
-      CALL mp_sum(dotproduct, matrix1(1)%matrix_struct%para_env%group)
+      CALL matrix1(1)%matrix_struct%para_env%sum(dotproduct)
 
    END FUNCTION accurate_dot_product_spin
 
@@ -1319,7 +1307,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'update_mp2_forces'
 
       INTEGER                                            :: alpha, beta, handle, idir, iounit, &
-                                                            ispin, nspins
+                                                            ispin, nocc, nspins
       INTEGER, DIMENSION(3)                              :: comp
       LOGICAL                                            :: do_exx, do_hfx, use_virial
       REAL(KIND=dp)                                      :: e_dummy, e_hartree, e_xc, ehartree, exc
@@ -1329,7 +1317,6 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), ALLOCATABLE, DIMENSION(:), &
          TARGET                                          :: matrix_ks_aux
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_p_mp2, &
@@ -1340,6 +1327,7 @@ CONTAINS
       TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
       TYPE(linres_control_type), POINTER                 :: linres_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_orb, sac_ppl, sap_ppnl
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -1432,11 +1420,11 @@ CONTAINS
                                 matrix_p=rho_ao(1)%matrix)
       IF (debug_forces) THEN
          deb(1:3) = force(1)%kinetic(1:3, 1) - deb(1:3)
-         CALL mp_sum(deb, para_env%group)
+         CALL para_env%sum(deb)
          IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*dT       ", deb
          IF (use_virial) THEN
             e_dummy = third_tr(virial%pv_virial) - e_dummy
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: T          ", e_dummy
          END IF
       END IF
@@ -1461,11 +1449,11 @@ CONTAINS
                              nimages=1, basis_type="ORB")
          IF (debug_forces) THEN
             deb(1:3) = force(1)%gth_ppl(1:3, 1) - deb(1:3)
-            CALL mp_sum(deb, para_env%group)
+            CALL para_env%sum(deb)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*dHppl    ", deb
             IF (use_virial) THEN
                e_dummy = third_tr(virial%pv_virial) - e_dummy
-               CALL mp_sum(e_dummy, para_env%group)
+               CALL para_env%sum(e_dummy)
                IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: Hppl       ", e_dummy
             END IF
          END IF
@@ -1481,11 +1469,11 @@ CONTAINS
                               nimages=1, basis_type="ORB")
          IF (debug_forces) THEN
             deb(1:3) = force(1)%gth_ppnl(1:3, 1) - deb(1:3)
-            CALL mp_sum(deb, para_env%group)
+            CALL para_env%sum(deb)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*dHppnl   ", deb
             IF (use_virial) THEN
                e_dummy = third_tr(virial%pv_virial) - e_dummy
-               CALL mp_sum(e_dummy, para_env%group)
+               CALL para_env%sum(e_dummy)
                IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: Hppnl      ", e_dummy
             END IF
          END IF
@@ -1507,7 +1495,7 @@ CONTAINS
          END IF
          IF (debug_forces) THEN
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: xc       ", third_tr(h_stress)
-            CALL mp_sum(virial%pv_xc(1, 1), para_env%group)
+            CALL para_env%sum(virial%pv_xc(1, 1))
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: Corr xc   ", third_tr(virial%pv_xc)
          END IF
       ELSE
@@ -1559,11 +1547,11 @@ CONTAINS
       END IF
       IF (debug_forces) THEN
          deb(1:3) = force(1)%rho_elec(1:3, 1) - deb(1:3)
-         CALL mp_sum(deb, para_env%group)
+         CALL para_env%sum(deb)
          IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*dVhxc    ", deb
          IF (use_virial) THEN
             e_dummy = third_tr(virial%pv_virial) - e_dummy
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: Vhxc      ", e_dummy
          END IF
       END IF
@@ -1642,11 +1630,11 @@ CONTAINS
       CALL integrate_v_core_rspace(vh_rspace, qs_env)
       IF (debug_forces) THEN
          deb(:) = force(1)%rho_core(:, 1)
-         CALL mp_sum(deb, para_env%group)
+         CALL para_env%sum(deb)
          IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: core      ", deb
          IF (use_virial) THEN
             e_dummy = third_tr(virial%pv_virial) - e_dummy
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: core      ", e_dummy
          END IF
       END IF
@@ -1726,24 +1714,24 @@ CONTAINS
          virial%pv_ehartree = virial%pv_ehartree + (virial%pv_virial - pv_virial)
          IF (debug_forces) THEN
             e_dummy = third_tr(virial%pv_virial - pv_virial)
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: Kh       ", e_dummy
          END IF
          virial%pv_exc = virial%pv_exc + h_stress
          virial%pv_virial = virial%pv_virial + h_stress
          IF (debug_forces) THEN
             e_dummy = third_tr(h_stress)
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: Kxc       ", e_dummy
          END IF
       END IF
       IF (debug_forces) THEN
          deb(:) = force(1)%rho_elec(:, 1) - deb
-         CALL mp_sum(deb, para_env%group)
+         CALL para_env%sum(deb)
          IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P0*Khxc    ", deb
          IF (use_virial) THEN
             e_dummy = third_tr(virial%pv_virial) - e_dummy
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: Khxc      ", e_dummy
          END IF
       END IF
@@ -1795,11 +1783,11 @@ CONTAINS
          END IF
          IF (debug_forces) THEN
             deb(1:3) = force(1)%fock_4c(1:3, 1) - deb(1:3)
-            CALL mp_sum(deb, para_env%group)
+            CALL para_env%sum(deb)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*hfx  ", deb
             IF (use_virial) THEN
                e_dummy = third_tr(virial%pv_fock_4c)
-               CALL mp_sum(e_dummy, para_env%group)
+               CALL para_env%sum(e_dummy)
                IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: hfx    ", e_dummy
             END IF
          END IF
@@ -1827,11 +1815,11 @@ CONTAINS
             CALL admm_projection_derivative(qs_env, p_env%kpp1_admm, rho_ao)
             IF (debug_forces) THEN
                deb(:) = force(1)%overlap_admm(:, 1) - deb
-               CALL mp_sum(deb, para_env%group)
+               CALL para_env%sum(deb)
                IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*KADMM*dS'", deb
                IF (use_virial) THEN
                   e_dummy = third_tr(virial%pv_virial) - e_dummy
-                  CALL mp_sum(e_dummy, para_env%group)
+                  CALL para_env%sum(e_dummy)
                   IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: KADMM*S'  ", e_dummy
                END IF
             END IF
@@ -1895,11 +1883,11 @@ CONTAINS
                DEALLOCATE (vadmm_rspace)
                IF (debug_forces) THEN
                   deb(:) = force(1)%rho_elec(:, 1) - deb
-                  CALL mp_sum(deb, para_env%group)
+                  CALL para_env%sum(deb)
                   IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*VADMM' ", deb
                   IF (use_virial) THEN
                      e_dummy = third_tr(virial%pv_virial) - e_dummy
-                     CALL mp_sum(e_dummy, para_env%group)
+                     CALL para_env%sum(e_dummy)
                      IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: VADMM'   ", e_dummy
                   END IF
                END IF
@@ -1926,11 +1914,11 @@ CONTAINS
             END IF
             IF (debug_forces) THEN
                deb(:) = force(1)%overlap_admm(:, 1) - deb
-               CALL mp_sum(deb, para_env%group)
+               CALL para_env%sum(deb)
                IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*VADMM*dS'", deb
                IF (use_virial) THEN
                   e_dummy = third_tr(virial%pv_virial) - e_dummy
-                  CALL mp_sum(e_dummy, para_env%group)
+                  CALL para_env%sum(e_dummy)
                   IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: VADMM*S'  ", e_dummy
                END IF
             END IF
@@ -1951,8 +1939,9 @@ CONTAINS
 
       ! Finish matrix_w_mp2 with occ-occ block
       DO ispin = 1, nspins
+         CALL get_mo_set(mo_set=mos(ispin), homo=nocc, nmo=alpha)
          CALL calculate_whz_matrix(mos(ispin)%mo_coeff, p_env%kpp1(ispin)%matrix, &
-                                   p_env%w1(1)%matrix, 1.0_dp)
+                                   p_env%w1(1)%matrix, 1.0_dp, nocc)
       END DO
 
       IF (debug_forces .AND. use_virial) e_dummy = third_tr(virial%pv_virial)
@@ -1967,11 +1956,11 @@ CONTAINS
 
       IF (debug_forces) THEN
          deb = force(1)%overlap(1:3, 1)
-         CALL mp_sum(deb, para_env%group)
+         CALL para_env%sum(deb)
          IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: W*dS     ", deb
          IF (use_virial) THEN
             e_dummy = third_tr(virial%pv_virial) - e_dummy
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: S         ", e_dummy
          END IF
       END IF
@@ -1993,7 +1982,7 @@ CONTAINS
          virial%pv_virial = virial%pv_virial + qs_env%mp2_env%ri_grad%mp2_virial
          IF (debug_forces) THEN
             e_dummy = third_tr(virial%pv_mp2)
-            CALL mp_sum(e_dummy, para_env%group)
+            CALL para_env%sum(e_dummy)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,F16.8)") "DEBUG VIRIAL:: MP2nonsep  ", e_dummy
          END IF
       END IF

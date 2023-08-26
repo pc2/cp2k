@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,9 +17,8 @@ MODULE qs_gcp_method
                                               atprop_type
    USE cell_types,                      ONLY: cell_type
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: kcalmol
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -55,16 +54,18 @@ CONTAINS
 !> \param gcp_env ...
 !> \param energy ...
 !> \param calculate_forces ...
+!> \param ategcp ...
 !> \note
 !> \note energy_correction_type: also add gcp_env and egcp to the type
 !> \note
 ! **************************************************************************************************
-   SUBROUTINE calculate_gcp_pairpot(qs_env, gcp_env, energy, calculate_forces)
+   SUBROUTINE calculate_gcp_pairpot(qs_env, gcp_env, energy, calculate_forces, ategcp)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_gcp_type), POINTER                         :: gcp_env
       REAL(KIND=dp), INTENT(OUT)                         :: energy
       LOGICAL, INTENT(IN)                                :: calculate_forces
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: ategcp
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_gcp_pairpot'
 
@@ -72,7 +73,8 @@ CONTAINS
                                                             jatom, jkind, mepos, natom, nkind, &
                                                             nsto, unit_nr
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of, ngcpat
-      LOGICAL                                            :: atenergy, atstress, use_virial, verbose
+      LOGICAL                                            :: atenergy, atex, atstress, use_virial, &
+                                                            verbose
       REAL(KIND=dp)                                      :: eama, eamb, egcp, expab, fac, fda, fdb, &
                                                             gnorm, nvirta, nvirtb, rcc, sint, sqa, &
                                                             sqb
@@ -87,7 +89,7 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atprop_type), POINTER                         :: atprop
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -125,6 +127,9 @@ CONTAINS
       END IF
       atstress = atprop%stress
       atstr => atprop%atstress
+      ! external atomic energy
+      atex = .FALSE.
+      IF (PRESENT(ategcp)) atex = .TRUE.
 
       IF (unit_nr > 0) THEN
          WRITE (unit_nr, *)
@@ -239,17 +244,21 @@ CONTAINS
                atener(iatom) = atener(iatom) + fda*fac
                atener(jatom) = atener(jatom) + fdb*fac
             END IF
+            IF (atex) THEN
+               ategcp(iatom) = ategcp(iatom) + fda*fac
+               ategcp(jatom) = ategcp(jatom) + fdb*fac
+            END IF
          END IF
       END DO
 
       CALL neighbor_list_iterator_release(nl_iterator)
 
       ! set gCP energy
-      CALL mp_sum(egcp, para_env%group)
+      CALL para_env%sum(egcp)
       energy = egcp
       IF (verbose) THEN
-         CALL mp_sum(egcpat, para_env%group)
-         CALL mp_sum(ngcpat, para_env%group)
+         CALL para_env%sum(egcpat)
+         CALL para_env%sum(ngcpat)
       END IF
 
       IF (unit_nr > 0) THEN
@@ -272,7 +281,7 @@ CONTAINS
             ikind = kind_of(iatom)
             atom_a = atom_of_kind(iatom)
             fdij(1:3) = force(ikind)%gcp(:, atom_a)
-            CALL mp_sum(fdij, para_env%group)
+            CALL para_env%sum(fdij)
             gnorm = gnorm + SUM(ABS(fdij))
             IF (unit_nr > 0) WRITE (unit_nr, "(i5,i7,3F20.14)") iatom, ikind, fdij
          END DO
@@ -283,7 +292,7 @@ CONTAINS
          END IF
          IF (use_virial) THEN
             dvirial = virial%pv_virial - dvirial
-            CALL mp_sum(dvirial, para_env%group)
+            CALL para_env%sum(dvirial)
             IF (unit_nr > 0) THEN
                WRITE (unit_nr, *) " Stress Tensor (gCP)"
                WRITE (unit_nr, "(3G20.12)") dvirial

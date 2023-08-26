@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -24,8 +24,10 @@ MODULE hartree_local_types
 ! **************************************************************************************************
    TYPE ecoul_1center_type
       TYPE(rho_atom_coeff), POINTER   :: Vh1_h, Vh1_s
-      REAL(dp)                        :: ecoul_1_h, ecoul_1_s, &
-                                         ecoul_1_z, ecoul_1_0
+      REAL(dp)                        :: ecoul_1_h = 0.0_dp, &
+                                         ecoul_1_s = 0.0_dp, &
+                                         ecoul_1_z = 0.0_dp, &
+                                         ecoul_1_0 = 0.0_dp
    END TYPE ecoul_1center_type
 
 ! **************************************************************************************************

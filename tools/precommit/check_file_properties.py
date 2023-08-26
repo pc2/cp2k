@@ -27,6 +27,7 @@ FLAG_EXCEPTIONS = (
     r"LIBINT_CONTRACTED_INTS",
     r"XC_MAJOR_VERSION",
     r"XC_MINOR_VERSION",
+    r"OMP_DEFAULT_NONE_WITH_OOP",
     r"_OPENMP",
     r"__COMPILE_ARCH",
     r"__COMPILE_DATE",
@@ -57,12 +58,16 @@ FLAG_EXCEPTIONS = (
     r"__T_C_G0",
     r"__YUKAWA",
     r"__cplusplus",
+    r"HIP_VERSION",
+    r"LIBXSMM_GEMM_PREFETCH_NONE",
+    r"LIBXSMM_VERSION_NUMBER",
     r"LIBXSMM_VERSION_MAJOR",
     r"LIBXSMM_VERSION_MINOR",
     r"LIBXSMM_VERSION_PATCH",
     r"LIBXSMM_VERSION2",
     r"LIBXSMM_VERSION3",
     r"LIBXSMM_VERSION4",
+    r"DBM_LIBXSMM_PREFETCH",
     r"__PW_CUDA_HIP_KERNELS",
 )
 
@@ -151,7 +156,12 @@ def check_file(path: pathlib.Path) -> typing.List[str]:
     if "\r\n" in content:
         warnings += [f"{path}: contains DOS linebreaks"]
 
-    if fn_ext not in (".pot", ".patch") and basefn != "Makefile" and "\t" in content:
+    if (
+        fn_ext not in (".pot", ".patch")
+        and basefn != "Makefile"
+        and basefn != "generate_arch_files.sh"
+        and "\t" in content
+    ):
         warnings += [f"{path}: contains tab character"]
 
     if fn_ext == ".cu" and "#if defined(_OMP_H)\n#error" not in content:
@@ -170,6 +180,10 @@ def check_file(path: pathlib.Path) -> typing.List[str]:
             warnings += [f"{path}: Copyright banner malformed"]
     if fn_ext in C_EXTENSIONS and not content.startswith(BANNER_C.format(year, spdx)):
         warnings += [f"{path}: Copyright banner malformed"]
+    if path.name == "LICENSE" and bsd_licensed and f"2000-{year}" not in content:
+        warnings += [f"{path}: Copyright banner malformed"]
+    if path.name == "cp2k_info.F" and f'cp2k_year = "{year}"' not in content:
+        warnings += [f"{path}: Wrong year."]
 
     # check shebang
     PY_SHEBANG = "#!/usr/bin/env python3"

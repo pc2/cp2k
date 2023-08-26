@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -26,6 +26,7 @@ MODULE force_fields_input
                                               Tosi1964b,&
                                               Yamada2000,&
                                               cite_reference
+   USE cp_files,                        ONLY: discover_file
    USE cp_linked_list_input,            ONLY: cp_sll_val_next,&
                                               cp_sll_val_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -33,7 +34,6 @@ MODULE force_fields_input
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_get_next_line
    USE cp_parser_types,                 ONLY: cp_parser_type,&
                                               parser_create,&
@@ -57,20 +57,25 @@ MODULE force_fields_input
                                               section_vals_val_get
    USE input_val_types,                 ONLY: val_get,&
                                               val_type
-   USE kinds,                           ONLY: default_string_length,&
+   USE kinds,                           ONLY: default_path_length,&
+                                              default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: pi
    USE mathlib,                         ONLY: invert_matrix
    USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pair_potential_types,            ONLY: &
-        b4_type, bm_type, do_potential_single_allocation, ea_type, eam_pot_type, ft_pot_type, &
-        ft_type, ftd_type, gal21_type, gal_type, gp_type, gw_type, ip_type, ipbv_pot_type, &
-        lj_charmm_type, no_potential_single_allocation, pair_potential_p_type, &
-        pair_potential_reallocate, potential_single_allocation, quip_type, siepmann_type, &
-        tab_pot_type, tab_type, tersoff_type, wl_type
+        allegro_pot_type, allegro_type, b4_type, bm_type, do_potential_single_allocation, ea_type, &
+        eam_pot_type, ft_pot_type, ft_type, ftd_type, gal21_type, gal_type, gp_type, gw_type, &
+        ip_type, ipbv_pot_type, lj_charmm_type, nequip_pot_type, nequip_type, &
+        no_potential_single_allocation, pair_potential_p_type, pair_potential_reallocate, &
+        potential_single_allocation, quip_type, siepmann_type, tab_pot_type, tab_type, &
+        tersoff_type, wl_type
    USE shell_potential_types,           ONLY: shell_p_create,&
                                               shell_p_type
    USE string_utilities,                ONLY: uppercase
+   USE torch_api,                       ONLY: torch_allow_tf32,&
+                                              torch_model_read_metadata
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -98,11 +103,13 @@ CONTAINS
    SUBROUTINE read_force_field_section1(ff_section, mm_section, ff_type, para_env)
       TYPE(section_vals_type), POINTER                   :: ff_section, mm_section
       TYPE(force_field_type), INTENT(INOUT)              :: ff_type
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
-      INTEGER :: nb4, nbends, nbm, nbmhft, nbmhftd, nbonds, nchg, neam, ngal, ngal21, ngd, ngp, &
-         nimpr, nipbv, nlj, nopbend, nquip, nshell, nsiepmann, ntab, ntersoff, ntors, ntot, nubs, &
-         nwl
+      CHARACTER(LEN=default_string_length), &
+         DIMENSION(:), POINTER                           :: atm_names
+      INTEGER :: nallegro, nb4, nbends, nbm, nbmhft, nbmhftd, nbonds, nchg, neam, ngal, ngal21, &
+         ngd, ngp, nimpr, nipbv, nlj, nnequip, nopbend, nquip, nshell, nsiepmann, ntab, ntersoff, &
+         ntors, ntot, nubs, nwl
       LOGICAL                                            :: explicit, unique_spline
       REAL(KIND=dp)                                      :: min_eps_spline_allowed
       TYPE(input_info_type), POINTER                     :: inp_info
@@ -157,6 +164,7 @@ CONTAINS
 
       CALL section_vals_val_get(ff_section, "MULTIPLE_POTENTIAL", l_val=ff_type%multiple_potential)
       CALL section_vals_val_get(ff_section, "DO_NONBONDED", l_val=ff_type%do_nonbonded)
+      CALL section_vals_val_get(ff_section, "DO_ELECTROSTATICS", l_val=ff_type%do_electrostatics)
       tmp_section => section_vals_get_subs_vals(ff_section, "NONBONDED")
       CALL section_vals_get(tmp_section, explicit=explicit)
       IF (explicit .AND. ff_type%do_nonbonded) THEN
@@ -279,9 +287,34 @@ CONTAINS
             CALL read_quip_section(inp_info%nonbonded, tmp_section2, ntot)
          END IF
 
+         tmp_section2 => section_vals_get_subs_vals(tmp_section, "nequip")
+         CALL section_vals_get(tmp_section2, explicit=explicit, n_repetition=nnequip)
+         ntot = nlj + nwl + neam + ngd + nipbv + nbmhft + nbmhftd + nb4 + nbm + ngp + ntersoff + ngal + ngal21 + nsiepmann + &
+                nquip
+         IF (explicit) THEN
+            ! avoid repeating the nequip section for each pair
+            CALL section_vals_val_get(tmp_section2, "ATOMS", c_vals=atm_names)
+            nnequip = nnequip - 1 + SIZE(atm_names) + (SIZE(atm_names)*SIZE(atm_names) - SIZE(atm_names))/2
+            CALL pair_potential_reallocate(inp_info%nonbonded, 1, ntot + nnequip, nequip=.TRUE.)
+            CALL read_nequip_section(inp_info%nonbonded, tmp_section2, ntot)
+         END IF
+
+         tmp_section2 => section_vals_get_subs_vals(tmp_section, "allegro")
+         CALL section_vals_get(tmp_section2, explicit=explicit, n_repetition=nallegro)
+         ntot = nlj + nwl + neam + ngd + nipbv + nbmhft + nbmhftd + nb4 + nbm + ngp + ntersoff + ngal + ngal21 + nsiepmann + &
+                nquip + nnequip
+         IF (explicit) THEN
+            ! avoid repeating the allegro section for each pair
+            CALL section_vals_val_get(tmp_section2, "ATOMS", c_vals=atm_names)
+            nallegro = nallegro - 1 + SIZE(atm_names) + (SIZE(atm_names)*SIZE(atm_names) - SIZE(atm_names))/2
+            CALL pair_potential_reallocate(inp_info%nonbonded, 1, ntot + nallegro, allegro=.TRUE.)
+            CALL read_allegro_section(inp_info%nonbonded, tmp_section2, ntot)
+         END IF
+
          tmp_section2 => section_vals_get_subs_vals(tmp_section, "TABPOT")
          CALL section_vals_get(tmp_section2, explicit=explicit, n_repetition=ntab)
-         ntot = nlj + nwl + neam + ngd + nipbv + nbmhft + nbmhftd + nb4 + nbm + ngp + ntersoff + ngal + ngal21 + nsiepmann + nquip
+         ntot = nlj + nwl + neam + ngd + nipbv + nbmhft + nbmhftd + nb4 + nbm + ngp + ntersoff + ngal + ngal21 + nsiepmann + &
+                nquip + nnequip + nallegro
          IF (explicit) THEN
             CALL pair_potential_reallocate(inp_info%nonbonded, 1, ntot + ntab, tab=.TRUE.)
             CALL read_tabpot_section(inp_info%nonbonded, tmp_section2, ntot, para_env, mm_section)
@@ -598,7 +631,7 @@ CONTAINS
       TYPE(pair_potential_p_type), POINTER               :: nonbonded
       TYPE(section_vals_type), POINTER                   :: section
       INTEGER, INTENT(IN)                                :: start
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: mm_section
 
       CHARACTER(LEN=default_string_length), &
@@ -670,6 +703,102 @@ CONTAINS
          nonbonded%pot(start + isec)%pot%rcutsq = 0.0_dp
       END DO
    END SUBROUTINE read_quip_section
+
+! **************************************************************************************************
+!> \brief Reads the NEQUIP section
+!> \param nonbonded ...
+!> \param section ...
+!> \param start ...
+!> \author Gabriele Tocci
+! **************************************************************************************************
+   SUBROUTINE read_nequip_section(nonbonded, section, start)
+      TYPE(pair_potential_p_type), POINTER               :: nonbonded
+      TYPE(section_vals_type), POINTER                   :: section
+      INTEGER, INTENT(IN)                                :: start
+
+      CHARACTER(LEN=default_string_length)               :: nequip_file_name, unit_cell, &
+                                                            unit_coords, unit_energy, unit_forces
+      CHARACTER(LEN=default_string_length), &
+         DIMENSION(:), POINTER                           :: atm_names
+      INTEGER                                            :: isec, jsec, n_items
+
+      n_items = 1
+      isec = 1
+      n_items = isec*n_items
+      CALL section_vals_val_get(section, "ATOMS", c_vals=atm_names)
+      CALL section_vals_val_get(section, "PARM_FILE_NAME", c_val=nequip_file_name)
+      CALL section_vals_val_get(section, "UNIT_COORDS", c_val=unit_coords)
+      CALL section_vals_val_get(section, "UNIT_ENERGY", c_val=unit_energy)
+      CALL section_vals_val_get(section, "UNIT_FORCES", c_val=unit_forces)
+      CALL section_vals_val_get(section, "UNIT_CELL", c_val=unit_cell)
+
+      DO isec = 1, SIZE(atm_names)
+         DO jsec = isec, SIZE(atm_names)
+            nonbonded%pot(start + n_items)%pot%type = nequip_type
+            nonbonded%pot(start + n_items)%pot%at1 = atm_names(isec)
+            nonbonded%pot(start + n_items)%pot%at2 = atm_names(jsec)
+            CALL uppercase(nonbonded%pot(start + n_items)%pot%at1)
+            CALL uppercase(nonbonded%pot(start + n_items)%pot%at2)
+            nonbonded%pot(start + n_items)%pot%set(1)%nequip%nequip_file_name = discover_file(nequip_file_name)
+            nonbonded%pot(start + n_items)%pot%set(1)%nequip%unit_coords = unit_coords
+            nonbonded%pot(start + n_items)%pot%set(1)%nequip%unit_forces = unit_forces
+            nonbonded%pot(start + n_items)%pot%set(1)%nequip%unit_energy = unit_energy
+            nonbonded%pot(start + n_items)%pot%set(1)%nequip%unit_cell = unit_cell
+            CALL read_nequip_data(nonbonded%pot(start + n_items)%pot%set(1)%nequip)
+            nonbonded%pot(start + n_items)%pot%rcutsq = nonbonded%pot(start + n_items)%pot%set(1)%nequip%rcutsq
+            n_items = n_items + 1
+         END DO
+      END DO
+
+   END SUBROUTINE read_nequip_section
+
+! **************************************************************************************************
+!> \brief Reads the ALLEGRO section
+!> \param nonbonded ...
+!> \param section ...
+!> \param start ...
+!> \author Gabriele Tocci
+! **************************************************************************************************
+   SUBROUTINE read_allegro_section(nonbonded, section, start)
+      TYPE(pair_potential_p_type), POINTER               :: nonbonded
+      TYPE(section_vals_type), POINTER                   :: section
+      INTEGER, INTENT(IN)                                :: start
+
+      CHARACTER(LEN=default_string_length)               :: allegro_file_name, unit_cell, &
+                                                            unit_coords, unit_energy, unit_forces
+      CHARACTER(LEN=default_string_length), &
+         DIMENSION(:), POINTER                           :: atm_names
+      INTEGER                                            :: isec, jsec, n_items
+
+      n_items = 1
+      isec = 1
+      n_items = isec*n_items
+      CALL section_vals_val_get(section, "ATOMS", c_vals=atm_names)
+      CALL section_vals_val_get(section, "PARM_FILE_NAME", c_val=allegro_file_name)
+      CALL section_vals_val_get(section, "UNIT_COORDS", c_val=unit_coords)
+      CALL section_vals_val_get(section, "UNIT_ENERGY", c_val=unit_energy)
+      CALL section_vals_val_get(section, "UNIT_FORCES", c_val=unit_forces)
+      CALL section_vals_val_get(section, "UNIT_CELL", c_val=unit_cell)
+
+      DO isec = 1, SIZE(atm_names)
+         DO jsec = isec, SIZE(atm_names)
+            nonbonded%pot(start + n_items)%pot%type = allegro_type
+            nonbonded%pot(start + n_items)%pot%at1 = atm_names(isec)
+            nonbonded%pot(start + n_items)%pot%at2 = atm_names(jsec)
+            CALL uppercase(nonbonded%pot(start + n_items)%pot%at1)
+            CALL uppercase(nonbonded%pot(start + n_items)%pot%at2)
+            nonbonded%pot(start + n_items)%pot%set(1)%allegro%allegro_file_name = discover_file(allegro_file_name)
+            nonbonded%pot(start + n_items)%pot%set(1)%allegro%unit_coords = unit_coords
+            nonbonded%pot(start + n_items)%pot%set(1)%allegro%unit_forces = unit_forces
+            nonbonded%pot(start + n_items)%pot%set(1)%allegro%unit_energy = unit_energy
+            nonbonded%pot(start + n_items)%pot%set(1)%allegro%unit_cell = unit_cell
+            CALL read_allegro_data(nonbonded%pot(start + n_items)%pot%set(1)%allegro)
+            nonbonded%pot(start + n_items)%pot%rcutsq = nonbonded%pot(start + n_items)%pot%set(1)%allegro%rcutsq
+            n_items = n_items + 1
+         END DO
+      END DO
+
+   END SUBROUTINE read_allegro_section
 
 ! **************************************************************************************************
 !> \brief Reads the LJ section
@@ -1625,7 +1754,7 @@ CONTAINS
       TYPE(pair_potential_p_type), POINTER               :: nonbonded
       TYPE(section_vals_type), POINTER                   :: section
       INTEGER, INTENT(IN)                                :: start
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: mm_section
 
       CHARACTER(LEN=default_string_length), &
@@ -2160,7 +2289,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE read_force_field_section(ff_type, para_env, mm_section)
       TYPE(force_field_type), INTENT(INOUT)              :: ff_type
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: mm_section
 
       TYPE(section_vals_type), POINTER                   :: ff_section
@@ -2178,7 +2307,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE read_eam_data(eam, para_env, mm_section)
       TYPE(eam_pot_type), POINTER                        :: eam
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: mm_section
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'read_eam_data'
@@ -2242,6 +2371,152 @@ CONTAINS
    END SUBROUTINE read_eam_data
 
 ! **************************************************************************************************
+!> \brief reads NequIP potential from .pth file
+!> \param nequip ...
+!> \author Gabriele Tocci
+! **************************************************************************************************
+   SUBROUTINE read_nequip_data(nequip)
+      TYPE(nequip_pot_type), POINTER                     :: nequip
+
+      CHARACTER(len=*), PARAMETER                        :: routineN = 'read_nequip_data'
+
+      CHARACTER(LEN=default_path_length)                 :: allow_tf32_str, config_str, cutoff_str
+      INTEGER                                            :: handle
+      LOGICAL                                            :: allow_tf32, found
+
+      CALL timeset(routineN, handle)
+
+      INQUIRE (FILE=nequip%nequip_file_name, EXIST=found)
+      IF (.NOT. found) THEN
+         CALL cp_abort(__LOCATION__, &
+                       "Nequip model file <"//TRIM(nequip%nequip_file_name)// &
+                       "> not found.")
+      END IF
+
+      nequip%nequip_version = torch_model_read_metadata(nequip%nequip_file_name, "nequip_version")
+      cutoff_str = torch_model_read_metadata(nequip%nequip_file_name, "r_max")
+      READ (cutoff_str, *) nequip%rcutsq
+      nequip%rcutsq = cp_unit_to_cp2k(nequip%rcutsq, nequip%unit_coords)
+      nequip%rcutsq = nequip%rcutsq*nequip%rcutsq
+      nequip%unit_coords_val = cp_unit_to_cp2k(nequip%unit_coords_val, nequip%unit_coords)
+      nequip%unit_forces_val = cp_unit_to_cp2k(nequip%unit_forces_val, nequip%unit_forces)
+      nequip%unit_energy_val = cp_unit_to_cp2k(nequip%unit_energy_val, nequip%unit_energy)
+      nequip%unit_cell_val = cp_unit_to_cp2k(nequip%unit_cell_val, nequip%unit_cell)
+
+      ! look in config which contains all the .yaml file options to see if we use float32 or float64
+      config_str = torch_model_read_metadata(nequip%nequip_file_name, "config")
+      CALL read_default_dtype(config_str, nequip%do_nequip_sp)
+
+      allow_tf32_str = torch_model_read_metadata(nequip%nequip_file_name, "allow_tf32")
+      allow_tf32 = (TRIM(allow_tf32_str) == "1")
+      IF (TRIM(allow_tf32_str) /= "1" .AND. TRIM(allow_tf32_str) /= "0") THEN
+         CALL cp_abort(__LOCATION__, &
+                       "The value for allow_tf32 <"//TRIM(allow_tf32_str)// &
+                       "> is not supported. Check the .yaml and .pth files.")
+      END IF
+      CALL torch_allow_tf32(allow_tf32)
+
+      CALL timestop(handle)
+   END SUBROUTINE read_nequip_data
+
+! **************************************************************************************************
+!> \brief reads ALLEGRO potential from .pth file
+!> \param allegro ...
+!> \author Gabriele Tocci
+! **************************************************************************************************
+   SUBROUTINE read_allegro_data(allegro)
+      TYPE(allegro_pot_type), POINTER                    :: allegro
+
+      CHARACTER(len=*), PARAMETER                        :: routineN = 'read_allegro_data'
+
+      CHARACTER(LEN=default_path_length)                 :: allow_tf32_str, config_str, cutoff_str
+      INTEGER                                            :: handle
+      LOGICAL                                            :: allow_tf32, found
+
+      CALL timeset(routineN, handle)
+
+      INQUIRE (FILE=allegro%allegro_file_name, EXIST=found)
+      IF (.NOT. found) THEN
+         CALL cp_abort(__LOCATION__, &
+                       "Allegro model file <"//TRIM(allegro%allegro_file_name)// &
+                       "> not found.")
+      END IF
+
+      allegro%nequip_version = torch_model_read_metadata(allegro%allegro_file_name, "nequip_version")
+      IF (allegro%nequip_version == "") THEN
+         CALL cp_abort(__LOCATION__, &
+                       "Allegro model file <"//TRIM(allegro%allegro_file_name)// &
+                       "> has not been deployed; did you forget to run `nequip-deploy`?")
+      END IF
+      cutoff_str = torch_model_read_metadata(allegro%allegro_file_name, "r_max")
+      READ (cutoff_str, *) allegro%rcutsq
+      allegro%rcutsq = cp_unit_to_cp2k(allegro%rcutsq, allegro%unit_coords)
+      allegro%rcutsq = allegro%rcutsq*allegro%rcutsq
+      allegro%unit_coords_val = cp_unit_to_cp2k(allegro%unit_coords_val, allegro%unit_coords)
+      allegro%unit_forces_val = cp_unit_to_cp2k(allegro%unit_forces_val, allegro%unit_forces)
+      allegro%unit_energy_val = cp_unit_to_cp2k(allegro%unit_energy_val, allegro%unit_energy)
+      allegro%unit_cell_val = cp_unit_to_cp2k(allegro%unit_cell_val, allegro%unit_cell)
+
+      ! look in config which contains all the .yaml file options to see if we use float32 or float64
+      config_str = torch_model_read_metadata(allegro%allegro_file_name, "config")
+      CALL read_default_dtype(config_str, allegro%do_allegro_sp)
+
+      allow_tf32_str = torch_model_read_metadata(allegro%allegro_file_name, "allow_tf32")
+      allow_tf32 = (TRIM(allow_tf32_str) == "1")
+      IF (TRIM(allow_tf32_str) /= "1" .AND. TRIM(allow_tf32_str) /= "0") THEN
+         CALL cp_abort(__LOCATION__, &
+                       "The value for allow_tf32 <"//TRIM(allow_tf32_str)// &
+                       "> is not supported. Check the .yaml and .pth files.")
+      END IF
+      CALL torch_allow_tf32(allow_tf32)
+
+      CALL timestop(handle)
+   END SUBROUTINE read_allegro_data
+
+! **************************************************************************************************
+!> \brief reads the default_dtype used in the Allegro/NequIP model by parsing the config file
+!> \param config_str ...
+!> \param do_model_sp ...
+!> \author Gabriele Tocci
+! **************************************************************************************************
+   SUBROUTINE read_default_dtype(config_str, do_model_sp)
+
+      CHARACTER(LEN=default_path_length)                 :: config_str
+      LOGICAL                                            :: do_model_sp
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'read_default_dtype'
+
+      INTEGER                                            :: handle, i, idx, len_config
+
+      CALL timeset(routineN, handle)
+
+      len_config = LEN_TRIM(config_str)
+      idx = INDEX(config_str, "default_dtype:")
+      IF (idx /= 0) THEN
+         i = idx + 14 ! skip over "default_dtype:"
+         DO WHILE (i <= len_config .AND. config_str(i:i) == " ")
+            i = i + 1 ! skip over any whitespace
+         END DO
+
+         IF (i > len_config) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "No default_dtype found, check the Nequip/Allegro .yaml or .pth files."// &
+                          " Default_dtype should be either <float32> or <float64>.")
+         ELSE IF (config_str(i:i + 6) == "float32") THEN
+            do_model_sp = .TRUE.
+         ELSE IF (config_str(i:i + 6) == "float64") THEN
+            do_model_sp = .FALSE.
+         ELSE
+            CALL cp_abort(__LOCATION__, &
+                          "The default_dtype should be either <float32> or <float64>."// &
+                          " Check the NequIP/Allegro .yaml and .pth files.")
+         END IF
+      END IF
+
+      CALL timestop(handle)
+   END SUBROUTINE read_default_dtype
+
+! **************************************************************************************************
 !> \brief reads TABPOT potential from file
 !> \param tab ...
 !> \param para_env ...
@@ -2250,7 +2525,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE read_tabpot_data(tab, para_env, mm_section)
       TYPE(tab_pot_type), POINTER                        :: tab
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: mm_section
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'read_tabpot_data'

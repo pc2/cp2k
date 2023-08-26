@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -71,11 +71,11 @@ MODULE pw_pool_types
 !> \author Fawzi Mohamed
 ! **************************************************************************************************
    TYPE pw_pool_type
-      INTEGER :: ref_count, max_cache
-      TYPE(pw_grid_type), POINTER :: pw_grid
-      TYPE(cp_sll_pw_type), POINTER :: real1d_pw, real3d_pw, &
-                                       complex1d_pw, complex3d_pw
-      TYPE(cp_sll_3d_r_type), POINTER :: real3d_array
+      INTEGER :: ref_count = 0, max_cache = 0
+      TYPE(pw_grid_type), POINTER :: pw_grid => NULL()
+      TYPE(cp_sll_pw_type), POINTER :: real1d_pw => NULL(), real3d_pw => NULL(), &
+                                       complex1d_pw => NULL(), complex3d_pw => NULL()
+      TYPE(cp_sll_3d_r_type), POINTER :: real3d_array => NULL()
    END TYPE pw_pool_type
 
 ! **************************************************************************************************
@@ -86,7 +86,7 @@ MODULE pw_pool_types
 !> \author Fawzi Mohamed
 ! **************************************************************************************************
    TYPE pw_pool_p_type
-      TYPE(pw_pool_type), POINTER :: pool
+      TYPE(pw_pool_type), POINTER :: pool => NULL()
    END TYPE pw_pool_p_type
 
 CONTAINS
@@ -265,8 +265,7 @@ CONTAINS
    SUBROUTINE pw_pool_create_pw(pool, pw, use_data, in_space)
       TYPE(pw_pool_type), INTENT(IN)                     :: pool
       TYPE(pw_type), INTENT(OUT)                         :: pw
-      INTEGER, INTENT(in)                                :: use_data
-      INTEGER, INTENT(in), OPTIONAL                      :: in_space
+      INTEGER, INTENT(in)                                :: use_data, in_space
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'pw_pool_create_pw'
 
@@ -302,14 +301,12 @@ CONTAINS
 
       IF (.NOT. ASSOCIATED(el)) THEN
          CALL pw_create(pw, pool%pw_grid, use_data=use_data, &
-                        cr3d_ptr=cr3d_ptr)
+                        in_space=in_space, cr3d_ptr=cr3d_ptr)
       ELSE
          pw = el
          DEALLOCATE (el)
+         pw%in_space = in_space
       END IF
-
-      pw%in_space = 0
-      IF (PRESENT(in_space)) pw%in_space = in_space
 
       CALL timestop(handle)
 

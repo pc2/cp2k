@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -26,7 +26,6 @@ MODULE eip_silicon
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
@@ -35,7 +34,7 @@ MODULE eip_silicon
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: angstrom,&
                                               evolt
@@ -88,9 +87,9 @@ CONTAINS
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(distribution_1d_type), POINTER                :: local_particles
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(section_vals_type), POINTER                   :: eip_section
 
@@ -128,7 +127,7 @@ CONTAINS
                               coord=eip_env%coord_avg, ener_var=ener_var, &
                               coord_var=eip_env%coord_var, count=eip_env%count)
 
-      !CALL get_part_ke(md_env, tbmd_energy%E_kinetic, int_grp=globalenv%para_env%group)
+      !CALL get_part_ke(md_env, tbmd_energy%E_kinetic, int_grp=globalenv%para_env)
       CALL cp_subsys_get(subsys=subsys, atomic_kinds=atomic_kinds)
 
       nparticle_kind = atomic_kinds%n_els
@@ -148,7 +147,7 @@ CONTAINS
 
       ! sum all contributions to energy over calculated parts on all processors
       CALL cp_subsys_get(subsys=subsys, para_env=para_env)
-      CALL mp_sum(ekin, para_env%group)
+      CALL para_env%sum(ekin)
       eip_env%eip_kinetic_energy = ekin
 
       eip_env%eip_potential_energy = ener/evolt
@@ -254,9 +253,9 @@ CONTAINS
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(distribution_1d_type), POINTER                :: local_particles
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(section_vals_type), POINTER                   :: eip_section
 
@@ -294,7 +293,7 @@ CONTAINS
                                coord=eip_env%coord_avg, ener_var=ener_var, &
                                coord_var=eip_env%coord_var, count=eip_env%count)
 
-      !CALL get_part_ke(md_env, tbmd_energy%E_kinetic, int_grp=globalenv%para_env%group)
+      !CALL get_part_ke(md_env, tbmd_energy%E_kinetic, int_grp=globalenv%para_env)
       CALL cp_subsys_get(subsys=subsys, atomic_kinds=atomic_kinds)
 
       nparticle_kind = atomic_kinds%n_els
@@ -314,7 +313,7 @@ CONTAINS
 
       ! sum all contributions to energy over calculated parts on all processors
       CALL cp_subsys_get(subsys=subsys, para_env=para_env)
-      CALL mp_sum(ekin, para_env%group)
+      CALL para_env%sum(ekin)
       eip_env%eip_kinetic_energy = ekin
 
       eip_env%eip_potential_energy = ener/evolt

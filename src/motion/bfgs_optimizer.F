@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -47,7 +47,7 @@ MODULE bfgs_optimizer
                                  cp_print_key_finished_output, &
                                  cp_print_key_should_output, &
                                  cp_print_key_unit_nr
-   USE cp_para_types, ONLY: cp_para_env_type
+   USE message_passing, ONLY: mp_para_env_type
    USE cp_subsys_types, ONLY: cp_subsys_get, &
                               cp_subsys_type
    USE force_env_types, ONLY: force_env_get, &
@@ -71,8 +71,6 @@ MODULE bfgs_optimizer
                     dp
    USE machine, ONLY: m_flush, &
                       m_walltime
-   USE message_passing, ONLY: mp_min, &
-                              mp_sum
    USE particle_list_types, ONLY: particle_list_type
    USE space_groups, ONLY: identify_space_group, &
                            print_spgr, &
@@ -132,7 +130,7 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_hes
       TYPE(cp_fm_type)                          :: eigvec_mat, hess_mat, hess_tmp
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(section_vals_type), POINTER                   :: print_key, root_section
       TYPE(spgr_type), POINTER                           :: spgr
@@ -147,7 +145,7 @@ CONTAINS
       CALL timeset(routineN, handle)
       CALL section_vals_val_get(geo_section, "BFGS%TRUST_RADIUS", r_val=rad)
       print_key => section_vals_get_subs_vals(geo_section, "BFGS%RESTART")
-      ionode = para_env%mepos == para_env%source
+      ionode = para_env%is_source()
       maxiter = gopt_param%max_iter
       conv = .FALSE.
       rat = 0.0_dp
@@ -466,7 +464,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(INOUT)                       :: dg(ndf), eigval(ndf), work(ndf)
       TYPE(cp_fm_type), INTENT(IN)                       :: eigvec_mat
       REAL(KIND=dp), INTENT(INOUT)                       :: g(ndf)
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'rat_fun_opt'
       REAL(KIND=dp), PARAMETER                           :: one = 1.0_dp
@@ -499,7 +497,7 @@ CONTAINS
             dg(l) = dg(l) + local_data(i, k)*g(j)
          END DO
       END DO
-      CALL mp_sum(dg, para_env%group)
+      CALL para_env%sum(dg)
 
       set = .FALSE.
 
@@ -634,7 +632,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(INOUT)                       :: dx(ndf), dg(ndf)
       TYPE(cp_fm_type), INTENT(IN)                       :: hess_mat
       REAL(KIND=dp), INTENT(INOUT)                       :: work(ndf)
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'bfgs'
       REAL(KIND=dp), PARAMETER                           :: one = 1.0_dp, zero = 0.0_dp
@@ -659,7 +657,7 @@ CONTAINS
          END DO
       END DO
 
-      CALL mp_sum(work, para_env%group)
+      CALL para_env%sum(work)
 
       gdx = DDOT(ndf, dg, 1, dx, 1)
       gdx = one/gdx
@@ -747,7 +745,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(INOUT)                       :: eigval(ndf)
       TYPE(cp_fm_type), INTENT(IN)                       :: eigvec_mat, hess_tmp
       REAL(KIND=dp), INTENT(INOUT)                       :: dr(ndf), g(ndf)
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       LOGICAL                                            :: use_rfo
 
       REAL(KIND=dp), PARAMETER                           :: one = 1.0_dp, zero = 0.0_dp
@@ -792,7 +790,7 @@ CONTAINS
          END DO
       END DO
 
-      CALL mp_sum(dr, para_env%group)
+      CALL para_env%sum(dr)
 
    END SUBROUTINE geoopt_get_step
 
@@ -854,7 +852,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(INOUT)                       :: dr(ndf), g(ndf)
       LOGICAL, INTENT(INOUT)                             :: conv
       REAL(KIND=dp), INTENT(INOUT)                       :: pred
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'energy_predict'
       REAL(KIND=dp), PARAMETER                           :: zero = 0.0_dp
@@ -881,7 +879,7 @@ CONTAINS
          END DO
       END DO
 
-      CALL mp_sum(work, para_env%group)
+      CALL para_env%sum(work)
       ener2 = DDOT(ndf, dr, 1, work, 1)
       pred = ener1 + 0.5_dp*ener2
       conv = .FALSE.
@@ -1046,7 +1044,7 @@ CONTAINS
       fixed = 1.0_dp
       CALL fix_atom_control(force_env, fixed)
       DO i = 1, 3
-         CALL mp_min(fixed(i, :), hess_mat%matrix_struct%para_env%group)
+         CALL hess_mat%matrix_struct%para_env%min(fixed(i, :))
       END DO
       rho_ij = 0
       !XXXX insert proper rows !XXX

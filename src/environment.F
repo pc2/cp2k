@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,7 +25,10 @@ MODULE environment
    USE cp_files,                        ONLY: close_file,&
                                               get_data_dir,&
                                               open_file
-   USE cp_fm_diag,                      ONLY: diag_finalize,&
+   USE cp_fm_diag,                      ONLY: FM_DIAG_TYPE_CUSOLVER,&
+                                              FM_DIAG_TYPE_ELPA,&
+                                              FM_DIAG_TYPE_SCALAPACK,&
+                                              diag_finalize,&
                                               diag_init,&
                                               eps_check_diag_default
    USE cp_fm_diag_utils,                ONLY: cp_fm_redistribute_init
@@ -44,7 +47,6 @@ MODULE environment
                                               low_print_level,&
                                               medium_print_level,&
                                               silent_print_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE fft_tools,                       ONLY: fft3d,&
                                               finalize_fft,&
                                               init_fft
@@ -53,15 +55,16 @@ MODULE environment
    USE global_types,                    ONLY: global_environment_type
    USE grid_api,                        ONLY: GRID_BACKEND_AUTO,&
                                               GRID_BACKEND_CPU,&
+                                              GRID_BACKEND_DGEMM,&
                                               GRID_BACKEND_GPU,&
                                               GRID_BACKEND_HIP,&
                                               GRID_BACKEND_REF
    USE header,                          ONLY: cp2k_footer,&
                                               cp2k_header
    USE input_constants,                 ONLY: &
-        callgraph_all, callgraph_none, do_cosma, do_cp2k, do_dgemm_blas, do_dgemm_spla, &
-        do_diag_elpa, do_diag_scalapack, do_eip, do_farming, do_fft_fftw3, do_fft_sg, do_fist, &
-        do_qs, do_scalapack, do_sirius, do_test, energy_run, mol_dyn_run, none_run
+        callgraph_all, callgraph_none, do_cosma, do_cp2k, do_dgemm_blas, do_dgemm_spla, do_eip, &
+        do_farming, do_fft_fftw3, do_fft_sg, do_fist, do_qs, do_scalapack, do_sirius, do_test, &
+        energy_run, mol_dyn_run, none_run
    USE input_cp2k_global,               ONLY: create_global_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
                                               enumeration_type
@@ -70,7 +73,7 @@ MODULE environment
    USE input_section_types,             ONLY: &
         section_get_ival, section_get_keyword, section_get_lval, section_get_rval, &
         section_release, section_type, section_vals_get, section_vals_get_subs_vals, &
-        section_vals_get_subs_vals3, section_vals_type, section_vals_val_get
+        section_vals_get_subs_vals3, section_vals_type, section_vals_val_get, section_vals_val_set
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp,&
@@ -80,11 +83,10 @@ MODULE environment
    USE machine,                         ONLY: &
         flush_should_flush, m_cpuid, m_cpuid_name, m_cpuid_static, m_cpuinfo, m_energy, &
         m_get_omp_stacksize, m_memory_details, m_procrun
-   USE message_passing,                 ONLY: add_mp_perf_env,&
+   USE message_passing,                 ONLY: mp_collect_timings,&
+                                              mp_para_env_type
+   USE mp_perf_env,                     ONLY: add_mp_perf_env,&
                                               describe_mp_perf_env,&
-                                              mp_collect_timings,&
-                                              mp_max,&
-                                              mp_sum,&
                                               rm_mp_perf_env
    USE orbital_pointers,                ONLY: deallocate_orbital_pointers,&
                                               init_orbital_pointers
@@ -142,7 +144,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE cp2k_init(para_env, output_unit, globenv, input_file_name, wdir)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: output_unit
       TYPE(global_environment_type), POINTER             :: globenv
       CHARACTER(LEN=*)                                   :: input_file_name
@@ -160,7 +162,7 @@ CONTAINS
       CALL add_mp_perf_env()
 
       ! Init the default logger
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          my_output_unit = output_unit
       ELSE
          my_output_unit = -1
@@ -235,7 +237,7 @@ CONTAINS
 !> \param output_unit ...
 ! **************************************************************************************************
    SUBROUTINE echo_all_hosts(para_env, output_unit)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: output_unit
 
       CHARACTER(LEN=default_string_length)               :: string
@@ -249,11 +251,11 @@ CONTAINS
       all_pid(:) = 0
       all_pid(para_env%mepos + 1) = r_pid
 
-      CALL mp_sum(all_pid, para_env%group)
+      CALL para_env%sum(all_pid)
       ALLOCATE (all_host(30, para_env%num_pe))
       all_host(:, :) = 0
       CALL string_to_ascii(r_host_name, all_host(:, para_env%mepos + 1))
-      CALL mp_sum(all_host, para_env%group)
+      CALL para_env%sum(all_host)
       IF (output_unit > 0) THEN
 
          WRITE (UNIT=output_unit, FMT="(T2,A)") ""
@@ -276,7 +278,7 @@ CONTAINS
 !> \param output_unit ...
 ! **************************************************************************************************
    SUBROUTINE echo_all_process_host(para_env, output_unit)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: output_unit
 
       CHARACTER(LEN=default_string_length)               :: string, string_sec
@@ -289,7 +291,7 @@ CONTAINS
 
       IF (m_procrun(r_pid) .EQ. 1) THEN
          CALL string_to_ascii(r_host_name, all_host(:, para_env%mepos + 1))
-         CALL mp_sum(all_host, para_env%group)
+         CALL para_env%sum(all_host)
       END IF
 
       IF (output_unit > 0) THEN
@@ -338,11 +340,12 @@ CONTAINS
    SUBROUTINE cp2k_read(root_section, para_env, globenv)
 
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
 
+      CHARACTER(LEN=3*default_string_length)             :: message
       CHARACTER(len=default_string_length)               :: c_val
-      INTEGER                                            :: iw
+      INTEGER                                            :: i, iw
       TYPE(cp_logger_type), POINTER                      :: logger
 
       ! Read the input/output section
@@ -356,11 +359,24 @@ CONTAINS
          CALL cp_logger_set(logger, &
                             local_filename=TRIM(c_val)//"_localLog")
       END IF
+
+      ! Process project name
       CALL section_vals_val_get(root_section, "GLOBAL%PROJECT", c_val=c_val)
+      IF (INDEX(c_val(:LEN_TRIM(c_val)), " ") > 0) THEN
+         message = "Project name <"//TRIM(c_val)// &
+                   "> contains spaces which will be replaced with underscores"
+         CPWARN(TRIM(message))
+         DO i = 1, LEN_TRIM(c_val)
+            ! Replace space with underscore
+            IF (c_val(i:i) == " ") c_val(i:i) = "_"
+         END DO
+         CALL section_vals_val_set(root_section, "GLOBAL%PROJECT", c_val=TRIM(c_val))
+      END IF
       IF (c_val /= "") THEN
          CALL cp_logger_set(logger, local_filename=TRIM(c_val)//"_localLog")
       END IF
       logger%iter_info%project_name = c_val
+
       CALL section_vals_val_get(root_section, "GLOBAL%PRINT_LEVEL", i_val=logger%iter_info%print_level)
 
       ! Read the CP2K section
@@ -393,7 +409,7 @@ CONTAINS
    SUBROUTINE cp2k_setup(root_section, para_env, globenv)
 
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
 
       INTEGER                                            :: iw, maxl
@@ -435,7 +451,7 @@ CONTAINS
       iw = cp_print_key_unit_nr(logger, root_section, "GLOBAL%PRINT/RNG_CHECK", &
                                 extension=".Log")
       IF (iw > 0) THEN
-         CALL check_rng(iw, para_env%ionode)
+         CALL check_rng(iw, para_env%is_source())
       END IF
 
       CALL cp_print_key_finished_output(iw, logger, root_section, &
@@ -478,7 +494,7 @@ CONTAINS
    SUBROUTINE read_global_section(root_section, para_env, globenv)
 
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
 
       CHARACTER(LEN=6), PARAMETER                        :: start_section_label = "GLOBAL"
@@ -488,7 +504,7 @@ CONTAINS
       CHARACTER(len=default_path_length)                 :: basis_set_file_name, coord_file_name, &
                                                             mm_potential_file_name, &
                                                             potential_file_name
-      CHARACTER(len=default_string_length)               :: env_num, model_name, project_name
+      CHARACTER(LEN=default_string_length)               :: env_num, model_name, project_name
       CHARACTER(LEN=default_string_length), &
          DIMENSION(:), POINTER                           :: trace_routines
       INTEGER :: cpuid, cpuid_static, i_dgemm, i_diag, i_fft, i_grid_backend, iforce_eval, &
@@ -530,7 +546,6 @@ CONTAINS
       IF (unit_nr > 0) globenv%elpa_print = .TRUE.
       CALL cp_print_key_finished_output(unit_nr, logger, global_section, "PRINT_ELPA")
       CALL section_vals_val_get(global_section, "PREFERRED_FFT_LIBRARY", i_val=i_fft)
-
       CALL section_vals_val_get(global_section, "PRINT_LEVEL", i_val=print_level)
       CALL section_vals_val_get(global_section, "PROGRAM_NAME", i_val=globenv%prog_name_id)
       CALL section_vals_val_get(global_section, "FFT_POOL_SCRATCH_LIMIT", i_val=globenv%fft_pool_scratch_limit)
@@ -565,7 +580,7 @@ CONTAINS
 
       IF (trace .AND. (.NOT. trace_master .OR. para_env%mepos == 0)) THEN
          unit_nr = -1
-         IF (logger%para_env%ionode .OR. .NOT. trace_master) &
+         IF (logger%para_env%is_source() .OR. .NOT. trace_master) &
             unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
          WRITE (tracing_string, "(I6.6,A1,I6.6)") para_env%mepos, ":", para_env%num_pe
          IF (ASSOCIATED(trace_routines)) THEN
@@ -578,11 +593,13 @@ CONTAINS
       CALL section_vals_val_get(global_section, "TIMINGS%TIME_MPI", l_val=mp_collect_timings)
 
       SELECT CASE (i_diag)
-      CASE (do_diag_scalapack)
+      CASE (FM_DIAG_TYPE_SCALAPACK)
          globenv%diag_library = "ScaLAPACK"
-      CASE (do_diag_elpa)
+      CASE (FM_DIAG_TYPE_ELPA)
          globenv%diag_library = "ELPA"
          CALL cite_reference(Marek2014)
+      CASE (FM_DIAG_TYPE_CUSOLVER)
+         globenv%diag_library = "cuSOLVER"
       CASE DEFAULT
          CPABORT("Unknown diagonalization library specified")
       END SELECT
@@ -646,13 +663,13 @@ CONTAINS
       Slab_avr = Slab
       SReclaimable_avr = SReclaimable
       MemLikelyFree_avr = MemLikelyFree
-      CALL mp_sum(MemTotal_avr, para_env%group); MemTotal_avr = MemTotal_avr/para_env%num_pe/1024
-      CALL mp_sum(MemFree_avr, para_env%group); MemFree_avr = MemFree_avr/para_env%num_pe/1024
-      CALL mp_sum(Buffers_avr, para_env%group); Buffers_avr = Buffers_avr/para_env%num_pe/1024
-      CALL mp_sum(Cached_avr, para_env%group); Cached_avr = Cached_avr/para_env%num_pe/1024
-      CALL mp_sum(Slab_avr, para_env%group); Slab_avr = Slab_avr/para_env%num_pe/1024
-      CALL mp_sum(SReclaimable_avr, para_env%group); SReclaimable_avr = SReclaimable_avr/para_env%num_pe/1024
-      CALL mp_sum(MemLikelyFree_avr, para_env%group); MemLikelyFree_avr = MemLikelyFree_avr/para_env%num_pe/1024
+      CALL para_env%sum(MemTotal_avr); MemTotal_avr = MemTotal_avr/para_env%num_pe/1024
+      CALL para_env%sum(MemFree_avr); MemFree_avr = MemFree_avr/para_env%num_pe/1024
+      CALL para_env%sum(Buffers_avr); Buffers_avr = Buffers_avr/para_env%num_pe/1024
+      CALL para_env%sum(Cached_avr); Cached_avr = Cached_avr/para_env%num_pe/1024
+      CALL para_env%sum(Slab_avr); Slab_avr = Slab_avr/para_env%num_pe/1024
+      CALL para_env%sum(SReclaimable_avr); SReclaimable_avr = SReclaimable_avr/para_env%num_pe/1024
+      CALL para_env%sum(MemLikelyFree_avr); MemLikelyFree_avr = MemLikelyFree_avr/para_env%num_pe/1024
 
       MemTotal_min = -MemTotal
       MemFree_min = -MemFree
@@ -661,13 +678,13 @@ CONTAINS
       Slab_min = -Slab
       SReclaimable_min = -SReclaimable
       MemLikelyFree_min = -MemLikelyFree
-      CALL mp_max(MemTotal_min, para_env%group); MemTotal_min = -MemTotal_min/1024
-      CALL mp_max(MemFree_min, para_env%group); MemFree_min = -MemFree_min/1024
-      CALL mp_max(Buffers_min, para_env%group); Buffers_min = -Buffers_min/1024
-      CALL mp_max(Cached_min, para_env%group); Cached_min = -Cached_min/1024
-      CALL mp_max(Slab_min, para_env%group); Slab_min = -Slab_min/1024
-      CALL mp_max(SReclaimable_min, para_env%group); SReclaimable_min = -SReclaimable_min/1024
-      CALL mp_max(MemLikelyFree_min, para_env%group); MemLikelyFree_min = -MemLikelyFree_min/1024
+      CALL para_env%max(MemTotal_min); MemTotal_min = -MemTotal_min/1024
+      CALL para_env%max(MemFree_min); MemFree_min = -MemFree_min/1024
+      CALL para_env%max(Buffers_min); Buffers_min = -Buffers_min/1024
+      CALL para_env%max(Cached_min); Cached_min = -Cached_min/1024
+      CALL para_env%max(Slab_min); Slab_min = -Slab_min/1024
+      CALL para_env%max(SReclaimable_min); SReclaimable_min = -SReclaimable_min/1024
+      CALL para_env%max(MemLikelyFree_min); MemLikelyFree_min = -MemLikelyFree_min/1024
 
       MemTotal_max = MemTotal
       MemFree_max = MemFree
@@ -676,13 +693,13 @@ CONTAINS
       Slab_max = Slab
       SReclaimable_max = SReclaimable
       MemLikelyFree_max = MemLikelyFree
-      CALL mp_max(MemTotal_max, para_env%group); MemTotal_max = MemTotal_max/1024
-      CALL mp_max(MemFree_max, para_env%group); MemFree_max = MemFree_max/1024
-      CALL mp_max(Buffers_max, para_env%group); Buffers_max = Buffers_max/1024
-      CALL mp_max(Cached_max, para_env%group); Cached_max = Cached_max/1024
-      CALL mp_max(Slab_max, para_env%group); Slab_max = Slab_max/1024
-      CALL mp_max(SReclaimable_max, para_env%group); SReclaimable_max = SReclaimable_max/1024
-      CALL mp_max(MemLikelyFree_max, para_env%group); MemLikelyFree_max = MemLikelyFree_max/1024
+      CALL para_env%max(MemTotal_max); MemTotal_max = MemTotal_max/1024
+      CALL para_env%max(MemFree_max); MemFree_max = MemFree_max/1024
+      CALL para_env%max(Buffers_max); Buffers_max = Buffers_max/1024
+      CALL para_env%max(Cached_max); Cached_max = Cached_max/1024
+      CALL para_env%max(Slab_max); Slab_max = Slab_max/1024
+      CALL para_env%max(SReclaimable_max); SReclaimable_max = SReclaimable_max/1024
+      CALL para_env%max(MemLikelyFree_max); MemLikelyFree_max = MemLikelyFree_max/1024
 
       MemTotal = MemTotal/1024
       MemFree = MemFree/1024
@@ -836,6 +853,9 @@ CONTAINS
          CASE (GRID_BACKEND_CPU)
             WRITE (UNIT=output_unit, FMT="(T2,A,T75,A6)") &
                start_section_label//"| Grid backend", "CPU"
+         CASE (GRID_BACKEND_DGEMM)
+            WRITE (UNIT=output_unit, FMT="(T2,A,T75,A6)") &
+               start_section_label//"| Grid backend", "DGEMM"
          CASE (GRID_BACKEND_GPU)
             WRITE (UNIT=output_unit, FMT="(T2,A,T75,A6)") &
                start_section_label//"| Grid backend", "GPU"
@@ -922,7 +942,7 @@ CONTAINS
    SUBROUTINE read_cp2k_section(root_section, para_env, globenv)
 
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
 
       INTEGER                                            :: output_unit
@@ -1170,7 +1190,7 @@ CONTAINS
    SUBROUTINE cp2k_finalize(root_section, para_env, globenv, wdir, q_finalize)
 
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
       CHARACTER(LEN=*), OPTIONAL                         :: wdir
       LOGICAL, INTENT(IN), OPTIONAL                      :: q_finalize
@@ -1253,7 +1273,7 @@ CONTAINS
             WRITE (UNIT=iw, FMT="()")
             WRITE (UNIT=iw, FMT="(T2,A)") "-------------------------------------------------------------------------------"
          END IF
-         IF (cg_mode == CALLGRAPH_ALL .OR. para_env%ionode) &
+         IF (cg_mode == CALLGRAPH_ALL .OR. para_env%is_source()) &
             CALL timings_report_callgraph(TRIM(cg_filename)//".callgraph")
       END IF
 
@@ -1263,7 +1283,7 @@ CONTAINS
       CALL rm_mp_perf_env()
       CALL rm_timer_env()
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          iw = cp_print_key_unit_nr(logger, root_section, "GLOBAL%PROGRAM_RUN_INFO", &
                                    extension=".log")
 

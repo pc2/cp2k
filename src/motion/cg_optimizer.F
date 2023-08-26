@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -44,6 +44,7 @@ MODULE cg_optimizer
                                   section_vals_val_set
    USE kinds, ONLY: dp
    USE machine, ONLY: m_walltime
+   USE message_passing, ONLY: mp_para_env_type
    USE space_groups, ONLY: identify_space_group, &
                            print_spgr, &
                            spgr_apply_rotations_coord, &

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -125,6 +125,10 @@ CONTAINS
       CALL section_release(subsection)
 
       CALL create_tddfpt2_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      CALL create_bandstructure_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
@@ -254,6 +258,10 @@ CONTAINS
       CALL section_release(subsection)
 
       CALL create_dcdr_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      CALL create_vcd_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
@@ -389,6 +397,138 @@ CONTAINS
       END IF
 
    END SUBROUTINE create_dcdr_section
+
+! **************************************************************************************************
+!> \brief creates the input structure used to activate
+!>      calculation of VCD spectra using DFPT
+!> \param section ...
+!> \author Sandra Luber, Tomas Zimmermann, Edward Ditler
+! **************************************************************************************************
+   SUBROUTINE create_vcd_section(section)
+
+      TYPE(section_type), POINTER                        :: section
+
+      TYPE(keyword_type), POINTER                        :: keyword
+      TYPE(section_type), POINTER                        :: print_key, subsection
+
+      NULLIFY (keyword, print_key, subsection)
+
+      CPASSERT(.NOT. ASSOCIATED(section))
+
+      CALL section_create(section, __LOCATION__, name="VCD", &
+                          description="Carry out a VCD calculation.", &
+                          n_keywords=50, n_subsections=1, repeats=.FALSE.)
+
+      CALL keyword_create(keyword, __LOCATION__, name="_SECTION_PARAMETERS_", &
+                          description="controls the activation of the APT/AAT calculation", &
+                          usage="&VCD T", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="LIST_OF_ATOMS", &
+                          description="Specifies a list of atoms.", &
+                          usage="LIST {integer} {integer} .. {integer}", repeats=.TRUE., &
+                          n_var=-1, type_of_var=integer_t)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="DISTRIBUTED_ORIGIN", &
+                          variants=(/"DO_GAUGE"/), &
+                          description="Use the distributed origin (DO) gauge?", &
+                          usage="DISTRIBUTED_ORIGIN T", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="ORIGIN_DEPENDENT_MFP", &
+                          description="Use the origin dependent MFP operator.", &
+                          usage="ORIGIN_DEPENDENT_MFP T", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="ORBITAL_CENTER", &
+                          description="The orbital center.", &
+                          usage="ORBITAL_CENTER WANNIER", &
+                          default_i_val=current_orb_center_wannier, &
+                          enum_c_vals=s2a("WANNIER", "COMMON", "ATOM", "BOX"), &
+                          enum_desc=s2a("Use the Wannier centers.", &
+                                        "Use a common center (works only for an isolate molecule).", &
+                                        "Use the atoms as center.", &
+                                        "Boxing."), &
+                          enum_i_vals=(/current_orb_center_wannier, current_orb_center_common, &
+                                        current_orb_center_atom, current_orb_center_box/))
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      ! The origin of the magnetic dipole operator (r - MAGNETIC_ORIGIN) x momentum
+      CALL keyword_create(keyword, __LOCATION__, name="MAGNETIC_ORIGIN", &
+                          description="Gauge origin of the magnetic dipole operator.", &
+                          enum_c_vals=s2a("COM", "COAC", "USER_DEFINED", "ZERO"), &
+                          enum_desc=s2a("Use Center of Mass", &
+                                        "Use Center of Atomic Charges", &
+                                        "Use User-defined Point", &
+                                        "Use Origin of Coordinate System"), &
+                          enum_i_vals=(/use_mom_ref_com, &
+                                        use_mom_ref_coac, &
+                                        use_mom_ref_user, &
+                                        use_mom_ref_zero/), &
+                          default_i_val=use_mom_ref_zero)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="MAGNETIC_ORIGIN_REFERENCE", &
+                          description="User-defined reference point of the magnetic dipole operator.", &
+                          usage="REFERENCE_POINT x y z", &
+                          repeats=.FALSE., n_var=3, type_of_var=real_t, unit_str='bohr')
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      ! The origin of the coordinate system
+      CALL keyword_create(keyword, __LOCATION__, name="SPATIAL_ORIGIN", &
+                          description="Gauge origin of the velocity gauge factor/spatial origin.", &
+                          enum_c_vals=s2a("COM", "COAC", "USER_DEFINED", "ZERO"), &
+                          enum_desc=s2a("Use Center of Mass", &
+                                        "Use Center of Atomic Charges", &
+                                        "Use User-defined Point", &
+                                        "Use Origin of Coordinate System"), &
+                          enum_i_vals=(/use_mom_ref_com, &
+                                        use_mom_ref_coac, &
+                                        use_mom_ref_user, &
+                                        use_mom_ref_zero/), &
+                          default_i_val=use_mom_ref_zero)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SPATIAL_ORIGIN_REFERENCE", &
+                          description="User-defined reference point of the velocity gauge factor/spatial origin.", &
+                          usage="REFERENCE_POINT x y z", &
+                          repeats=.FALSE., n_var=3, type_of_var=real_t, unit_str='bohr')
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      NULLIFY (subsection)
+      CALL section_create(subsection, __LOCATION__, name="PRINT", &
+                          description="print results of the magnetic dipole moment calculation", &
+                          repeats=.FALSE.)
+
+      CALL cp_print_key_section_create(print_key, __LOCATION__, "VCD", &
+                                       description="Controls the printing of the APTs and AATs", &
+                                       print_level=low_print_level, add_last=add_last_numeric, filename="")
+      CALL section_add_subsection(subsection, print_key)
+      CALL section_release(print_key)
+
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (subsection)
+      CALL create_interp_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+   END SUBROUTINE create_vcd_section
 
 ! **************************************************************************************************
 !> \brief creates the input structure used to activate
@@ -1467,6 +1607,34 @@ CONTAINS
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
+      ! SOC functional
+
+      CALL section_create(subsection, __LOCATION__, name="SOC", &
+                          description="Is jet to be implemented", &
+                          n_keywords=2, n_subsections=0, repeats=.FALSE.)
+
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_FILTER", &
+                          variants=s2a("EPS_FILTER_MATRIX"), &
+                          description="The threshold used for sparse matrix operations", &
+                          usage="EPS_FILTER {real}", &
+                          type_of_var=real_t, &
+                          default_r_val=1.0E-10_dp)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="GRID", &
+                          variants=(/"ATOMIC_GRID"/), &
+                          description="Specification of the atomic angular and radial grids for "// &
+                          "a atomic kind. This keyword must be repeated for all kinds!  "// &
+                          "Usage: GRID < LEBEDEV_GRID > < RADIAL_GRID >", &
+                          usage="GRID {string} {integer} {integer}", &
+                          n_var=3, type_of_var=char_t, repeats=.TRUE.)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
       ! kernel XC functional
       CALL create_xc_section(subsection)
       CALL section_add_subsection(section, subsection)
@@ -1530,9 +1698,9 @@ CONTAINS
                                        each_iter_names=s2a("TDDFT_SCF"), each_iter_values=(/10/), &
                                        add_last=add_last_numeric, filename="RESTART")
       CALL keyword_create(keyword, __LOCATION__, name="BACKUP_COPIES", &
-                          description="Specifies the maximum index of backup copies.", &
+                          description="Specifies the maximum number of backup copies.", &
                           usage="BACKUP_COPIES {int}", &
-                          default_i_val=3)
+                          default_i_val=1)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
       CALL section_add_subsection(subsection, print_key)
@@ -1547,6 +1715,20 @@ CONTAINS
                           n_var=1, &
                           type_of_var=real_t, &
                           default_r_val=0.975_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="INTENSITY_THRESHOLD", &
+                          description="Threshold for oscillator strength to screen states.", &
+                          usage="Intensity_threshold 0.01", &
+                          n_var=1, &
+                          type_of_var=real_t, &
+                          default_r_val=0.0_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="STATE_LIST", &
+                          description="Specifies a list of states for the NTO calculations.", &
+                          usage="STATE_LIST {integer} {integer} .. {integer}", &
+                          n_var=-1, type_of_var=integer_t)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="CUBE_FILES", &
@@ -1597,6 +1779,43 @@ CONTAINS
                                        print_level=debug_print_level + 1, filename="CP2K_NEWTONX")
       CALL keyword_create(keyword, __LOCATION__, name="PRINT_VIRTUALS", &
                           description="Print occupied AND virtual molecular orbital coefficients", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="PRINT_PHASES", &
+                          description="Print phases of occupied and virtuals MOs.", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SCALE_WITH_PHASES", &
+                          description="Scale ES eigenvectors with phases of occupied and virtuals MOs.", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL section_add_subsection(subsection, print_key)
+      CALL section_release(print_key)
+
+      !! SOC PRINT SECTION
+      CALL cp_print_key_section_create(print_key, __LOCATION__, name="SOC_PRINT", &
+                                       description="Controls the printout of the tddfpt2_soc modul", &
+                                       print_level=debug_print_level + 1, filename="SOC")
+      CALL keyword_create(keyword, __LOCATION__, name="UNIT_eV", &
+                          description="Will detrement if output in eVolt will be printef.", &
+                          default_l_val=.TRUE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="UNIT_wn", &
+                          description="Will detrement if output in wavenumbers will be printed.", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SPLITTING", &
+                          description="Will add the SOC-Splitting as additional output", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SOME", &
+                          description="Will add the SOC-Matrix as additional output in a different file", &
                           default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
@@ -1699,6 +1918,139 @@ CONTAINS
       CALL keyword_release(keyword)
 
    END SUBROUTINE create_stda_section
+
+! **************************************************************************************************
+!> \brief creates an input section for electronic band structure calculations
+!> \param section section to create
+!> \par History
+!>    * 07.2023 created [Jan Wilhelm]
+! **************************************************************************************************
+   SUBROUTINE create_bandstructure_section(section)
+      TYPE(section_type), POINTER                        :: section
+
+      TYPE(keyword_type), POINTER                        :: keyword
+      TYPE(section_type), POINTER                        :: subsection
+
+      CPASSERT(.NOT. ASSOCIATED(section))
+      CALL section_create(section, __LOCATION__, name="BANDSTRUCTURE", &
+                          description="Parameters needed to set up a calculation for "// &
+                          "electronic level energies of molecules and the electronic band "// &
+                          "structure of materials from post-SCF schemes.", &
+                          n_keywords=1, n_subsections=1, repeats=.FALSE.)
+
+      NULLIFY (keyword, subsection)
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="_SECTION_PARAMETERS_", &
+                          description="Controls the activation of the band structure calculation.", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL create_gw_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+   END SUBROUTINE create_bandstructure_section
+
+! **************************************************************************************************
+!> \brief creates an input section for a GW calculation for the electronic band structure
+!> \param section section to create
+!> \par History
+!>    * 07.2023 created [Jan Wilhelm]
+! **************************************************************************************************
+   SUBROUTINE create_gw_section(section)
+      TYPE(section_type), POINTER                        :: section
+
+      TYPE(keyword_type), POINTER                        :: keyword
+
+      CPASSERT(.NOT. ASSOCIATED(section))
+      CALL section_create(section, __LOCATION__, name="GW", &
+                          description="Parameters needed to set up a GW calculation for "// &
+                          "electronic level energies of molecules and the band structure of "// &
+                          "materials (currently only 2D materials tested). For the GW algorithm "// &
+                          "for molecules, see [https://doi.org/10.1021/acs.jctc.0c01282]. "// &
+                          "For 2D materials, see [http://arxiv.org/abs/2306.16066].", &
+                          n_keywords=1, n_subsections=1, repeats=.FALSE.)
+
+      NULLIFY (keyword)
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="_SECTION_PARAMETERS_", &
+                          description="Controls the activation of the GW calculation.", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="NUM_TIME_FREQ_POINTS", &
+                          description="Number of discrete points for the imaginary-time grid and "// &
+                          "the imaginary-frequency grid. The more points, the more precise is "// &
+                          "the calculation. Typically, 10 points are good for 0.1 eV precision "// &
+                          "of band structures and molecular energy levels, 20 points for 0.03 eV "// &
+                          "precision, and 30 points for 0.01 eV precision, see Table I in "// &
+                          "[https://doi.org/10.1021/acs.jctc.0c01282]. GW computation time "// &
+                          "increases roughly linearly with NUM_TIME_FREQ_POINTS.", &
+                          usage="NUM_TIME_FREQ_POINTS 30", &
+                          default_i_val=30)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_FILTER", &
+                          description="Determines a threshold for the DBCSR based "// &
+                          "sparse multiplications. Normally, this EPS_FILTER determines accuracy "// &
+                          "and timing of low-scaling GW calculations. (Lower filter means higher "// &
+                          "numerical precision, but higher computational cost.)", &
+                          usage="EPS_FILTER 1.0E-6_dp", &
+                          default_r_val=1.0E-8_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="EPS_3C_INT", &
+                          description="Determines threshold for computing three-center "// &
+                          "integrals of the truncated Coulomb operator. "// &
+                          "(Lower filter means more integrals are computed (= higher "// &
+                          "numerical precision), but higher computational cost.)", &
+                          usage="EPS_3C_INT 1.0E-6_dp", &
+                          default_r_val=1.0E-8_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="SIZE_LATTICE_SUM_V", &
+                          description="Determines number of cells used for summing the  "// &
+                          "cells R in the Coulomb matrix, "// &
+                          "V_PQ(k) = \sum_R <P,cell=0 | 1/r | Q,cell=R>. ", &
+                          usage="SIZE_LATTICE_SUM_V 4", &
+                          default_i_val=5)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="KPOINTS_CHI_EPS_W", &
+         description="Monkhorst-Pack k-point mesh of size N_x, N_y, N_z. Only even"// &
+         "meshes implemented. For non-periodic directions α, choose N_α = 1. "// &
+         "The N_x, N_y, N_z mesh and a N_x+2, N_y+2, N_z+2 mesh is used for "// &
+         "extrapolating the k-point integration of the screened Coulomb "// &
+         "interaction. Automatic choice of the k-point mesh for negative "// &
+         "values, e.g. KPOINTS_CHI_EPS_W -1 -1 -1.", &
+         usage="KPOINTS_CHI_EPS_W  N_x  N_y  N_z", &
+         n_var=3, type_of_var=integer_t, default_i_vals=(/-1, -1, -1/))
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="KPOINTS_SIGMA", &
+         description="Monkhorst-Pack k-point mesh of size N_x, N_y, N_z. "// &
+         "For non-periodic directions α, choose N_α = 1. "// &
+         "Automatic choice of the k-point mesh for negative "// &
+         "values, e.g. KPOINTS_SELF_ENERGY -1 -1 -1. If you like to compute GW "// &
+         "quasiparticle energies along a k-path, you can specify the k-path in "// &
+         "&DFT/&PRINT/&BAND_STRUCTURE/&KPOINT_SET.", &
+         usage="KPOINTS_SIGMA N_x  N_y  N_z", &
+         n_var=3, type_of_var=integer_t, default_i_vals=(/-1, -1, -1/))
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+   END SUBROUTINE create_gw_section
 
 ! **************************************************************************************************
 !> \brief creates an input section for a tip scan calculation

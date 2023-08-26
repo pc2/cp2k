@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -40,12 +40,12 @@ MODULE cryssym
       INTEGER                                     :: punit = -1
       INTEGER                                     :: istriz = -1
       REAL(KIND=dp)                               :: delta = 1.0e-8_dp
-      REAL(KIND=dp), DIMENSION(3, 3)              :: hmat
+      REAL(KIND=dp), DIMENSION(3, 3)              :: hmat = 0.0_dp
       ! KPOINTS
       REAL(KIND=dp), DIMENSION(3)                 :: wvk0 = 0.0_dp
-      INTEGER, DIMENSION(3)                       :: mesh
-      INTEGER                                     :: nkpoint
-      INTEGER                                     :: nat
+      INTEGER, DIMENSION(3)                       :: mesh = 0
+      INTEGER                                     :: nkpoint = 0
+      INTEGER                                     :: nat = 0
       INTEGER, DIMENSION(:), ALLOCATABLE          :: atype
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: scoord
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: xkpoint
@@ -54,10 +54,10 @@ MODULE cryssym
       INTEGER, DIMENSION(:, :), ALLOCATABLE       :: kplink
       INTEGER, DIMENSION(:), ALLOCATABLE          :: kpop
       !SPGLIB
-      CHARACTER(len=11)                           :: international_symbol
-      CHARACTER(len=6)                            :: pointgroup_symbol
-      CHARACTER(len=10)                           :: schoenflies
-      INTEGER                                     :: n_operations
+      CHARACTER(len=11)                           :: international_symbol = ""
+      CHARACTER(len=6)                            :: pointgroup_symbol = ""
+      CHARACTER(len=10)                           :: schoenflies = ""
+      INTEGER                                     :: n_operations = 0
       INTEGER, DIMENSION(:, :, :), ALLOCATABLE    :: rotations
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: translations
    END TYPE csym_type
@@ -185,10 +185,11 @@ CONTAINS
             tra_mat = 0
             ierr = spg_get_pointgroup(csym%pointgroup_symbol, tra_mat, &
                                       csym%rotations, csym%n_operations)
+
+            CALL strip_control_codes(csym%international_symbol)
+            CALL strip_control_codes(csym%schoenflies)
+            CALL strip_control_codes(csym%pointgroup_symbol)
          END IF
-         CALL strip_control_codes(csym%international_symbol)
-         CALL strip_control_codes(csym%schoenflies)
-         CALL strip_control_codes(csym%pointgroup_symbol)
       END IF
       csym%symlib = spglib
 

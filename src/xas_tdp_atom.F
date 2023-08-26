@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -31,15 +31,13 @@ MODULE xas_tdp_atom
                                               cp_dbcsr_cholesky_invert
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cp_para_env,                     ONLY: cp_para_env_create
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
-        dbcsr_create, dbcsr_distribution_get, dbcsr_distribution_new, dbcsr_distribution_release, &
-        dbcsr_distribution_type, dbcsr_filter, dbcsr_finalize, dbcsr_get_block_p, &
-        dbcsr_get_stored_coordinates, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
-        dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, &
-        dbcsr_put_block, dbcsr_release, dbcsr_replicate_all, dbcsr_type, dbcsr_type_antisymmetric, &
-        dbcsr_type_symmetric
+        dbcsr_copy, dbcsr_create, dbcsr_distribution_get, dbcsr_distribution_new, &
+        dbcsr_distribution_release, dbcsr_distribution_type, dbcsr_filter, dbcsr_finalize, &
+        dbcsr_get_block_p, dbcsr_get_stored_coordinates, dbcsr_iterator_blocks_left, &
+        dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
+        dbcsr_p_type, dbcsr_put_block, dbcsr_release, dbcsr_replicate_all, dbcsr_set, dbcsr_type, &
+        dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, dbcsr_type_symmetric
    USE dbt_api,                         ONLY: dbt_destroy,&
                                               dbt_get_block,&
                                               dbt_iterator_blocks_left,&
@@ -61,11 +59,9 @@ MODULE xas_tdp_atom
    USE mathlib,                         ONLY: get_diag,&
                                               invmat_symm
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_comm_split_direct,&
-                                              mp_irecv,&
-                                              mp_isend,&
-                                              mp_sum,&
-                                              mp_sync,&
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type,&
+                                              mp_request_type,&
                                               mp_waitall
    USE orbital_pointers,                ONLY: indco,&
                                               indso,&
@@ -96,6 +92,7 @@ MODULE xas_tdp_atom
    USE qs_overlap,                      ONLY: build_overlap_matrix_simple
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_tddfpt2_soc_types,            ONLY: soc_atom_env_type
    USE spherical_harmonics,             ONLY: clebsch_gordon,&
                                               clebsch_gordon_deallocate,&
                                               clebsch_gordon_init
@@ -140,7 +137,13 @@ MODULE xas_tdp_atom
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'xas_tdp_atom'
 
-   PUBLIC :: init_xas_atom_env, integrate_fxc_atoms, integrate_soc_atoms
+   PUBLIC :: init_xas_atom_env, &
+             integrate_fxc_atoms, &
+             integrate_soc_atoms, &
+             calculate_density_coeffs, &
+             compute_sphi_so, &
+             truncate_radial_grid, &
+             init_xas_atom_grid_harmo
 
 CONTAINS
 
@@ -150,13 +153,15 @@ CONTAINS
 !> \param xas_tdp_env ...
 !> \param xas_tdp_control ...
 !> \param qs_env ...
+!> \param ltddfpt ...
 ! **************************************************************************************************
-   SUBROUTINE init_xas_atom_env(xas_atom_env, xas_tdp_env, xas_tdp_control, qs_env)
+   SUBROUTINE init_xas_atom_env(xas_atom_env, xas_tdp_env, xas_tdp_control, qs_env, ltddfpt)
 
       TYPE(xas_atom_env_type), POINTER                   :: xas_atom_env
       TYPE(xas_tdp_env_type), POINTER                    :: xas_tdp_env
       TYPE(xas_tdp_control_type), POINTER                :: xas_tdp_control
       TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, OPTIONAL                                  :: ltddfpt
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'init_xas_atom_env'
 
@@ -177,6 +182,7 @@ CONTAINS
       nex_kinds = xas_tdp_env%nex_kinds
       nex_atoms = xas_tdp_env%nex_atoms
       do_xc = xas_tdp_control%do_xc
+      IF (PRESENT(ltddfpt) .AND. ltddfpt) do_xc = .FALSE.
       nspins = 1; IF (xas_tdp_control%do_uks .OR. xas_tdp_control%do_roks) nspins = 2
 
       xas_atom_env%nspins = nspins
@@ -210,7 +216,9 @@ CONTAINS
       END DO !ikind
 
 !  Compute the coefficients to expand the density in the RI_XAS basis, if requested
-      IF (do_xc .AND. (.NOT. xas_tdp_control%xps_only)) CALL calculate_density_coeffs(xas_atom_env, qs_env)
+      IF (do_xc .AND. (.NOT. xas_tdp_control%xps_only)) THEN
+         CALL calculate_density_coeffs(xas_atom_env=xas_atom_env, qs_env=qs_env)
+      END IF
 
       CALL timestop(handle)
 
@@ -519,8 +527,8 @@ CONTAINS
       REAL(dp)                                           :: dist2, rad2, ri(3), rij(3), rj(3)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_1d_i_p_type), DIMENSION(:), POINTER        :: my_neighbor_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
       NULLIFY (particle_set, para_env, my_neighbor_set, cell)
@@ -570,7 +578,7 @@ CONTAINS
 
       END DO !iter
       CALL dbcsr_iterator_stop(iter)
-      CALL mp_sum(n_neighbors, para_env%group)
+      CALL para_env%sum(n_neighbors)
 
       ! Allocate the neighbor_set arrays at the correct length
       DO ibase = 1, nbase
@@ -610,7 +618,7 @@ CONTAINS
 
       ! Make sure the info is shared among the procs
       DO ibase = 1, nbase
-         CALL mp_sum(my_neighbor_set(ibase)%array, para_env%group)
+         CALL para_env%sum(my_neighbor_set(ibase)%array)
       END DO
 
       ! Gather all indices if asked for it
@@ -669,10 +677,9 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'get_exat_ri_sinv'
 
-      INTEGER                                            :: blk, dest, group, handle, iat, ikind, &
-                                                            inb, ir, is, jat, jnb, natom, nnb, &
-                                                            npcols, nprows, source, tag
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: recv_req, send_req
+      INTEGER                                            :: blk, dest, group_handle, handle, iat, &
+                                                            ikind, inb, ir, is, jat, jnb, natom, &
+                                                            nnb, npcols, nprows, source, tag
       INTEGER, DIMENSION(:), POINTER                     :: col_dist, nsgf, row_dist
       INTEGER, DIMENSION(:, :), POINTER                  :: pgrid
       LOGICAL                                            :: found_risinv, found_whole
@@ -683,10 +690,12 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_2d_r_p_type), ALLOCATABLE, DIMENSION(:)    :: recv_buff, send_buff
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_distribution_type)                      :: sinv_dist
       TYPE(dbcsr_distribution_type), POINTER             :: dbcsr_dist
       TYPE(dbcsr_iterator_type)                          :: iter
+      TYPE(mp_comm_type)                                 :: group
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_request_type), ALLOCATABLE, DIMENSION(:)   :: recv_req, send_req
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
       NULLIFY (pgrid, dbcsr_dist, row_dist, col_dist, nsgf, particle_set, block_whole, block_risinv)
@@ -707,7 +716,8 @@ CONTAINS
       END DO
 
       !Create the ri_sinv matrix based on some arbitrary dbcsr_dist
-      CALL dbcsr_distribution_get(dbcsr_dist, group=group, pgrid=pgrid, nprows=nprows, npcols=npcols)
+      CALL dbcsr_distribution_get(dbcsr_dist, group=group_handle, pgrid=pgrid, nprows=nprows, npcols=npcols)
+      CALL group%set_handle(group_handle)
 
       ALLOCATE (row_dist(nnb), col_dist(nnb))
       DO inb = 1, nnb
@@ -715,7 +725,7 @@ CONTAINS
          col_dist(inb) = MODULO(npcols - inb, npcols)
       END DO
 
-      CALL dbcsr_distribution_new(sinv_dist, group=group, pgrid=pgrid, row_dist=row_dist, &
+      CALL dbcsr_distribution_new(sinv_dist, group=group_handle, pgrid=pgrid, row_dist=row_dist, &
                                   col_dist=col_dist)
 
       CALL dbcsr_create(matrix=ri_sinv, name="RI_SINV", matrix_type=dbcsr_type_symmetric, &
@@ -776,7 +786,7 @@ CONTAINS
             is = is + 1
             send_buff(is)%array => block_whole
             tag = natom*inb + jnb
-            CALL mp_isend(msgin=send_buff(is)%array, dest=dest, comm=group, request=send_req(is), tag=tag)
+            CALL group%isend(msgin=send_buff(is)%array, dest=dest, request=send_req(is), tag=tag)
 
          END IF
 
@@ -802,8 +812,8 @@ CONTAINS
          tag = natom*inb + jnb
          ir = ir + 1
          recv_buff(ir)%array => block_risinv
-         CALL mp_irecv(msgout=recv_buff(ir)%array, source=source, request=recv_req(ir), &
-                       tag=tag, comm=group)
+         CALL group%irecv(msgout=recv_buff(ir)%array, source=source, request=recv_req(ir), &
+                          tag=tag)
 
       END DO
       CALL dbcsr_iterator_stop(iter)
@@ -869,7 +879,6 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: pmat_block, pmat_blockt, sinv_block, &
                                                             sinv_blockt
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_distribution_type), POINTER             :: dbcsr_dist
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: overlap, rho_ao
       TYPE(dbcsr_type)                                   :: ri_sinv
@@ -878,6 +887,7 @@ CONTAINS
       TYPE(dbt_type)                                     :: pqX
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_orb, basis_set_ri
       TYPE(libint_potential_type)                        :: pot
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: ab_list, ac_list, sab_ri
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -998,7 +1008,8 @@ CONTAINS
          !Do the actual contraction: coeff_y = sum_pq sum_x P_pq (phi_p phi_q xi_x) S_xy^-1
 
 !$OMP PARALLEL DEFAULT(NONE) &
-!$OMP SHARED(pqX,rho_ao,ri_sinv,xas_atom_env,blk_size_ri,idx_to_nb,nspins,nnb,neighbors,iex,factor) &
+!$OMP SHARED(pqX,rho_ao,ri_sinv,xas_atom_env) &
+!$OMP SHARED(blk_size_ri,idx_to_nb,nspins,nnb,neighbors,iex,factor) &
 !$OMP PRIVATE(iter,ind,t_block,tensor_found,iatom,jatom,katom,inb,prefac,ispin) &
 !$OMP PRIVATE(pmat_block,pmat_found,pmat_blockt,pmat_foundt,work1,work2,jnb,ri_at) &
 !$OMP PRIVATE(sinv_block,sinv_found,sinv_blockt,sinv_foundt)
@@ -1092,7 +1103,7 @@ CONTAINS
             DO iat = 1, natom
                IF ((.NOT. ANY(xas_atom_env%exat_neighbors(iex)%array == iat)) &
                    .AND. (.NOT. xas_atom_env%excited_atoms(iex) == iat)) CYCLE
-               CALL mp_sum(xas_atom_env%ri_dcoeff(iat, ispin, iex)%array, para_env%group)
+               CALL para_env%sum(xas_atom_env%ri_dcoeff(iat, ispin, iex)%array)
             END DO !iat
          END DO !ispin
       END DO !iex
@@ -1711,10 +1722,10 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: rexp
       REAL(dp), DIMENSION(:, :), POINTER                 :: dgr1, dgr2, ga, gr, slm, zet
       REAL(dp), DIMENSION(:, :, :), POINTER              :: dga1, dga2, dslm_dxyz
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(gto_basis_set_type), POINTER                  :: ri_basis
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
       NULLIFY (qs_kind_set, harmonics, grid_atom, slm, dslm_dxyz, ri_basis, lmax, lmin, npgf)
@@ -1870,14 +1881,14 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_fxc_atoms'
 
       INTEGER :: batch_size, dir, er, ex_bo(2), handle, i, iatom, ibatch, iex, ikind, inb, ipe, &
-         mepos, na, natom, nb, nb_bo(2), nbatch, nbk, nex_atom, nr, num_pe, sr, subcomm
+         mepos, na, natom, nb, nb_bo(2), nbatch, nbk, nex_atom, nr, num_pe, sr
       INTEGER, DIMENSION(2, 3)                           :: bounds
       INTEGER, DIMENSION(:), POINTER                     :: exat_neighbors
       LOGICAL                                            :: do_gga, do_sc, do_sf
       TYPE(batch_info_type)                              :: batch_info
       TYPE(cp_1d_r_p_type), DIMENSION(:, :), POINTER     :: ri_dcoeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(section_vals_type), POINTER                   :: input, xc_functionals
@@ -1930,9 +1941,7 @@ CONTAINS
       batch_info%ipe = ipe
 
       !create a subcommunicator for this batch
-      CALL mp_comm_split_direct(para_env%group, subcomm, ibatch)
-      NULLIFY (batch_info%para_env)
-      CALL cp_para_env_create(batch_info%para_env, subcomm)
+      CALL batch_info%para_env%from_split(para_env, ibatch)
 
 !  Precompute the spherical orbital of the RI basis (and maybe their gradient) on the grids of the
 !  excited atoms. Needed for the GGA integration and to actually put the density on the grid
@@ -1984,12 +1993,12 @@ CONTAINS
          END DO
 
          ! make sure contributions from different procs are summed up
-         CALL mp_sum(rho_set%rhoa, batch_info%para_env%group)
-         CALL mp_sum(rho_set%rhob, batch_info%para_env%group)
+         CALL batch_info%para_env%sum(rho_set%rhoa)
+         CALL batch_info%para_env%sum(rho_set%rhob)
          IF (do_gga) THEN
             DO dir = 1, 3
-               CALL mp_sum(rho_set%drhoa(dir)%array, batch_info%para_env%group)
-               CALL mp_sum(rho_set%drhob(dir)%array, batch_info%para_env%group)
+               CALL batch_info%para_env%sum(rho_set%drhoa(dir)%array)
+               CALL batch_info%para_env%sum(rho_set%drhob(dir)%array)
             END DO
          END IF
 
@@ -2024,7 +2033,7 @@ CONTAINS
       CALL release_batch_info(batch_info)
 
       !Not necessary to sync, but makes sure that any load inbalance is reported here
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
 
       CALL timestop(handle)
 
@@ -2067,10 +2076,10 @@ CONTAINS
       REAL(dp), DIMENSION(:, :, :), POINTER              :: dga1, dga2
       TYPE(cp_2d_r_p_type), ALLOCATABLE, DIMENSION(:)    :: int_so, vxc
       TYPE(cp_3d_r_p_type), ALLOCATABLE, DIMENSION(:)    :: vxg
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(gto_basis_set_type), POINTER                  :: ri_basis
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
       NULLIFY (grid_atom, ri_basis, qs_kind_set, ga, gr, dgr1, dgr2, lmax, lmin, npgf)
@@ -2216,7 +2225,7 @@ CONTAINS
       ri_sphi_so => xas_atom_env%ri_sphi_so(ikind)%array
       ALLOCATE (int_sgf(nsgf, nsgf))
       DO i = 1, ub
-         CALL mp_sum(int_so(i)%array, batch_info%para_env%group)
+         CALL batch_info%para_env%sum(int_so(i)%array)
          CALL contract_so2sgf(int_sgf, int_so(i)%array, ri_basis, ri_sphi_so)
          CALL daxpy(nsgf*nsgf, 1.0_dp, int_sgf, 1, int_fxc(iatom, i)%array, 1)
       END DO
@@ -3194,13 +3203,15 @@ CONTAINS
 !> \param V the potential (put on the grid and weighted) to integrate
 !> \param ikind the atomic kind for which we integrate
 !> \param qs_env ...
+!> \param soc_atom_env ...
 ! **************************************************************************************************
-   SUBROUTINE integrate_so_dxdy_prod(intso, V, ikind, qs_env)
+   SUBROUTINE integrate_so_dxdy_prod(intso, V, ikind, qs_env, soc_atom_env)
 
       REAL(dp), DIMENSION(:, :, :), INTENT(INOUT)        :: intso
       REAL(dp), DIMENSION(:, :), INTENT(IN)              :: V
       INTEGER, INTENT(IN)                                :: ikind
       TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(soc_atom_env_type), OPTIONAL, POINTER         :: soc_atom_env
 
       INTEGER                                            :: i, ipgf, iset, iso, j, jpgf, jset, jso, &
                                                             k, l, maxso, na, nr, nset, starti, &
@@ -3218,8 +3229,14 @@ CONTAINS
       NULLIFY (grid_atom, harmonics, basis, qs_kind_set, dslm_dxyz, slm, lmin, lmax, npgf, zet)
 
       CALL get_qs_env(qs_env, qs_kind_set=qs_kind_set)
-      CALL get_qs_kind(qs_kind_set(ikind), basis_set=basis, basis_type="ORB", harmonics=harmonics, &
-                       grid_atom=grid_atom)
+      CALL get_qs_kind(qs_kind_set(ikind), basis_set=basis, basis_type="ORB")
+      IF (PRESENT(soc_atom_env)) THEN
+         grid_atom => soc_atom_env%grid_atom_set(ikind)%grid_atom
+         harmonics => soc_atom_env%harmonics_atom_set(ikind)%harmonics_atom
+      ELSE
+         CALL get_qs_kind(qs_kind_set(ikind), basis_set=basis, basis_type="ORB", harmonics=harmonics, &
+                          grid_atom=grid_atom)
+      END IF
 
       na = grid_atom%ng_sphere
       nr = grid_atom%nr
@@ -3344,19 +3361,22 @@ CONTAINS
 !> \param matrix_soc the matrix where the SOC is stored
 !> \param xas_atom_env ...
 !> \param qs_env ...
+!> \param soc_atom_env ...
 !> \note We compute: <da_dx|V\(4c^2-2V)|db_dy> - <da_dy|V\(4c^2-2V)|db_dx>, where V is a model
 !>       potential on the atomic grid. What we get is purely imaginary
 ! **************************************************************************************************
-   SUBROUTINE integrate_soc_atoms(matrix_soc, xas_atom_env, qs_env)
+   SUBROUTINE integrate_soc_atoms(matrix_soc, xas_atom_env, qs_env, soc_atom_env)
 
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_soc
-      TYPE(xas_atom_env_type), POINTER                   :: xas_atom_env
+      TYPE(xas_atom_env_type), OPTIONAL, POINTER         :: xas_atom_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(soc_atom_env_type), OPTIONAL, POINTER         :: soc_atom_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_soc_atoms'
 
       INTEGER                                            :: blk, handle, i, iat, ikind, ir, jat, &
                                                             maxso, na, nkind, nr, nset, nsgf
+      LOGICAL                                            :: all_potential_present
       REAL(dp)                                           :: zeff
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: Vr
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: V
@@ -3371,30 +3391,39 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
+!!DEBUG
+      CALL timeset(routineN, handle)
+
       NULLIFY (int_soc, basis, qs_kind_set, sphi_so, matrix_s, grid)
       NULLIFY (particle_set)
 
-      CALL timeset(routineN, handle)
-
-!  Initialization
+      !  Initialization
       CALL get_qs_env(qs_env, nkind=nkind, qs_kind_set=qs_kind_set, matrix_s=matrix_s, &
                       particle_set=particle_set)
+
+      ! all_potential_present
+      CALL get_qs_kind_set(qs_kind_set, all_potential_present=all_potential_present)
+
+      ! Loop over the kinds to compute the integrals
       ALLOCATE (int_soc(nkind))
-
-!  Loop over the kinds to compute the integrals
       DO ikind = 1, nkind
-
-         CALL get_qs_kind(qs_kind_set(ikind), basis_set=basis, basis_type="ORB", zeff=zeff, grid_atom=grid)
+         CALL get_qs_kind(qs_kind_set(ikind), basis_set=basis, basis_type="ORB", zeff=zeff)
+         IF (PRESENT(soc_atom_env)) THEN
+            grid => soc_atom_env%grid_atom_set(ikind)%grid_atom
+         ELSE
+            CALL get_qs_kind(qs_kind_set(ikind), grid_atom=grid)
+         END IF
          CALL get_gto_basis_set(basis, nset=nset, maxso=maxso)
          ALLOCATE (intso(nset*maxso, nset*maxso, 3))
 
          ! compute the model potential on the grid
          nr = grid%nr
          na = grid%ng_sphere
+
          ALLOCATE (Vr(nr))
          CALL calculate_model_potential(Vr, grid, zeff)
 
-         !Compute V/(4c^2-2V) and weight it
+         ! Compute V/(4c^2-2V) and weight it
          ALLOCATE (V(na, nr))
          V = 0.0_dp
          DO ir = 1, nr
@@ -3404,14 +3433,22 @@ CONTAINS
          DEALLOCATE (Vr)
 
          ! compute the integral <da_dx|...|db_dy> in terms of so
-         CALL integrate_so_dxdy_prod(intso, V, ikind, qs_env)
+         IF (PRESENT(xas_atom_env)) THEN
+            CALL integrate_so_dxdy_prod(intso, V, ikind, qs_env)
+         ELSE
+            CALL integrate_so_dxdy_prod(intso, V, ikind, qs_env, soc_atom_env)
+         END IF
          DEALLOCATE (V)
 
          ! contract in terms of sgf
          CALL get_gto_basis_set(basis, nsgf=nsgf)
          ALLOCATE (int_soc(ikind)%array(nsgf, nsgf, 3))
          intsgf => int_soc(ikind)%array
-         sphi_so => xas_atom_env%orb_sphi_so(ikind)%array
+         IF (PRESENT(xas_atom_env)) THEN
+            sphi_so => xas_atom_env%orb_sphi_so(ikind)%array
+         ELSE
+            sphi_so => soc_atom_env%orb_sphi_so(ikind)%array
+         END IF
          intsgf = 0.0_dp
 
          DO i = 1, 3
@@ -3421,31 +3458,40 @@ CONTAINS
          DEALLOCATE (intso)
       END DO !ikind
 
-!  Build the matrix_soc based on the matrix_s (but anti-symmetric)
-      DO i = 1, 3
-         CALL dbcsr_create(matrix_soc(i)%matrix, name="SOC MATRIX", template=matrix_s(1)%matrix, &
-                           matrix_type=dbcsr_type_antisymmetric)
-      END DO
-
-!  Iterate over its diagonal blocks and fill=it
-      CALL dbcsr_iterator_start(iter, matrix_s(1)%matrix)
-      DO WHILE (dbcsr_iterator_blocks_left(iter))
-
-         CALL dbcsr_iterator_next_block(iter, row=iat, column=jat, blk=blk)
-         IF (.NOT. iat == jat) CYCLE
-         ikind = particle_set(iat)%atomic_kind%kind_number
-
+      ! Build the matrix_soc based on the matrix_s (but anti-symmetric)
+      IF ((PRESENT(xas_atom_env)) .OR. all_potential_present) THEN
          DO i = 1, 3
-            CALL dbcsr_put_block(matrix_soc(i)%matrix, iat, iat, int_soc(ikind)%array(:, :, i))
+            CALL dbcsr_create(matrix_soc(i)%matrix, name="SOC MATRIX", template=matrix_s(1)%matrix, &
+                              matrix_type=dbcsr_type_antisymmetric)
          END DO
+         !  Iterate over its diagonal blocks and fill=it
+         CALL dbcsr_iterator_start(iter, matrix_s(1)%matrix)
+         DO WHILE (dbcsr_iterator_blocks_left(iter))
 
-      END DO !iat
-      CALL dbcsr_iterator_stop(iter)
+            CALL dbcsr_iterator_next_block(iter, row=iat, column=jat, blk=blk)
+            IF (.NOT. iat == jat) CYCLE
+            ikind = particle_set(iat)%atomic_kind%kind_number
+
+            DO i = 1, 3
+               CALL dbcsr_put_block(matrix_soc(i)%matrix, iat, iat, int_soc(ikind)%array(:, :, i))
+            END DO
+
+         END DO !iat
+         CALL dbcsr_iterator_stop(iter)
+      ELSE  ! pseudopotentials here
+         DO i = 1, 3
+            CALL dbcsr_create(matrix_soc(i)%matrix, name="SOC MATRIX", template=matrix_s(1)%matrix, &
+                              matrix_type=dbcsr_type_no_symmetry)
+            CALL dbcsr_set(matrix_soc(i)%matrix, 0.0_dp)
+            CALL dbcsr_copy(matrix_soc(i)%matrix, soc_atom_env%soc_pp(i, 1)%matrix)
+         END DO
+      END IF
+
       DO i = 1, 3
          CALL dbcsr_finalize(matrix_soc(i)%matrix)
       END DO
 
-! Clean-up
+      ! Clean-up
       DO ikind = 1, nkind
          DEALLOCATE (int_soc(ikind)%array)
       END DO

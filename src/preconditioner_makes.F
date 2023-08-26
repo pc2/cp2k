@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -83,7 +83,7 @@ CONTAINS
       TYPE(dbcsr_type), OPTIONAL, POINTER                :: matrix_s, matrix_t
       TYPE(cp_fm_type), INTENT(IN)                       :: mo_coeff
       REAL(KIND=dp)                                      :: energy_homo
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues_ot
+      REAL(KIND=dp), DIMENSION(:)                        :: eigenvalues_ot
       REAL(KIND=dp)                                      :: energy_gap
       INTEGER                                            :: my_solver_type
 
@@ -377,7 +377,7 @@ CONTAINS
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(cp_fm_type), INTENT(IN)                       :: matrix_c0
       TYPE(dbcsr_type), POINTER                          :: matrix_h, matrix_s
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: c0_evals
+      REAL(KIND=dp), DIMENSION(:)                        :: c0_evals
       REAL(KIND=dp)                                      :: energy_gap
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'make_full_all'
@@ -552,7 +552,7 @@ CONTAINS
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(cp_fm_type), INTENT(IN)                       :: matrix_c0
       TYPE(dbcsr_type), POINTER                          :: matrix_h
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: c0_evals
+      REAL(KIND=dp), DIMENSION(:)                        :: c0_evals
       REAL(KIND=dp)                                      :: energy_gap
 
       CHARACTER(len=*), PARAMETER :: routineN = 'make_full_all_ortho'

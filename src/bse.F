@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,12 +20,11 @@ MODULE bse
                                               cp_fm_set_all,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE group_dist_types,                ONLY: get_group_dist,&
                                               group_dist_d1_type
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_alltoall,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type,&
+                                              mp_request_type
    USE mp2_types,                       ONLY: integ_mat_buffer_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE rpa_communication,               ONLY: communicate_buffer
@@ -64,7 +63,7 @@ CONTAINS
       INTEGER                                            :: homo, virtual, num_Z_vectors, max_iter
       REAL(KIND=dp)                                      :: threshold_min_trans
       REAL(KIND=dp), DIMENSION(:)                        :: Eigenval
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'do_subspace_iterations'
 
@@ -139,7 +138,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :)                     :: M_ji_tmp, RI_vector
       INTEGER                                            :: homo, virtual, num_Z_vectors, &
                                                             local_RI_size
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       INTEGER                                            :: i_Z_vector, LLL
 
@@ -163,8 +162,8 @@ CONTAINS
 
       END DO
 
-      ! we make the mp_sum to sum over all RI basis functions
-      CALL mp_sum(BZ, para_env%group)
+      ! we make the sum over all RI basis functions
+      CALL para_env%sum(BZ)
 
    END SUBROUTINE
 
@@ -193,7 +192,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:)                        :: Eigenval
       INTEGER                                            :: homo, virtual, num_Z_vectors, &
                                                             local_RI_size
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'compute_AZ'
 
@@ -224,8 +223,8 @@ CONTAINS
 
       END DO
 
-      ! we make the mp_sum to sum over all RI basis functions
-      CALL mp_sum(AZ, para_env%group)
+      ! we make the sum over all RI basis functions
+      CALL para_env%sum(AZ)
 
       ! add (e_a-e_i)*Z_ia
       DO i_occ = 1, homo
@@ -383,7 +382,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: dimen_RI, homo, virtual, dimen_ia
       TYPE(group_dist_d1_type), INTENT(IN)               :: gd_array
       INTEGER, INTENT(IN)                                :: color_sub
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'mult_B_with_W_and_fill_local_3c_arrays'
 
@@ -481,7 +480,7 @@ CONTAINS
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_S
       TYPE(group_dist_d1_type), INTENT(IN)               :: gd_array
       INTEGER, INTENT(IN)                                :: color_sub, small_size, big_size, dimen_RI
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'allocate_and_fill_local_array'
 
@@ -491,10 +490,10 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: entry_counter, mepos_from_RI_index, &
                                                             num_entries_rec, num_entries_send
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
-      INTEGER, DIMENSION(:, :), POINTER                  :: req_array
       REAL(KIND=dp)                                      :: matrix_el
       TYPE(integ_mat_buffer_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: buffer_rec, buffer_send
+      TYPE(mp_request_type), DIMENSION(:, :), POINTER    :: req_array
 
       CALL timeset(routineN, handle)
 
@@ -549,7 +548,7 @@ CONTAINS
 
          END DO
 
-         CALL mp_alltoall(num_entries_send, num_entries_rec, 1, para_env%group)
+         CALL para_env%alltoall(num_entries_send, num_entries_rec, 1)
 
          ALLOCATE (buffer_rec(0:para_env%num_pe - 1))
          ALLOCATE (buffer_send(0:para_env%num_pe - 1))

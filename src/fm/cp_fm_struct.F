@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,18 +13,15 @@
 ! **************************************************************************************************
 MODULE cp_fm_struct
    USE cp_blacs_env,                    ONLY: cp_blacs_env_release,&
-                                              cp_blacs_env_retain,&
                                               cp_blacs_env_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type,&
                                               cp_to_string
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: m_flush
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -83,18 +80,18 @@ MODULE cp_fm_struct
 !> \author Fawzi Mohamed
 ! **************************************************************************************************
    TYPE cp_fm_struct_type
-      TYPE(cp_para_env_type), POINTER :: para_env
-      TYPE(cp_blacs_env_type), POINTER :: context
-      INTEGER, DIMENSION(9) :: descriptor
-      INTEGER :: nrow_block, ncol_block, nrow_global, ncol_global
-      INTEGER, DIMENSION(2) :: first_p_pos
-      INTEGER, DIMENSION(:), POINTER :: row_indices, col_indices, &
-                                        nrow_locals, ncol_locals
-      INTEGER :: ref_count, local_leading_dimension
+      TYPE(mp_para_env_type), POINTER :: para_env => NULL()
+      TYPE(cp_blacs_env_type), POINTER :: context => NULL()
+      INTEGER, DIMENSION(9) :: descriptor = -1
+      INTEGER :: nrow_block = -1, ncol_block = -1, nrow_global = -1, ncol_global = -1
+      INTEGER, DIMENSION(2) :: first_p_pos = -1
+      INTEGER, DIMENSION(:), POINTER :: row_indices => NULL(), col_indices => NULL(), &
+                                        nrow_locals => NULL(), ncol_locals => NULL()
+      INTEGER :: ref_count = -1, local_leading_dimension = -1
    END TYPE cp_fm_struct_type
 ! **************************************************************************************************
    TYPE cp_fm_struct_p_type
-      TYPE(cp_fm_struct_type), POINTER :: struct
+      TYPE(cp_fm_struct_type), POINTER :: struct => NULL()
    END TYPE cp_fm_struct_p_type
 
 CONTAINS
@@ -127,11 +124,11 @@ CONTAINS
                                   local_leading_dimension, template_fmstruct, square_blocks, force_block)
 
       TYPE(cp_fm_struct_type), POINTER             :: fmstruct
-      TYPE(cp_para_env_type), POINTER, OPTIONAL    :: para_env
+      TYPE(mp_para_env_type), TARGET, OPTIONAL    :: para_env
       INTEGER, INTENT(in), OPTIONAL                :: nrow_global, ncol_global
       INTEGER, INTENT(in), OPTIONAL                :: nrow_block, ncol_block
       INTEGER, INTENT(in), OPTIONAL                :: local_leading_dimension
-      TYPE(cp_blacs_env_type), POINTER, OPTIONAL   :: context
+      TYPE(cp_blacs_env_type), TARGET, OPTIONAL   :: context
       INTEGER, DIMENSION(9), INTENT(in), OPTIONAL  :: descriptor
       INTEGER, OPTIONAL, DIMENSION(2)               :: first_p_pos
       TYPE(cp_fm_struct_type), POINTER, OPTIONAL   :: template_fmstruct
@@ -182,8 +179,8 @@ CONTAINS
          fmstruct%para_env => context%para_env
       END IF
       IF (PRESENT(para_env)) fmstruct%para_env => para_env
-      CALL cp_blacs_env_retain(fmstruct%context)
-      CALL cp_para_env_retain(fmstruct%para_env)
+      CALL fmstruct%context%retain()
+      CALL fmstruct%para_env%retain()
 
       IF (PRESENT(nrow_global)) THEN
          fmstruct%nrow_global = nrow_global
@@ -238,8 +235,8 @@ CONTAINS
          numroc(fmstruct%ncol_global, fmstruct%ncol_block, &
                 fmstruct%context%mepos(2), fmstruct%first_p_pos(2), &
                 fmstruct%context%num_pe(2))
-      CALL mp_sum(fmstruct%nrow_locals, fmstruct%para_env%group)
-      CALL mp_sum(fmstruct%ncol_locals, fmstruct%para_env%group)
+      CALL fmstruct%para_env%sum(fmstruct%nrow_locals)
+      CALL fmstruct%para_env%sum(fmstruct%ncol_locals)
       fmstruct%nrow_locals(:) = fmstruct%nrow_locals(:)/fmstruct%context%num_pe(2)
       fmstruct%ncol_locals(:) = fmstruct%ncol_locals(:)/fmstruct%context%num_pe(1)
 
@@ -291,7 +288,7 @@ CONTAINS
          CALL descinit(fmstruct%descriptor, fmstruct%nrow_global, &
                        fmstruct%ncol_global, fmstruct%nrow_block, &
                        fmstruct%ncol_block, fmstruct%first_p_pos(1), &
-                       fmstruct%first_p_pos(2), fmstruct%context%group, &
+                       fmstruct%first_p_pos(2), fmstruct%context, &
                        fmstruct%local_leading_dimension, stat)
          CPASSERT(stat == 0)
 #endif
@@ -306,9 +303,8 @@ CONTAINS
 !> \author Fawzi Mohamed
 ! **************************************************************************************************
    SUBROUTINE cp_fm_struct_retain(fmstruct)
-      TYPE(cp_fm_struct_type), POINTER                   :: fmstruct
+      TYPE(cp_fm_struct_type), INTENT(INOUT)             :: fmstruct
 
-      CPASSERT(ASSOCIATED(fmstruct))
       CPASSERT(fmstruct%ref_count > 0)
       fmstruct%ref_count = fmstruct%ref_count + 1
    END SUBROUTINE cp_fm_struct_retain
@@ -328,7 +324,7 @@ CONTAINS
          fmstruct%ref_count = fmstruct%ref_count - 1
          IF (fmstruct%ref_count < 1) THEN
             CALL cp_blacs_env_release(fmstruct%context)
-            CALL cp_para_env_release(fmstruct%para_env)
+            CALL mp_para_env_release(fmstruct%para_env)
             IF (ASSOCIATED(fmstruct%row_indices)) THEN
                DEALLOCATE (fmstruct%row_indices)
             END IF
@@ -370,9 +366,11 @@ CONTAINS
       IF (ASSOCIATED(fmstruct1, fmstruct2)) THEN
          res = .TRUE.
       ELSE
-         res = (fmstruct1%context%group == fmstruct2%context%group) .AND. &
+         res = (fmstruct1%context == fmstruct2%context) .AND. &
                (fmstruct1%nrow_global == fmstruct2%nrow_global) .AND. &
                (fmstruct1%ncol_global == fmstruct2%ncol_global) .AND. &
+               (fmstruct1%nrow_block == fmstruct2%nrow_block) .AND. &
+               (fmstruct1%ncol_block == fmstruct2%ncol_block) .AND. &
                (fmstruct1%local_leading_dimension == &
                 fmstruct2%local_leading_dimension)
          DO i = 1, 9
@@ -409,7 +407,7 @@ CONTAINS
                                col_indices, nrow_local, ncol_local, nrow_locals, ncol_locals, &
                                local_leading_dimension)
       TYPE(cp_fm_struct_type), INTENT(INOUT) :: fmstruct
-      TYPE(cp_para_env_type), POINTER, OPTIONAL :: para_env
+      TYPE(mp_para_env_type), POINTER, OPTIONAL :: para_env
       TYPE(cp_blacs_env_type), POINTER, OPTIONAL :: context
       INTEGER, DIMENSION(9), INTENT(OUT), OPTIONAL :: descriptor
       INTEGER, INTENT(out), OPTIONAL :: ncol_block, nrow_block, nrow_global, &
@@ -490,7 +488,7 @@ CONTAINS
 !> \param io_unit the I/O unit to use for writing
 ! **************************************************************************************************
    SUBROUTINE cp_fm_struct_write_info(fmstruct, io_unit)
-      TYPE(cp_fm_struct_type), INTENT(IN), POINTER       :: fmstruct
+      TYPE(cp_fm_struct_type), INTENT(IN)                :: fmstruct
       INTEGER, INTENT(IN)                                :: io_unit
 
       INTEGER, PARAMETER                                 :: oblock_size = 8
@@ -535,14 +533,15 @@ CONTAINS
 !> \author Florian Schiffmann
 ! **************************************************************************************************
    SUBROUTINE cp_fm_struct_double(fmstruct, struct, context, col, row)
-      TYPE(cp_fm_struct_type), POINTER                   :: fmstruct, struct
-      TYPE(cp_blacs_env_type), POINTER                   :: context
+      TYPE(cp_fm_struct_type), POINTER                   :: fmstruct
+      TYPE(cp_fm_struct_type), INTENT(INOUT)             :: struct
+      TYPE(cp_blacs_env_type), INTENT(INOUT), TARGET     :: context
       LOGICAL, INTENT(in)                                :: col, row
 
       INTEGER :: n_doubled_items_in_partially_filled_block, ncol_block, ncol_global, newdim_col, &
          newdim_row, nfilled_blocks, nfilled_blocks_remain, nprocs_col, nprocs_row, nrow_block, &
          nrow_global
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL cp_fm_struct_get(struct, nrow_global=nrow_global, &
                             ncol_global=ncol_global, nrow_block=nrow_block, &
@@ -630,8 +629,8 @@ CONTAINS
 !> \param force_block ...
 ! **************************************************************************************************
    SUBROUTINE cp_fm_struct_config(nrow_block, ncol_block, force_block)
-      INTEGER, OPTIONAL                                  :: nrow_block, ncol_block
-      LOGICAL, OPTIONAL                                  :: force_block
+      INTEGER, INTENT(IN), OPTIONAL                      :: nrow_block, ncol_block
+      LOGICAL, INTENT(IN), OPTIONAL                      :: force_block
 
       IF (PRESENT(ncol_block)) optimal_blacs_col_block_size = ncol_block
       IF (PRESENT(nrow_block)) optimal_blacs_row_block_size = nrow_block

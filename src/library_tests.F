@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -18,10 +18,10 @@
 MODULE library_tests
 
    USE ai_coulomb_test,                 ONLY: eri_test
-   USE cell_types,                      ONLY: cell_create,&
-                                              cell_release,&
-                                              cell_type,&
+   USE cell_methods,                    ONLY: cell_create,&
                                               init_cell
+   USE cell_types,                      ONLY: cell_release,&
+                                              cell_type
    USE cg_test,                         ONLY: clebsch_gordon_test
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_release,&
@@ -37,6 +37,7 @@ MODULE library_tests
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_pilaenv,&
                                               cp_fm_release,&
                                               cp_fm_set_all,&
                                               cp_fm_set_submatrix,&
@@ -46,7 +47,6 @@ MODULE library_tests
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_init,          ONLY: init_input_type
    USE dbcsr_api,                       ONLY: dbcsr_reset_randmat_seed,&
                                               dbcsr_run_tests
@@ -73,13 +73,10 @@ MODULE library_tests
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_max,&
-                                              mp_sum,&
-                                              mp_sync,&
-                                              mpi_perf_test
+   USE message_passing,                 ONLY: mp_para_env_type
    USE minimax_exp,                     ONLY: validate_exp_minimax
    USE mp2_grids,                       ONLY: test_least_square_ft
+   USE mp_perf_test,                    ONLY: mpi_perf_test
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE parallel_rng_types,              ONLY: UNIFORM,&
                                               rng_stream_type
@@ -100,9 +97,9 @@ MODULE library_tests
                                               pw_release,&
                                               pw_type
    USE realspace_grid_types,            ONLY: &
-        pw2rs, realspace_grid_desc_type, realspace_grid_input_type, realspace_grid_type, rs2pw, &
-        rs_grid_create, rs_grid_create_descriptor, rs_grid_print, rs_grid_release, &
-        rs_grid_release_descriptor, rs_grid_zero, rs_pw_transfer
+        realspace_grid_desc_type, realspace_grid_input_type, realspace_grid_type, rs_grid_create, &
+        rs_grid_create_descriptor, rs_grid_print, rs_grid_release, rs_grid_release_descriptor, &
+        rs_grid_zero, transfer_pw2rs, transfer_rs2pw
    USE shg_integrals_test,              ONLY: shg_integrals_perf_acc_test
 #include "./base/base_uses.f90"
 
@@ -130,7 +127,7 @@ CONTAINS
    SUBROUTINE lib_test(root_section, para_env, globenv)
 
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'lib_test'
@@ -169,7 +166,7 @@ CONTAINS
       !
       ! runtest 7 has been deleted and can be recycled
       !
-      IF (runtest(8) /= 0) CALL mpi_perf_test(para_env%group, runtest(8), iw)
+      IF (runtest(8) /= 0) CALL mpi_perf_test(para_env, runtest(8), iw)
       !
       IF (runtest(10) /= 0) CALL validate_exp_minimax(runtest(10), iw)
       !
@@ -255,7 +252,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE test_input(root_section, para_env)
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       TYPE(section_vals_type), POINTER                   :: test_section
 
@@ -276,7 +273,7 @@ CONTAINS
       CALL section_vals_val_get(test_section, 'MINIMAX', i_val=runtest(10))
       CALL section_vals_val_get(test_section, 'LEAST_SQ_FT', i_val=runtest(11))
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
    END SUBROUTINE test_input
 
 ! **************************************************************************************************
@@ -292,7 +289,7 @@ CONTAINS
 !>      FFTSG library.
 ! **************************************************************************************************
    SUBROUTINE copy_test(para_env, iw)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw
 
       INTEGER                                            :: i, ierr, j, len, ntim, siz
@@ -302,7 +299,7 @@ CONTAINS
 ! test for copy --> Cache size
 
       siz = ABS(runtest(1))
-      IF (para_env%ionode) WRITE (iw, '(//,A,/)') " Test of copy ( F95 ) "
+      IF (para_env%is_source()) WRITE (iw, '(//,A,/)') " Test of copy ( F95 ) "
       DO i = 6, 24
          len = 2**i
          IF (8.0_dp*REAL(len, KIND=dp) > max_memory*0.5_dp) EXIT
@@ -329,7 +326,7 @@ CONTAINS
             perf = 0.0_dp
          END IF
 
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             WRITE (iw, '(A,i2,i10,A,T59,F14.4,A)') " Copy test:   Size = 2^", i, &
                len/1024, " Kwords", perf, " Mcopy/s"
          END IF
@@ -337,7 +334,7 @@ CONTAINS
          DEALLOCATE (ca)
          DEALLOCATE (cb)
       END DO
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
    END SUBROUTINE copy_test
 
 ! **************************************************************************************************
@@ -352,7 +349,7 @@ CONTAINS
 !> \author JGH  6-NOV-2000
 ! **************************************************************************************************
    SUBROUTINE matmul_test(para_env, test_matmul, test_dgemm, iw)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL                                            :: test_matmul, test_dgemm
       INTEGER                                            :: iw
 
@@ -364,7 +361,7 @@ CONTAINS
 
       IF (test_matmul) THEN
          siz = ABS(runtest(2))
-         IF (para_env%ionode) WRITE (iw, '(//,A,/)') " Test of matmul ( F95 ) "
+         IF (para_env%is_source()) WRITE (iw, '(//,A,/)') " Test of matmul ( F95 ) "
          DO i = 5, siz, 2
             len = 2**i + 1
             IF (8.0_dp*REAL(len*len, KIND=dp) > max_memory*0.3_dp) EXIT
@@ -391,7 +388,7 @@ CONTAINS
             tend = m_walltime()
             t = tend - tstart + threshold
             perf = REAL(ntim, KIND=dp)*2.0_dp*REAL(len, KIND=dp)**3*1.e-6_dp/t
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: c = a * b         Size = ", len, perf, " Mflop/s"
             END IF
@@ -408,7 +405,7 @@ CONTAINS
                perf = 0.0_dp
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: a = a * b         Size = ", len, perf, " Mflop/s"
             END IF
@@ -426,7 +423,7 @@ CONTAINS
                perf = 0.0_dp
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: c = a * b(T)      Size = ", len, perf, " Mflop/s"
             END IF
@@ -444,7 +441,7 @@ CONTAINS
                perf = 0.0_dp
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: c = a(T) * b      Size = ", len, perf, " Mflop/s"
             END IF
@@ -458,7 +455,7 @@ CONTAINS
       ! test for matrix multpies
       IF (test_dgemm) THEN
          siz = ABS(runtest(5))
-         IF (para_env%ionode) WRITE (iw, '(//,A,/)') " Test of matmul ( BLAS ) "
+         IF (para_env%is_source()) WRITE (iw, '(//,A,/)') " Test of matmul ( BLAS ) "
          DO i = 5, siz, 2
             len = 2**i + 1
             IF (8.0_dp*REAL(len*len, KIND=dp) > max_memory*0.3_dp) EXIT
@@ -490,7 +487,7 @@ CONTAINS
                perf = 0.0_dp
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: c = a * b         Size = ", len, perf, " Mflop/s"
             END IF
@@ -507,7 +504,7 @@ CONTAINS
                perf = 0.0_dp
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: a = a * b         Size = ", len, perf, " Mflop/s"
             END IF
@@ -524,7 +521,7 @@ CONTAINS
                perf = 0.0_dp
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: c = a * b(T)      Size = ", len, perf, " Mflop/s"
             END IF
@@ -541,7 +538,7 @@ CONTAINS
                perf = 0.0_dp
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, '(A,i6,T59,F14.4,A)') &
                   " Matrix multiply test: c = a(T) * b      Size = ", len, perf, " Mflop/s"
             END IF
@@ -552,7 +549,7 @@ CONTAINS
          END DO
       END IF
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
 
    END SUBROUTINE matmul_test
 
@@ -568,7 +565,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE fft_test(para_env, iw, fftw_plan_type, wisdom_file)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw, fftw_plan_type
       CHARACTER(LEN=*), INTENT(IN)                       :: wisdom_file
 
@@ -585,7 +582,7 @@ CONTAINS
 
 ! test for 3d FFT
 
-      IF (para_env%ionode) WRITE (iw, '(//,A,/)') " Test of 3D-FFT "
+      IF (para_env%is_source()) WRITE (iw, '(//,A,/)') " Test of 3D-FFT "
       siz = ABS(runtest(3))
 
       DO iall = 1, 100
@@ -637,14 +634,14 @@ CONTAINS
                   perf = 0.0_dp
                END IF
 
-               IF (para_env%ionode) THEN
+               IF (para_env%is_source()) THEN
                   WRITE (iw, '(T2,A,A,i6,T59,F14.4,A)') &
                      ADJUSTR(method), " test (in-place)    Size = ", len, perf, " Mflop/s"
                END IF
                DEALLOCATE (ca)
                DEALLOCATE (ra)
             END DO
-            IF (para_env%ionode) WRITE (iw, *)
+            IF (para_env%is_source()) WRITE (iw, *)
             ! test if input data is preserved
             len = 24
             n = len
@@ -660,11 +657,11 @@ CONTAINS
             CALL fft3d(FWFFT, n, ca, cb)
             tdiff = MAXVAL(ABS(ca - cc))
             IF (tdiff > 1.0E-12_dp) THEN
-               IF (para_env%ionode) &
+               IF (para_env%is_source()) &
                   WRITE (iw, '(T2,A,A,A)') ADJUSTR(method), "         FWFFT ", &
                   "             Input array is changed in out-of-place FFT !"
             ELSE
-               IF (para_env%ionode) &
+               IF (para_env%is_source()) &
                   WRITE (iw, '(T2,A,A,A)') ADJUSTR(method), "         FWFFT ", &
                   "         Input array is not changed in out-of-place FFT !"
             END IF
@@ -672,15 +669,15 @@ CONTAINS
             CALL fft3d(BWFFT, n, ca, cb)
             tdiff = MAXVAL(ABS(ca - cc))
             IF (tdiff > 1.0E-12_dp) THEN
-               IF (para_env%ionode) &
+               IF (para_env%is_source()) &
                   WRITE (iw, '(T2,A,A,A)') ADJUSTR(method), "         BWFFT ", &
                   "             Input array is changed in out-of-place FFT !"
             ELSE
-               IF (para_env%ionode) &
+               IF (para_env%is_source()) &
                   WRITE (iw, '(T2,A,A,A)') ADJUSTR(method), "         BWFFT ", &
                   "         Input array is not changed in out-of-place FFT !"
             END IF
-            IF (para_env%ionode) WRITE (iw, *)
+            IF (para_env%is_source()) WRITE (iw, *)
 
             DEALLOCATE (ra)
             DEALLOCATE (ca)
@@ -704,15 +701,14 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE rs_pw_transfer_test(para_env, iw, globenv, rs_pw_transfer_section)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw
       TYPE(global_environment_type), POINTER             :: globenv
       TYPE(section_vals_type), POINTER                   :: rs_pw_transfer_section
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'rs_pw_transfer_test'
 
-      INTEGER                                            :: dir, halo_size, handle, i_loop, n_loop, &
-                                                            ns_max
+      INTEGER                                            :: halo_size, handle, i_loop, n_loop, ns_max
       INTEGER, DIMENSION(3)                              :: no, np
       INTEGER, DIMENSION(:), POINTER                     :: i_vals
       LOGICAL                                            :: do_rs2pw
@@ -744,12 +740,11 @@ CONTAINS
       NULLIFY (grid)
       CALL section_vals_val_get(rs_pw_transfer_section, "GRID", i_vals=i_vals)
       np = i_vals
-      CALL pw_grid_create(grid, para_env%group)
+      CALL pw_grid_create(grid, para_env)
       CALL pw_grid_setup(box%hmat, grid, grid_span=FULLSPACE, npts=np, fft_usage=.TRUE., iounit=iw)
       no = grid%npts
 
-      CALL pw_create(ca, grid, REALDATA3D)
-      ca%in_space = REALSPACE
+      CALL pw_create(ca, grid, REALDATA3D, REALSPACE)
       CALL pw_zero(ca)
 
       ! .. rs input setting type
@@ -770,26 +765,25 @@ CONTAINS
 
       CALL section_vals_val_get(rs_pw_transfer_section, "N_loop", i_val=N_loop)
       CALL section_vals_val_get(rs_pw_transfer_section, "RS2PW", l_val=do_rs2pw)
-      IF (do_rs2pw) THEN
-         dir = rs2pw
-      ELSE
-         dir = pw2rs
-      END IF
 
       ! go for the real loops, sync to get max timings
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          WRITE (iw, '(T2,A)') ""
          WRITE (iw, '(T2,A)') "Timing rs_pw_transfer routine"
          WRITE (iw, '(T2,A)') ""
          WRITE (iw, '(T2,A)') "iteration      time[s]"
       END IF
       DO i_loop = 1, N_loop
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
          tstart = m_walltime()
-         CALL rs_pw_transfer(rs_grid, ca, dir)
-         CALL mp_sync(para_env%group)
+         IF (do_rs2pw) THEN
+            CALL transfer_rs2pw(rs_grid, ca)
+         ELSE
+            CALL transfer_pw2rs(rs_grid, ca)
+         END IF
+         CALL para_env%sync()
          tend = m_walltime()
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             WRITE (iw, '(T2,I9,1X,F12.6)') i_loop, tend - tstart
          END IF
       END DO
@@ -819,7 +813,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE pw_fft_test(para_env, iw, globenv, pw_transfer_section)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw
       TYPE(global_environment_type), POINTER             :: globenv
       TYPE(section_vals_type), POINTER                   :: pw_transfer_section
@@ -904,7 +898,7 @@ CONTAINS
 
             distribution_layout = layouts(:, i_layout)
 
-            CALL pw_grid_create(grid, para_env%group)
+            CALL pw_grid_create(grid, para_env)
 
             CALL section_vals_val_get(pw_transfer_section, "PW_GRID", i_rep_section=i_rep, i_val=itmp)
 
@@ -946,15 +940,14 @@ CONTAINS
             ! note that the number of grid points might be different from what the user requested (fft-able needed)
             no = grid%npts
 
-            CALL pw_create(ca, grid, COMPLEXDATA1D)
-            CALL pw_create(cb, grid, COMPLEXDATA3D)
-            CALL pw_create(cc, grid, COMPLEXDATA1D)
+            CALL pw_create(ca, grid, COMPLEXDATA1D, RECIPROCALSPACE)
+            CALL pw_create(cb, grid, COMPLEXDATA3D, REALSPACE)
+            CALL pw_create(cc, grid, COMPLEXDATA1D, RECIPROCALSPACE)
 
             ! initialize data
             CALL pw_zero(ca)
             CALL pw_zero(cb)
             CALL pw_zero(cc)
-            ca%in_space = RECIPROCALSPACE
             nn = SIZE(ca%cc)
             DO ig = 1, nn
                gsq = grid%gsq(ig)
@@ -964,11 +957,11 @@ CONTAINS
             flops = PRODUCT(no)*30.0_dp*LOG(REAL(MAXVAL(no), KIND=dp))
             tstart = m_walltime()
             DO ip = 1, n_loop
-               CALL mp_sync(para_env%group)
+               CALL para_env%sync()
                t_start(ip) = m_walltime()
                CALL pw_transfer(ca, cb, debug)
                CALL pw_transfer(cb, cc, debug)
-               CALL mp_sync(para_env%group)
+               CALL para_env%sync()
                t_end(ip) = m_walltime()
             END DO
             tend = m_walltime()
@@ -980,13 +973,13 @@ CONTAINS
             END IF
 
             em = MAXVAL(ABS(ca%cc(:) - cc%cc(:)))
-            CALL mp_max(em, para_env%group)
+            CALL para_env%max(em)
             et = SUM(ABS(ca%cc(:) - cc%cc(:)))
-            CALL mp_sum(et, para_env%group)
+            CALL para_env%sum(et)
             t_min = MINVAL(t_end - t_start)
             t_max = MAXVAL(t_end - t_start)
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                WRITE (iw, *)
                WRITE (iw, '(A,T67,E14.6)') " Parallel FFT Tests: Maximal Error ", em
                WRITE (iw, '(A,T67,E14.6)') " Parallel FFT Tests: Total Error ", et
@@ -1036,13 +1029,13 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE eigensolver_test(para_env, iw, eigensolver_section)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw
       TYPE(section_vals_type), POINTER                   :: eigensolver_section
 
-      INTEGER                                            :: diag_method, group, i, i_loop, i_rep, &
+      INTEGER                                            :: diag_method, i, i_loop, i_rep, &
                                                             init_method, j, n, n_loop, n_rep, &
-                                                            neig, source, unit_number
+                                                            neig, unit_number
       REAL(KIND=dp)                                      :: t1, t2
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: buffer
@@ -1050,9 +1043,6 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fmstruct
       TYPE(cp_fm_type)                                   :: eigenvectors, matrix, work
       TYPE(rng_stream_type), ALLOCATABLE                 :: rng_stream
-
-      group = para_env%group
-      source = para_env%source
 
       IF (iw > 0) THEN
          WRITE (UNIT=iw, FMT="(/,/,T2,A,/)") "EIGENSOLVER TEST"
@@ -1131,7 +1121,7 @@ CONTAINS
          ALLOCATE (buffer(1, n))
 
          ! generate initial matrix, either by reading a file, or using random numbers
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             SELECT CASE (init_method)
             CASE (do_mat_random)
                rng_stream = rng_stream_type( &
@@ -1148,7 +1138,7 @@ CONTAINS
          END IF
 
          DO i = 1, n
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                SELECT CASE (init_method)
                CASE (do_mat_random)
                   DO j = i, n
@@ -1160,7 +1150,7 @@ CONTAINS
                   READ (UNIT=unit_number, FMT=*) buffer(1, 1:n)
                END SELECT
             END IF
-            CALL mp_bcast(buffer, source, group)
+            CALL para_env%bcast(buffer)
             SELECT CASE (init_method)
             CASE (do_mat_random)
                CALL cp_fm_set_submatrix(fm=matrix, &
@@ -1196,7 +1186,7 @@ CONTAINS
 
          DEALLOCATE (buffer)
 
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             SELECT CASE (init_method)
             CASE (do_mat_read)
                CALL close_file(unit_number=unit_number)
@@ -1255,25 +1245,20 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE cp_fm_gemm_test(para_env, iw, cp_fm_gemm_test_section)
 
-      TYPE(cp_para_env_type), POINTER          :: para_env
-      INTEGER                                  :: iw
-      TYPE(section_vals_type), POINTER         :: cp_fm_gemm_test_section
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER                                            :: iw
+      TYPE(section_vals_type), POINTER                   :: cp_fm_gemm_test_section
 
-      CHARACTER(LEN=1)                         :: transa, transb
-      INTEGER :: i_loop, i_rep, k, m, n, N_loop, n_rep, ncol_block, &
-                 ncol_block_actual, ncol_global, nrow_block, nrow_block_actual, &
-                 nrow_global
-      INTEGER, DIMENSION(:), POINTER           :: grid_2d
-      LOGICAL                                  :: force_blocksize, row_major, &
-                                                  transa_p, transb_p
-      REAL(KIND=dp)                            :: t1, t2, t3, t4
-      TYPE(cp_blacs_env_type), POINTER         :: blacs_env
-      TYPE(cp_fm_struct_type), POINTER         :: fmstruct_a, fmstruct_b, &
-                                                  fmstruct_c
-      TYPE(cp_fm_type)               :: matrix_a, matrix_b, matrix_c
-#if defined(__SCALAPACK)
-      INTEGER                                  :: pilaenv
-#endif
+      CHARACTER(LEN=1)                                   :: transa, transb
+      INTEGER :: i_loop, i_rep, k, m, n, N_loop, n_rep, ncol_block, ncol_block_actual, &
+         ncol_global, np, nrow_block, nrow_block_actual, nrow_global
+      INTEGER, DIMENSION(:), POINTER                     :: grid_2d
+      LOGICAL                                            :: force_blocksize, row_major, transa_p, &
+                                                            transb_p
+      REAL(KIND=dp)                                      :: t1, t2, t3, t4
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_struct_type), POINTER                   :: fmstruct_a, fmstruct_b, fmstruct_c
+      TYPE(cp_fm_type)                                   :: matrix_a, matrix_b, matrix_c
 
       CALL section_vals_get(cp_fm_gemm_test_section, n_repetition=n_rep)
       DO i_rep = 1, n_rep
@@ -1316,9 +1301,10 @@ CONTAINS
             WRITE (iw, '(T2,A,T50,2I7)') 'GRID_2D ', grid_2d
             WRITE (iw, '(T2,A,T50,L5)') 'Force blocksize ', force_blocksize
             ! check the return value of pilaenv, too small values limit the performance (assuming pdgemm is the vanilla variant)
-#if defined(__SCALAPACK)
-            WRITE (iw, '(T2,A,T50,I5)') 'PILAENV blocksize', pilaenv(0, 'D')
-#endif
+            np = cp_fm_pilaenv(0, 'D')
+            IF (np > 0) THEN
+               WRITE (iw, '(T2,A,T50,I5)') 'PILAENV blocksize', np
+            END IF
          END IF
 
          NULLIFY (blacs_env)
@@ -1413,7 +1399,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE cp_dbcsr_tests(para_env, iw, input_section)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw
       TYPE(section_vals_type), POINTER                   :: input_section
 
@@ -1466,7 +1452,7 @@ CONTAINS
                                    i_rep_section=i_rep, r_val=filter_eps)
          CALL section_vals_val_get(input_section, "ALWAYS_CHECKSUM", i_rep_section=i_rep, l_val=always_checksum)
 
-         CALL dbcsr_run_tests(para_env%group, iw, nproc, &
+         CALL dbcsr_run_tests(para_env%get_handle(), iw, nproc, &
                               (/m, n, k/), &
                               (/transa_p, transb_p/), &
                               bs_m, bs_n, bs_k, &
@@ -1487,7 +1473,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE run_dbm_tests(para_env, iw, input_section)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw
       TYPE(section_vals_type), POINTER                   :: input_section
 
@@ -1521,7 +1507,7 @@ CONTAINS
          CALL section_vals_val_get(input_section, "filter_eps", i_rep_section=i_rep, r_val=filter_eps)
          CALL section_vals_val_get(input_section, "ALWAYS_CHECKSUM", i_rep_section=i_rep, l_val=always_checksum)
 
-         CALL dbm_run_tests(mp_group=para_env%group, &
+         CALL dbm_run_tests(mp_group=para_env, &
                             io_unit=iw, &
                             matrix_sizes=(/m, n, k/), &
                             trs=(/transa_p, transb_p/), &

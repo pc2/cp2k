@@ -3,7 +3,9 @@
 # Directories have been reordered according the execution time needed for a gfortran pdbg run using 2 MPI tasks
 # in case a new directory is added just add it at the top of the list..
 # the order will be regularly checked and modified...
+QS/regtest-wfn-restart
 QS/regtest-dcdft-force                                      libint libxc
+QS/regtest-dcdft-hfx                                        libint libxc
 QS/regtest-dcdft-stress                                     libint libxc
 QS/regtest-ec-stress                                        libint libxc
 QS/regtest-ri-rpa-grad                                      libint
@@ -35,11 +37,11 @@ QS/regtest-mp2-admm-grad                                    libint
 QS/regtest-double-hybrid-stress                             
 QS/regtest-double-hybrid-grad                               
 QS/regtest-hfx-ri-2                                         libint libxc
-QS/regtest-rma                                              libint mpi3
+QS/regtest-rma                                              libint
 QS/regtest-gapw_xc                                          libint
 LIBTEST/libvori                                             libvori
 LIBTEST/libbqb                                              libbqb
-QS/regtest-rma-3D                                           libint mpi3
+QS/regtest-rma-3D                                           libint
 TMC/regtest_ana_on_the_fly                                  parallel mpiranks>2
 TMC/regtest                                                 parallel mpiranks>1
 TMC/regtest_ana_post_proc                                   parallel mpiranks>1
@@ -62,6 +64,9 @@ QS/regtest-cdft-hirshfeld
 SIRIUS/regtest-1                                            sirius
 QS/regtest-embed                                            libint
 QS/regtest-pod
+QS/regtest-tddfpt                                           libint
+QS/regtest-tddfpt-force-gapw                                libint
+QS/regtest-tddfpt-gapw                                      libint
 QS/regtest-tddfpt-admm                                      libint
 QS/regtest-debug-1
 QS/regtest-debug-2                                          libint
@@ -93,8 +98,9 @@ Pimd/regtest-1
 Pimd/regtest-2
 QS/regtest-pao-2
 QS/regtest-tddfpt-2                                         libint
-QS/regtest-tddfpt-3
+QS/regtest-tddfpt-3                                         libint
 QS/regtest-tddfpt-4                                         libint
+QS/regtest-tddfpt-soc                                       libint
 QS/regtest-stda                                             libint
 QS/regtest-p-efield
 QS/regtest-mp2-stress                                       libint
@@ -109,6 +115,7 @@ QS/regtest-hfx                                              libint
 QS/regtest-rel
 QS/regtest-ls-rtp
 QS/regtest-admm-qps                                         libint
+QS/regtest-admm-qps-2                                       libint
 ATOM/regtest-pseudo
 Fist/regtest-7-1
 QMMM/SE/regtest-force-mixing
@@ -120,6 +127,8 @@ QS/regtest-gpw-3
 QS/regtest-ps-implicit-1-3                                  fftw3
 QS/regtest-ps-implicit-2-2
 QS/regtest-rtp-3
+QS/regtest-rtp-4
+QS/regtest-rtp-5
 QS/regtest-pao-1
 QMMM/QS/regtest-1
 QS/regtest-ps-implicit-2-1
@@ -130,6 +139,7 @@ QS/regtest-libxc                                            libxc libint
 SE/regtest-3-2
 QS/regtest-gw-cubic                                         libint
 QS/regtest-gw-kpoints                                       libint
+QS/regtest-scalable-gw                                       libint
 QS/regtest-xc
 QS/regtest-almo-2
 SE/regtest-2-2
@@ -211,7 +221,6 @@ QS/regtest-nmr-5
 QS/regtest-hole-funct
 QS/regtest-sccs-1
 QS/regtest-bs
-QS/regtest-tddfpt                                           libint
 QMMM/QS/regtest-3
 QS/regtest-sccs-3
 ATOM/regtest-1
@@ -240,6 +249,8 @@ QS/regtest-hybrid-2                                         libint
 QS/regtest-chi-1
 QS/regtest-cdft-4-2
 DFTB/regtest-nonscc
+QS/regtest-as                                               libint
+QS/regtest-as-dft                                           libint
 QS/regtest-double-hybrid-3                                  libint
 QS/regtest-dft-filtermat
 SE/regtest-3-3
@@ -256,9 +267,11 @@ QS/regtest-double-hybrid-1                                  libint
 QS/regtest-nlmo
 QMMM/QS/regtest-4
 Fist/regtest-8
+QS/regtest-lsroks                                           libint
 QS/regtest-cdft-4-1
 QMMM/SE/regtest_2
 QS/regtest-mp2-1                                            libint
+QS/regtest-LnPP2
 QMMM/DFTB/regtest
 Fist/regtest-10
 QS/regtest-sccs-2
@@ -284,11 +297,11 @@ QS/regtest-hfx-2                                            libint
 QS/regtest-nmr-3
 QS/regtest-hybrid-1                                         libint
 QS/regtest-rtp-1
-QS/regtest-as                                               libint
-QS/regtest-as-dft                                           libint
 QS/regtest-tddfpt-prop
 QS/regtest-sym-3
+QS/regtest-gapw-ext
 FARMING/regtest-1
+FARMING/regtest-2
 QS/regtest-cdft-2
 QS/regtest-sym-1
 QS/regtest-sym-2
@@ -301,6 +314,7 @@ QS/regtest-spin-spin-1
 QS/regtest-elpa-qr                                          elpa mpiranks==1||mpiranks%2==0
 QS/regtest-ot-refine-3
 QS/regtest-sym-5
+QS/regtest-iao
 Fist/regtest-9
 QS/regtest-mom-1
 TAMC/regtest
@@ -317,7 +331,6 @@ QS/regtest-pao-3
 DFTB/regtest-debug
 optimize_input/regtest-1
 FE/regtest-2
-QS/regtest-lsroks
 NEB/regtest-3
 QS/regtest-linearscaling
 SE/regtest-3-1
@@ -326,10 +339,13 @@ Fist/regtest-field
 Fist/regtest-gauss
 QS/regtest-fftw                                             fftw3
 QS/regtest-elpa                                             elpa mpiranks==1||mpiranks%2==0
+QS/regtest-cusolver                                         cusolvermp
 ATOM/regtest-libxc                                          libxc
 Fist/regtest-spgr                                           spglib
 Fist/regtest-plumed2                                        plumed2
 Fist/regtest-quip                                           quip
+Fist/regtest-nequip                                         libtorch
+Fist/regtest-allegro                                        libtorch
 Fist/regtest-16
-QS/regtest-rtp-4
 DFTB/regtest-vdw
+QS/regtest-ed                                               libint

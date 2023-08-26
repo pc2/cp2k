@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,7 +23,6 @@ MODULE qs_cdft_methods
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_cube,          ONLY: cp_cube_to_pw
    USE grid_api,                        ONLY: GRID_FUNC_AB,&
                                               collocate_pgf_product
@@ -38,13 +37,16 @@ MODULE qs_cdft_methods
                                               section_vals_type
    USE kahan_sum,                       ONLY: accurate_dot_product
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
    USE pw_methods,                      ONLY: pw_axpy,&
                                               pw_copy,&
-                                              pw_integrate_function
+                                              pw_integral_ab,&
+                                              pw_integrate_function,&
+                                              pw_set,&
+                                              pw_zero
    USE pw_pool_types,                   ONLY: pw_pool_create_pw,&
                                               pw_pool_give_back_pw,&
                                               pw_pool_type
@@ -75,11 +77,10 @@ MODULE qs_cdft_methods
                                               qs_subsys_type
    USE realspace_grid_types,            ONLY: realspace_grid_desc_type,&
                                               realspace_grid_type,&
-                                              rs2pw,&
                                               rs_grid_create,&
                                               rs_grid_release,&
                                               rs_grid_zero,&
-                                              rs_pw_transfer
+                                              transfer_rs2pw
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -643,10 +644,10 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cdft_control_type), POINTER                   :: cdft_control
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(hirshfeld_constraint_type), POINTER           :: hirshfeld_control
       TYPE(hirshfeld_type), POINTER                      :: hirshfeld_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -753,22 +754,22 @@ CONTAINS
          END IF
 
          ! Setup pw
-         cdft_control%group(igroup)%weight%cr3d = 0.0_dp
+         CALL pw_zero(cdft_control%group(igroup)%weight)
 
          CALL pw_pool_create_pw(auxbas_pw_pool, cdft_control%group(igroup)%hw_rho_total_constraint, &
                                 use_data=REALDATA3D, in_space=REALSPACE)
-         cdft_control%group(igroup)%hw_rho_total_constraint%cr3d = 1.0_dp
+         CALL pw_set(cdft_control%group(igroup)%hw_rho_total_constraint, 1.0_dp)
 
          IF (igroup == 1) THEN
             CALL pw_pool_create_pw(auxbas_pw_pool, cdft_control%group(igroup)%hw_rho_total, &
                                    use_data=REALDATA3D, in_space=REALSPACE)
-            cdft_control%group(igroup)%hw_rho_total%cr3d = 1.0_dp
+            CALL pw_set(cdft_control%group(igroup)%hw_rho_total, 1.0_dp)
 
             IF (hirshfeld_control%print_density) THEN
                DO iatom = 1, cdft_control%natoms
                   CALL pw_pool_create_pw(auxbas_pw_pool, cdft_control%group(igroup)%hw_rho_atomic(iatom), &
                                          use_data=REALDATA3D, in_space=REALSPACE)
-                  cdft_control%group(igroup)%hw_rho_atomic(iatom)%cr3d = 1.0_dp
+                  CALL pw_set(cdft_control%group(igroup)%hw_rho_atomic(iatom), 1.0_dp)
                END DO
             END IF
          END IF
@@ -788,7 +789,7 @@ CONTAINS
             DO iatom = 1, cdft_control%natoms
                CALL pw_pool_create_pw(auxbas_pw_pool, cdft_control%group(igroup)%hw_rho_atomic_charge(iatom), &
                                       use_data=REALDATA3D, in_space=REALSPACE)
-               cdft_control%group(igroup)%hw_rho_atomic_charge(iatom)%cr3d = 1.0_dp
+               CALL pw_set(cdft_control%group(igroup)%hw_rho_atomic_charge(iatom), 1.0_dp)
             END DO
          END IF
 
@@ -832,7 +833,7 @@ CONTAINS
                                                        zetp=alpha, eps=hirshfeld_control%atomic_cutoff, &
                                                        pab=pab, o1=0, o2=0, &  ! without map_consistent
                                                        prefactor=1.0_dp, cutoff=0.0_dp)
-                     ! IF (para_env%ionode) PRINT *, "radius", radius
+                     ! IF (para_env%is_source()) PRINT *, "radius", radius
                   END IF
 
                   IF (igroup == 1) THEN
@@ -887,10 +888,10 @@ CONTAINS
          DEALLOCATE (pab)
 
          IF (igroup == 1) THEN
-            CALL rs_pw_transfer(rs_rho_all, cdft_control%group(igroup)%hw_rho_total, rs2pw)
+            CALL transfer_rs2pw(rs_rho_all, cdft_control%group(igroup)%hw_rho_total)
          END IF
 
-         CALL rs_pw_transfer(rs_rho_constr, cdft_control%group(igroup)%hw_rho_total_constraint, rs2pw)
+         CALL transfer_rs2pw(rs_rho_constr, cdft_control%group(igroup)%hw_rho_total_constraint)
          CALL rs_grid_release(rs_rho_constr)
 
          ! Calculate weight function
@@ -902,7 +903,7 @@ CONTAINS
          ! Calculate charges
          IF (cdft_control%atomic_charges .AND. igroup == 1) THEN
             DO i = 1, cdft_control%natoms
-               CALL rs_pw_transfer(rs_single_charge(i), cdft_control%group(igroup)%hw_rho_atomic_charge(i), rs2pw)
+               CALL transfer_rs2pw(rs_single_charge(i), cdft_control%group(igroup)%hw_rho_atomic_charge(i))
                CALL hfun_scale(cdft_control%charge(i)%cr3d, &
                                cdft_control%group(igroup)%hw_rho_atomic_charge(i)%cr3d, &
                                cdft_control%group(igroup)%hw_rho_total%cr3d, divide=.TRUE., &
@@ -913,7 +914,7 @@ CONTAINS
          ! Print atomic densities if requested
          IF (hirshfeld_control%print_density .AND. igroup == 1) THEN
             DO i = 1, cdft_control%natoms
-               CALL rs_pw_transfer(rs_single(i), cdft_control%group(igroup)%hw_rho_atomic(i), rs2pw)
+               CALL transfer_rs2pw(rs_single(i), cdft_control%group(igroup)%hw_rho_atomic(i))
             END DO
             CALL cdft_print_hirshfeld_density(qs_env)
          END IF
@@ -976,7 +977,7 @@ CONTAINS
                DO i = 1, num_species
                   CALL pw_pool_create_pw(auxbas_pw_pool, pw_single_dr(i), use_data=REALDATA3D, &
                                          in_space=REALSPACE)
-                  pw_single_dr(i)%cr3d(:, :, :) = 0.0_dp
+                  CALL pw_zero(pw_single_dr(i))
                END DO
 
                atoms_memory_num = SIZE((/(j, j=1, num_species, atoms_memory)/))
@@ -1052,7 +1053,7 @@ CONTAINS
                   END DO
 
                   DO iatom = num_species_small(k), num_species_small(k + 1)
-                     CALL rs_pw_transfer(rs_single_dr(iatom), pw_single_dr(iatom), rs2pw)
+                     CALL transfer_rs2pw(rs_single_dr(iatom), pw_single_dr(iatom))
                      CALL rs_grid_release(rs_single_dr(iatom))
                   END DO
 
@@ -1160,8 +1161,8 @@ CONTAINS
       TYPE(cdft_control_type), POINTER                   :: cdft_control
       TYPE(cdft_group_type), DIMENSION(:), POINTER       :: group
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(mpole_rho_atom), DIMENSION(:), POINTER        :: mp_rho
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_type), DIMENSION(:), POINTER               :: charge, rho_r
@@ -1238,19 +1239,19 @@ CONTAINS
                dE(igroup) = dE(igroup) + sign*accurate_dot_product(group(igroup)%weight%cr3d, rho_r(i)%cr3d, &
                                                                    becke_control%cavity_mat, eps_cavity)*dvol
             ELSE
-               dE(igroup) = dE(igroup) + sign*accurate_dot_product(group(igroup)%weight%cr3d, rho_r(i)%cr3d)*dvol
+               dE(igroup) = dE(igroup) + sign*pw_integral_ab(group(igroup)%weight, rho_r(i), local_only=.TRUE.)
             END IF
          END DO
          IF (cdft_control%atomic_charges) THEN
             DO iatom = 1, cdft_control%natoms
-               electronic_charge(iatom, i) = accurate_dot_product(charge(iatom)%cr3d, rho_r(i)%cr3d)*dvol
+               electronic_charge(iatom, i) = pw_integral_ab(charge(iatom), rho_r(i), local_only=.TRUE.)
             END DO
          END IF
       END DO
       CALL get_qs_env(qs_env, energy=energy)
-      CALL mp_sum(dE, para_env%group)
+      CALL para_env%sum(dE)
       IF (cdft_control%atomic_charges) THEN
-         CALL mp_sum(electronic_charge, para_env%group)
+         CALL para_env%sum(electronic_charge)
       END IF
       ! Use fragment densities as reference value (= Becke deformation density)
       IF (cdft_control%fragment_density .AND. .NOT. cdft_control%fragments_integrated) THEN
@@ -1352,8 +1353,8 @@ CONTAINS
       TYPE(cdft_control_type), POINTER                   :: cdft_control
       TYPE(cdft_group_type), DIMENSION(:), POINTER       :: group
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_type), DIMENSION(:), POINTER               :: rho_r
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
@@ -1382,8 +1383,6 @@ CONTAINS
       strength(:) = cdft_control%strength(:)
       cutoffs => cdft_control%becke_control%cutoffs
       eps_cavity = cdft_control%becke_control%eps_cavity
-      ALLOCATE (atom_of_kind(natom))
-      ALLOCATE (kind_of(natom))
 
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                atom_of_kind=atom_of_kind, &
@@ -1566,13 +1565,13 @@ CONTAINS
       END IF
 
       DO igroup = 1, SIZE(group)
-         CALL mp_sum(group(igroup)%integrated, para_env%group)
+         CALL para_env%sum(group(igroup)%integrated)
       END DO
 
       ! Update force only on master process. Otherwise force due to constraint becomes multiplied
       ! by the number of processes when the final force%rho_elec is constructed in qs_force
       ! by mp_summing [the final integrated(:,:) is distributed on all processors]
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          DO igroup = 1, SIZE(group)
             DO iatom = 1, natom
                ikind = kind_of(iatom)
@@ -1583,8 +1582,6 @@ CONTAINS
       END IF
 
       DEALLOCATE (strength)
-      DEALLOCATE (atom_of_kind)
-      DEALLOCATE (kind_of)
       DO igroup = 1, SIZE(group)
          DEALLOCATE (group(igroup)%integrated)
       END DO
@@ -1612,8 +1609,8 @@ CONTAINS
       TYPE(cdft_control_type), POINTER                   :: cdft_control
       TYPE(cdft_group_type), DIMENSION(:), POINTER       :: group
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
       TYPE(pw_type), ALLOCATABLE, DIMENSION(:)           :: rho_frag
@@ -1722,20 +1719,20 @@ CONTAINS
                                                                becke_control%cavity_mat, becke_control%eps_cavity)*dvol
          ELSE
             cdft_control%target(igroup) = cdft_control%target(igroup) + &
-                                          accurate_dot_product(group(igroup)%weight%cr3d, rho_frag(i)%cr3d)*dvol
+                                          pw_integral_ab(group(igroup)%weight, rho_frag(i), local_only=.TRUE.)
          END IF
       END DO
-      CALL mp_sum(cdft_control%target, para_env%group)
+      CALL para_env%sum(cdft_control%target)
       ! Calculate reference atomic charges int( w_i * rho_frag * dr )
       IF (cdft_control%atomic_charges) THEN
          ALLOCATE (cdft_control%charges_fragment(cdft_control%natoms, nfrag_spins))
          DO i = 1, nfrag_spins
             DO iatom = 1, cdft_control%natoms
                cdft_control%charges_fragment(iatom, i) = &
-                  accurate_dot_product(cdft_control%charge(iatom)%cr3d, rho_frag(i)%cr3d)*dvol
+                  pw_integral_ab(cdft_control%charge(iatom), rho_frag(i), local_only=.TRUE.)
             END DO
          END DO
-         CALL mp_sum(cdft_control%charges_fragment, para_env%group)
+         CALL para_env%sum(cdft_control%charges_fragment)
       END IF
       DO i = 1, nfrag_spins
          CALL pw_pool_give_back_pw(auxbas_pw_pool, rho_frag(i))

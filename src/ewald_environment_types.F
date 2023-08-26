@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,9 +16,6 @@ MODULE ewald_environment_types
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE input_cp2k_poisson,              ONLY: create_ewald_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
@@ -35,6 +32,9 @@ MODULE ewald_environment_types
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: twopi
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_release,&
+                                              mp_para_env_type
    USE pw_grid_info,                    ONLY: pw_grid_n_for_fft
    USE pw_poisson_types,                ONLY: do_ewald_ewald,&
                                               do_ewald_none,&
@@ -66,7 +66,7 @@ MODULE ewald_environment_types
       REAL(KIND=dp) :: alpha, rcut ! ewald alpha and real-space cutoff
       REAL(KIND=dp) :: epsilon ! tolerance for small grid (PME)
       REAL(KIND=dp) :: eps_pol ! tolerance for convergence of induced dipoles
-      TYPE(cp_para_env_type), POINTER          :: para_env
+      TYPE(mp_para_env_type), POINTER          :: para_env
       TYPE(section_vals_type), POINTER         :: poisson_section
       ! interaction cutoff is required to make the electrostatic interaction
       ! continuous at a pair distance equal to rcut. this is ignored by the
@@ -123,8 +123,9 @@ CONTAINS
       TYPE(ewald_environment_type), INTENT(IN)           :: ewald_env
       INTEGER, OPTIONAL                                  :: ewald_type
       REAL(KIND=dp), OPTIONAL                            :: alpha, eps_pol, epsilon
-      INTEGER, OPTIONAL                                  :: gmax(3), ns_max, o_spline, group
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      INTEGER, OPTIONAL                                  :: gmax(3), ns_max, o_spline
+      TYPE(mp_comm_type), INTENT(OUT), OPTIONAL          :: group
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(section_vals_type), OPTIONAL, POINTER         :: poisson_section
       REAL(KIND=dp), OPTIONAL                            :: precs, rcut
       LOGICAL, INTENT(OUT), OPTIONAL                     :: do_multipoles
@@ -146,7 +147,7 @@ CONTAINS
       IF (PRESENT(gmax)) gmax = ewald_env%gmax
       IF (PRESENT(ns_max)) ns_max = ewald_env%ns_max
       IF (PRESENT(o_spline)) o_spline = ewald_env%o_spline
-      IF (PRESENT(group)) group = ewald_env%para_env%group
+      IF (PRESENT(group)) group = ewald_env%para_env
       IF (PRESENT(para_env)) para_env => ewald_env%para_env
       IF (PRESENT(poisson_section)) poisson_section => ewald_env%poisson_section
       IF (PRESENT(interaction_cutoffs)) interaction_cutoffs => &
@@ -183,7 +184,7 @@ CONTAINS
       INTEGER, OPTIONAL                                  :: gmax(3), ns_max
       REAL(KIND=dp), OPTIONAL                            :: precs
       INTEGER, OPTIONAL                                  :: o_spline
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(section_vals_type), OPTIONAL, POINTER         :: poisson_section
       REAL(KIND=dp), DIMENSION(:, :, :), OPTIONAL, &
          POINTER                                         :: interaction_cutoffs
@@ -218,10 +219,10 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE ewald_env_create(ewald_env, para_env)
       TYPE(ewald_environment_type), INTENT(OUT)          :: ewald_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (ewald_env%poisson_section)
-      CALL cp_para_env_retain(para_env)
+      CALL para_env%retain()
       ewald_env%para_env => para_env
       NULLIFY (ewald_env%interaction_cutoffs) ! allocated and initialized later
    END SUBROUTINE ewald_env_create
@@ -236,7 +237,7 @@ CONTAINS
    SUBROUTINE ewald_env_release(ewald_env)
       TYPE(ewald_environment_type), INTENT(INOUT)        :: ewald_env
 
-      CALL cp_para_env_release(ewald_env%para_env)
+      CALL mp_para_env_release(ewald_env%para_env)
       CALL section_vals_release(ewald_env%poisson_section)
       IF (ASSOCIATED(ewald_env%interaction_cutoffs)) THEN
          DEALLOCATE (ewald_env%interaction_cutoffs)

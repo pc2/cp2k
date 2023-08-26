@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,14 +25,18 @@ MODULE admm_types
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_release,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type
-   USE input_constants,                 ONLY: do_admm_blocked_projection,&
+   USE input_constants,                 ONLY: do_admm_aux_exch_func_none,&
+                                              do_admm_blocked_projection,&
                                               do_admm_blocking_purify_full,&
-                                              do_admm_charge_constrained_projection
+                                              do_admm_charge_constrained_projection,&
+                                              do_admm_exch_scaling_merlot,&
+                                              do_admm_exch_scaling_none,&
+                                              do_admm_purify_none
    USE input_section_types,             ONLY: section_vals_release,&
                                               section_vals_type
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE qs_kind_types,                   ONLY: deallocate_qs_kind_set,&
                                               qs_kind_type
    USE qs_local_rho_types,              ONLY: local_rho_set_release,&
@@ -57,11 +61,11 @@ MODULE admm_types
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'admm_types'
 
    TYPE eigvals_type
-      REAL(dp), DIMENSION(:), POINTER          :: DATA
+      REAL(dp), DIMENSION(:), POINTER          :: DATA => NULL()
    END TYPE
 
    TYPE eigvals_p_type
-      TYPE(eigvals_type), POINTER              :: eigvals
+      TYPE(eigvals_type), POINTER              :: eigvals => NULL()
    END TYPE
 
 ! **************************************************************************************************
@@ -155,32 +159,33 @@ MODULE admm_types
       REAL(KIND=dp)                            :: gsi(3) = 0.0_dp, &
                                                   lambda_merlot(2) = 0.0_dp, &
                                                   n_large_basis(3) = 0.0_dp
-      INTEGER                                  :: nao_orb, nao_aux_fit, nmo(2)
-      INTEGER                                  :: purification_method
-      LOGICAL                                  :: charge_constrain = .FALSE.
-      INTEGER                                  :: scaling_model, &
-                                                  aux_exch_func
-      LOGICAL                                  :: aux_exch_func_param
-      REAL(KIND=dp), DIMENSION(3)              :: aux_x_param
+      INTEGER                                  :: nao_orb = 0, nao_aux_fit = 0, nmo(2) = 0
+      INTEGER                                  :: purification_method = do_admm_purify_none
+      LOGICAL                                  :: charge_constrain = .FALSE., do_admmp = .FALSE., &
+                                                  do_admmq = .FALSE., do_admms = .FALSE.
+      INTEGER                                  :: scaling_model = do_admm_exch_scaling_none, &
+                                                  aux_exch_func = do_admm_aux_exch_func_none
+      LOGICAL                                  :: aux_exch_func_param = .FALSE.
+      REAL(KIND=dp), DIMENSION(3)              :: aux_x_param = 0.0_dp
       LOGICAL                                  :: block_dm = .FALSE.
       LOGICAL                                  :: block_fit = .FALSE.
       INTEGER, DIMENSION(:, :), POINTER        :: block_map => Null()
-      TYPE(admm_gapw_type), POINTER            :: admm_gapw_env
+      TYPE(admm_gapw_type), POINTER            :: admm_gapw_env => NULL()
       LOGICAL                                  :: do_gapw = .FALSE.
       TYPE(admm_dm_type), POINTER              :: admm_dm => Null()
 
       TYPE(mo_set_type), DIMENSION(:), &
-         POINTER                               :: mos_aux_fit
+         POINTER                               :: mos_aux_fit => NULL()
       TYPE(neighbor_list_set_p_type), &
-         DIMENSION(:), POINTER                 :: sab_aux_fit, sab_aux_fit_asymm, sab_aux_fit_vs_orb
+         DIMENSION(:), POINTER                 :: sab_aux_fit => NULL(), sab_aux_fit_asymm => NULL(), sab_aux_fit_vs_orb => NULL()
       TYPE(dbcsr_p_type), DIMENSION(:), &
-         POINTER                               :: matrix_ks_aux_fit, matrix_ks_aux_fit_im, &
-                                                  matrix_ks_aux_fit_dft, matrix_ks_aux_fit_hfx, &
-                                                  matrix_s_aux_fit, matrix_s_aux_fit_vs_orb
-      TYPE(qs_rho_type), POINTER               :: rho_aux_fit, rho_aux_fit_buffer
-      TYPE(task_list_type), POINTER            :: task_list_aux_fit
+         POINTER                               :: matrix_ks_aux_fit => NULL(), matrix_ks_aux_fit_im => NULL(), &
+                                                  matrix_ks_aux_fit_dft => NULL(), matrix_ks_aux_fit_hfx => NULL(), &
+                                                  matrix_s_aux_fit => NULL(), matrix_s_aux_fit_vs_orb => NULL()
+      TYPE(qs_rho_type), POINTER               :: rho_aux_fit => NULL(), rho_aux_fit_buffer => NULL()
+      TYPE(task_list_type), POINTER            :: task_list_aux_fit => NULL()
       TYPE(cp_fm_type), DIMENSION(:), &
-         POINTER                               :: mo_derivs_aux_fit
+         POINTER                               :: mo_derivs_aux_fit => NULL()
 
    END TYPE
 
@@ -204,7 +209,7 @@ CONTAINS
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(admm_control_type), POINTER                   :: admm_control
       TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(IN)                                :: natoms, nao_aux_fit
 
       INTEGER                                            :: i, iatom, iblock, ispin, j, jatom, &
@@ -365,6 +370,14 @@ CONTAINS
       admm_env%aux_exch_func_param = admm_control%aux_exch_func_param
       admm_env%aux_x_param(:) = admm_control%aux_x_param(:)
 
+      !ADMMP, ADMMQ, ADMMS
+      IF ((.NOT. admm_env%charge_constrain) .AND. (admm_env%scaling_model == do_admm_exch_scaling_merlot)) &
+         admm_env%do_admmp = .TRUE.
+      IF (admm_env%charge_constrain .AND. (admm_env%scaling_model == do_admm_exch_scaling_none)) &
+         admm_env%do_admmq = .TRUE.
+      IF (admm_env%charge_constrain .AND. (admm_env%scaling_model == do_admm_exch_scaling_merlot)) &
+         admm_env%do_admms = .TRUE.
+
       IF ((admm_control%method == do_admm_blocking_purify_full) .OR. &
           (admm_control%method == do_admm_blocked_projection)) THEN
          ! Create block map
@@ -428,31 +441,30 @@ CONTAINS
                   admm_env%work_aux_orb, admm_env%work_aux_orb2, admm_env%work_aux_orb3, &
                   admm_env%work_aux_aux, admm_env%work_aux_aux2, admm_env%work_aux_aux3, &
                   admm_env%work_aux_aux4, admm_env%work_aux_aux5)
-      DO ispin = 1, SIZE(admm_env%lambda)
-         CALL cp_fm_release(admm_env%lambda(ispin))
-         CALL cp_fm_release(admm_env%lambda_inv(ispin))
-         CALL cp_fm_release(admm_env%lambda_inv_sqrt(ispin))
-         CALL cp_fm_release(admm_env%lambda_inv2(ispin))
-         CALL cp_fm_release(admm_env%C_hat(ispin))
-         CALL cp_fm_release(admm_env%P_tilde(ispin))
-         CALL cp_fm_release(admm_env%R(ispin))
-         CALL cp_fm_release(admm_env%R_purify(ispin))
-         CALL cp_fm_release(admm_env%H(ispin))
-         CALL cp_fm_release(admm_env%H_corr(ispin))
-         CALL cp_fm_release(admm_env%K(ispin))
-         CALL cp_fm_release(admm_env%M(ispin))
-         CALL cp_fm_release(admm_env%M_purify(ispin))
-         CALL cp_fm_release(admm_env%P_to_be_purified(ispin))
-         CALL cp_fm_release(admm_env%work_orb_nmo(ispin))
-         CALL cp_fm_release(admm_env%work_nmo_nmo1(ispin))
-         CALL cp_fm_release(admm_env%R_schur_R_t(ispin))
-         CALL cp_fm_release(admm_env%work_nmo_nmo2(ispin))
-         CALL cp_fm_release(admm_env%work_aux_nmo(ispin))
-         CALL cp_fm_release(admm_env%work_aux_nmo2(ispin))
-         CALL cp_fm_release(admm_env%mo_derivs_tmp(ispin))
-         CALL cp_fm_release(admm_env%ks_to_be_merged(ispin))
-         CALL cp_fm_release(admm_env%lambda_inv2(ispin))
-
+      CALL cp_fm_release(admm_env%lambda)
+      CALL cp_fm_release(admm_env%lambda_inv)
+      CALL cp_fm_release(admm_env%lambda_inv_sqrt)
+      CALL cp_fm_release(admm_env%lambda_inv2)
+      CALL cp_fm_release(admm_env%C_hat)
+      CALL cp_fm_release(admm_env%P_tilde)
+      CALL cp_fm_release(admm_env%R)
+      CALL cp_fm_release(admm_env%R_purify)
+      CALL cp_fm_release(admm_env%H)
+      CALL cp_fm_release(admm_env%H_corr)
+      CALL cp_fm_release(admm_env%K)
+      CALL cp_fm_release(admm_env%M)
+      CALL cp_fm_release(admm_env%M_purify)
+      CALL cp_fm_release(admm_env%P_to_be_purified)
+      CALL cp_fm_release(admm_env%work_orb_nmo)
+      CALL cp_fm_release(admm_env%work_nmo_nmo1)
+      CALL cp_fm_release(admm_env%R_schur_R_t)
+      CALL cp_fm_release(admm_env%work_nmo_nmo2)
+      CALL cp_fm_release(admm_env%work_aux_nmo)
+      CALL cp_fm_release(admm_env%work_aux_nmo2)
+      CALL cp_fm_release(admm_env%mo_derivs_tmp)
+      CALL cp_fm_release(admm_env%ks_to_be_merged)
+      CALL cp_fm_release(admm_env%lambda_inv2)
+      DO ispin = 1, SIZE(admm_env%eigvals_lambda)
          DEALLOCATE (admm_env%eigvals_lambda(ispin)%eigvals%data)
          DEALLOCATE (admm_env%eigvals_P_to_be_purified(ispin)%eigvals%data)
          DEALLOCATE (admm_env%eigvals_lambda(ispin)%eigvals)
@@ -460,28 +472,6 @@ CONTAINS
       END DO
       DEALLOCATE (admm_env%eigvals_lambda)
       DEALLOCATE (admm_env%eigvals_P_to_be_purified)
-      DEALLOCATE (admm_env%lambda)
-      DEALLOCATE (admm_env%lambda_inv)
-      DEALLOCATE (admm_env%lambda_inv_sqrt)
-      DEALLOCATE (admm_env%R)
-      DEALLOCATE (admm_env%R_purify)
-      DEALLOCATE (admm_env%M)
-      DEALLOCATE (admm_env%M_purify)
-      DEALLOCATE (admm_env%P_to_be_purified)
-      DEALLOCATE (admm_env%H)
-      DEALLOCATE (admm_env%H_corr)
-      DEALLOCATE (admm_env%K)
-      DEALLOCATE (admm_env%work_orb_nmo)
-      DEALLOCATE (admm_env%work_nmo_nmo1)
-      DEALLOCATE (admm_env%R_schur_R_t)
-      DEALLOCATE (admm_env%work_nmo_nmo2)
-      DEALLOCATE (admm_env%work_aux_nmo)
-      DEALLOCATE (admm_env%work_aux_nmo2)
-      DEALLOCATE (admm_env%mo_derivs_tmp)
-      DEALLOCATE (admm_env%ks_to_be_merged)
-      DEALLOCATE (admm_env%lambda_inv2)
-      DEALLOCATE (admm_env%C_hat)
-      DEALLOCATE (admm_env%P_tilde)
 
       IF (ASSOCIATED(admm_env%block_map)) &
          DEALLOCATE (admm_env%block_map)
@@ -500,12 +490,7 @@ CONTAINS
          END DO
          DEALLOCATE (admm_env%mos_aux_fit)
       END IF
-      IF (ASSOCIATED(admm_env%mo_derivs_aux_fit)) THEN
-         DO ispin = 1, SIZE(admm_env%mo_derivs_aux_fit)
-            CALL cp_fm_release(admm_env%mo_derivs_aux_fit(ispin))
-         END DO
-         DEALLOCATE (admm_env%mo_derivs_aux_fit)
-      END IF
+      CALL cp_fm_release(admm_env%mo_derivs_aux_fit)
 
       IF (ASSOCIATED(admm_env%sab_aux_fit)) CALL release_neighbor_list_sets(admm_env%sab_aux_fit)
       IF (ASSOCIATED(admm_env%sab_aux_fit_vs_orb)) CALL release_neighbor_list_sets(admm_env%sab_aux_fit_vs_orb)

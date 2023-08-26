@@ -45,7 +45,7 @@ adduser --disabled-password --gecos "" ubuntu
 echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 # link mpi executables into path
-MPI_INSTALL_DIR=$(dirname "$(command -v mpirun)")
+MPI_INSTALL_DIR=$(dirname "$(command -v mpiexec)")
 for i in "${MPI_INSTALL_DIR}"/*; do ln -sf "$i" /usr/bin/; done
 
 echo -e "\n========== Installing AiiDA-CP2K plugin =========="
@@ -69,6 +69,7 @@ service postgresql start
 cat > /usr/bin/cp2k << EndOfMessage
 #!/bin/bash -e
 source /opt/cp2k-toolchain/install/setup
+export OMP_NUM_THREADS=2
 /opt/cp2k/exe/local/cp2k.sdbg "\$@"
 EndOfMessage
 chmod +x /usr/bin/cp2k

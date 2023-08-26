@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -22,8 +22,6 @@ MODULE tmc_setup
         cp_add_default_logger, cp_get_default_logger, cp_logger_create, &
         cp_logger_get_default_io_unit, cp_logger_release, cp_logger_set, cp_logger_type, &
         cp_rm_default_logger, cp_to_string
-   USE cp_para_env,                     ONLY: cp_para_env_create
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE environment,                     ONLY: cp2k_get_walltime
    USE f77_interface,                   ONLY: create_force_env,&
                                               destroy_force_env
@@ -40,10 +38,7 @@ MODULE tmc_setup
                                               dp
    USE machine,                         ONLY: default_output_unit,&
                                               m_flush
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_comm_dup,&
-                                              mp_comm_free,&
-                                              mp_comm_split_direct
+   USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_rng_types,              ONLY: UNIFORM,&
                                               rng_stream_type
    USE physcon,                         ONLY: au2a => angstrom,&
@@ -102,7 +97,7 @@ CONTAINS
    SUBROUTINE do_tmc(input_declaration, root_section, para_env, globenv)
       TYPE(section_type), POINTER                        :: input_declaration
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'do_tmc'
@@ -145,7 +140,7 @@ CONTAINS
          WRITE (UNIT=output_unit, FMT="(/,T2,A)") REPEAT("-", 79)
       END IF
       bcast_output_unit = output_unit
-      CALL mp_bcast(bcast_output_unit, para_env%source, para_env%group)
+      CALL para_env%bcast(bcast_output_unit)
 
       ! create tmc_env
       CALL tmc_env_create(tmc_env)
@@ -240,7 +235,7 @@ CONTAINS
                CALL create_force_env(new_env_id=tmc_env%w_env%env_id_ener, &
                                      input_declaration=input_declaration, &
                                      input_path=tmc_env%params%energy_inp_file, &
-                                     mpi_comm=tmc_env%tmc_comp_set%para_env_sub_group%group, &
+                                     mpi_comm=tmc_env%tmc_comp_set%para_env_sub_group, &
                                      output_path=TRIM(expand_file_name_int(file_name=tmc_energy_worker_out_file_name, &
                                                                            ivalue=tmc_env%tmc_comp_set%group_nr)), &
                                      ierr=ierr)
@@ -254,7 +249,7 @@ CONTAINS
                CALL create_force_env(new_env_id=tmc_env%w_env%env_id_approx, &
                                      input_declaration=input_declaration, &
                                      input_path=tmc_env%params%NMC_inp_file, &
-                                     mpi_comm=tmc_env%tmc_comp_set%para_env_sub_group%group, &
+                                     mpi_comm=tmc_env%tmc_comp_set%para_env_sub_group, &
                                      output_path=TRIM(expand_file_name_int(file_name=tmc_NMC_worker_out_file_name, &
                                                                            ivalue=tmc_env%tmc_comp_set%group_nr)), &
                                      ierr=ierr)
@@ -352,12 +347,12 @@ CONTAINS
    SUBROUTINE do_analyze_files(input_declaration, root_section, para_env)
       TYPE(section_type), POINTER                        :: input_declaration
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'do_analyze_files'
 
-      INTEGER                                            :: comm, dir_ind, handle, my_mpi_world, &
-                                                            nr_dim, output_unit, temp
+      INTEGER                                            :: dir_ind, handle, nr_dim, output_unit, &
+                                                            temp
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(tmc_ana_list_type), DIMENSION(:), POINTER     :: ana_list
       TYPE(tmc_env_type), POINTER                        :: tmc_env
@@ -370,12 +365,9 @@ CONTAINS
 
       ! create a TMC environment (also to have a params environment)
       CALL tmc_env_create(tmc_env)
-      ! duplicate communicator
-      CALL mp_comm_dup(para_env%group, my_mpi_world)
-      ! -- spiltting communicators
-      CALL mp_comm_split_direct(my_mpi_world, comm, para_env%mepos, 0)
-      CALL cp_para_env_create(para_env=tmc_env%tmc_comp_set%para_env_m_ana, &
-                              group=comm)
+      ! -- spiltting communicator
+      ALLOCATE (tmc_env%tmc_comp_set%para_env_m_ana)
+      CALL tmc_env%tmc_comp_set%para_env_m_ana%from_split(para_env, para_env%mepos, 0)
       IF (para_env%num_pe .NE. 1) &
          CPWARN("just one out of "//cp_to_string(para_env%num_pe)//"cores is used ")
       ! distribute work to availuble cores
@@ -456,7 +448,6 @@ CONTAINS
 
          DEALLOCATE (ana_list)
       END IF
-      CALL mp_comm_free(my_mpi_world)
       CALL tmc_env_release(tmc_env)
 
       ! end the timing
@@ -533,7 +524,7 @@ CONTAINS
       CALL create_force_env(new_env_id=env_id, &
                             input_declaration=input_declaration, &
                             input_path=tmc_env%params%energy_inp_file, &
-                            mpi_comm=tmc_env%tmc_comp_set%para_env_m_ana%group, &
+                            mpi_comm=tmc_env%tmc_comp_set%para_env_m_ana, &
                             output_path="tmc_ana.out", ierr=ierr)
       CALL get_initial_conf(tmc_params=tmc_env%params, init_conf=elem, &
                             env_id=env_id)
@@ -805,13 +796,13 @@ CONTAINS
    SUBROUTINE tmc_redistributing_cores(tmc_comp_set, para_env, ana_on_the_fly, &
                                        success)
       TYPE(tmc_comp_set_type), POINTER                   :: tmc_comp_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: ana_on_the_fly
       LOGICAL                                            :: success
 
-      INTEGER :: cc_group, cc_group_rank, comm_tmp, master_ana_group, master_ana_rank, &
+      INTEGER :: cc_group, cc_group_rank, master_ana_group, master_ana_rank, &
          master_first_e_worker_g, master_first_e_worker_r, master_worker_group, &
-         master_worker_rank, my_mpi_undefined, my_mpi_world, total_used
+         master_worker_rank, my_mpi_undefined, total_used
       LOGICAL                                            :: flag, master
 
       CPASSERT(ASSOCIATED(tmc_comp_set))
@@ -867,9 +858,6 @@ CONTAINS
                       tmc_comp_set%ana_on_the_fly
          IF (para_env%num_pe - 1 .GT. total_used) &
             CPWARN(" mpi ranks are unused, but can be used for analysis.")
-
-         ! duplicate communicator
-         CALL mp_comm_dup(para_env%group, my_mpi_world)
 
          ! determine the master node
          IF (para_env%mepos == para_env%num_pe - 1) THEN
@@ -928,46 +916,38 @@ CONTAINS
          IF (success) THEN
             ! -- splitting communicators
             ! worker intern communication
-            CALL mp_comm_split_direct(my_mpi_world, comm_tmp, cc_group, cc_group_rank)
-            NULLIFY (tmc_comp_set%para_env_sub_group)
+            ALLOCATE (tmc_comp_set%para_env_sub_group)
+            CALL tmc_comp_set%para_env_sub_group%from_split(para_env, cc_group, cc_group_rank)
             ! not the unused cores
-            IF (cc_group_rank .GE. 0) THEN
-               CALL cp_para_env_create(para_env=tmc_comp_set%para_env_sub_group, &
-                                       group=comm_tmp)
-            ELSE
-               CALL mp_comm_free(comm_tmp)
+            IF (cc_group_rank < 0) THEN
+               CALL tmc_comp_set%para_env_sub_group%free()
+               DEALLOCATE (tmc_comp_set%para_env_sub_group)
             END IF
 
             ! worker master communication
-            CALL mp_comm_split_direct(my_mpi_world, comm_tmp, master_worker_group, master_worker_rank)
-            NULLIFY (tmc_comp_set%para_env_m_w)
+            ALLOCATE (tmc_comp_set%para_env_m_w)
+            CALL tmc_comp_set%para_env_m_w%from_split(para_env, master_worker_group, master_worker_rank)
             ! not the unused cores
-            IF (master_worker_rank .GE. 0) THEN
-               CALL cp_para_env_create(para_env=tmc_comp_set%para_env_m_w, &
-                                       group=comm_tmp)
-            ELSE
-               CALL mp_comm_free(comm_tmp)
+            IF (master_worker_rank < 0) THEN
+               CALL tmc_comp_set%para_env_m_w%free()
+               DEALLOCATE (tmc_comp_set%para_env_m_w)
             END IF
 
             ! communicator only for first energy worker master and global master
-            CALL mp_comm_split_direct(my_mpi_world, comm_tmp, master_first_e_worker_g, master_first_e_worker_r)
-            NULLIFY (tmc_comp_set%para_env_m_first_w)
+            ALLOCATE (tmc_comp_set%para_env_m_first_w)
+            CALL tmc_comp_set%para_env_m_first_w%from_split(para_env, master_first_e_worker_g, master_first_e_worker_r)
             ! not the unused cores
-            IF (master_first_e_worker_r .GE. 0) THEN
-               CALL cp_para_env_create(para_env=tmc_comp_set%para_env_m_first_w, &
-                                       group=comm_tmp)
-            ELSE
-               CALL mp_comm_free(comm_tmp)
+            IF (master_first_e_worker_r < 0) THEN
+               CALL tmc_comp_set%para_env_m_first_w%free()
+               DEALLOCATE (tmc_comp_set%para_env_m_first_w)
             END IF
 
             ! communicator only for analysis worker and global master
-            CALL mp_comm_split_direct(my_mpi_world, comm_tmp, master_ana_group, master_ana_rank)
-            NULLIFY (tmc_comp_set%para_env_m_ana)
-            IF (master_ana_rank .GE. 0) THEN
-               CALL cp_para_env_create(para_env=tmc_comp_set%para_env_m_ana, &
-                                       group=comm_tmp)
-            ELSE
-               CALL mp_comm_free(comm_tmp)
+            ALLOCATE (tmc_comp_set%para_env_m_ana)
+            CALL tmc_comp_set%para_env_m_ana%from_split(para_env, master_ana_group, master_ana_rank)
+            IF (master_ana_rank < 0) THEN
+               CALL tmc_comp_set%para_env_m_ana%free()
+               DEALLOCATE (tmc_comp_set%para_env_m_ana)
             END IF
 
             ! communicator for master only to handle external control
@@ -977,16 +957,13 @@ CONTAINS
                master_ana_group = 1
                master_ana_rank = 1
             END IF
-            CALL mp_comm_split_direct(my_mpi_world, comm_tmp, master_ana_group, master_ana_rank)
-            NULLIFY (tmc_comp_set%para_env_m_only)
-            IF (master_ana_rank .GE. 0) THEN
-               CALL cp_para_env_create(para_env=tmc_comp_set%para_env_m_only, &
-                                       group=comm_tmp)
-            ELSE
-               CALL mp_comm_free(comm_tmp)
+            ALLOCATE (tmc_comp_set%para_env_m_only)
+            CALL tmc_comp_set%para_env_m_only%from_split(para_env, master_ana_group, master_ana_rank)
+            IF (master_ana_rank < 0) THEN
+               CALL tmc_comp_set%para_env_m_only%free()
+               DEALLOCATE (tmc_comp_set%para_env_m_only)
             END IF
          END IF
-         CALL mp_comm_free(my_mpi_world)
       END IF
    END SUBROUTINE tmc_redistributing_cores
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -18,7 +18,6 @@ MODULE pint_qtb
                                               cp_logger_type
    USE cp_output_handling,              ONLY: debug_print_level,&
                                               silent_print_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE fft_lib,                         ONLY: fft_1dm,&
                                               fft_create_plan_1dm,&
                                               fft_destroy_plan
@@ -34,7 +33,7 @@ MODULE pint_qtb
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: pi,&
                                               twopi
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_rng_types,              ONLY: GAUSSIAN,&
                                               rng_record_length,&
                                               rng_stream_type,&
@@ -271,8 +270,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: fp
       REAL(KIND=dp), DIMENSION(:), POINTER               :: fp1
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(fft_plan_type)                                :: plan
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
 
@@ -292,7 +291,7 @@ CONTAINS
       ALLOCATE (qtb_therm%step(p))
 
       !initialize random forces on ionode only
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
 
          NULLIFY (logger)
          logger => cp_get_default_logger()
@@ -387,8 +386,8 @@ CONTAINS
          IF (p > 1) DEALLOCATE (fp1)
       END IF
 
-      CALL mp_bcast(qtb_therm%h, para_env%source, para_env%group)
-      CALL mp_bcast(qtb_therm%step, para_env%source, para_env%group)
+      CALL para_env%bcast(qtb_therm%h)
+      CALL para_env%bcast(qtb_therm%step)
 
       ALLOCATE (qtb_therm%r(nf, p, ndim))
       ALLOCATE (qtb_therm%cpt(p))

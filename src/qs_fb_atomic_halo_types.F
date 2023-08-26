@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,14 +17,11 @@ MODULE qs_fb_atomic_halo_types
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_max,&
-                                              mp_min,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
@@ -687,7 +684,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE fb_atomic_halo_list_write(atomic_halos, para_env, fb_section)
       TYPE(fb_atomic_halo_list_obj), INTENT(IN)          :: atomic_halos
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: fb_section
 
       CHARACTER(LEN=default_string_length)               :: string
@@ -757,7 +754,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE fb_atomic_halo_list_write_info(atomic_halos, para_env, scf_section)
       TYPE(fb_atomic_halo_list_obj), INTENT(IN)          :: atomic_halos
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: scf_section
 
       INTEGER                                            :: ihalo, max_natoms, min_natoms, &
@@ -789,10 +786,10 @@ CONTAINS
          max_natoms = MAX(max_natoms, nhalo_atoms)
          min_natoms = MIN(min_natoms, nhalo_atoms)
       END DO
-      CALL mp_max(max_natoms, para_env%group)
-      CALL mp_min(min_natoms, para_env%group)
-      CALL mp_sum(total_n_halos, para_env%group)
-      CALL mp_sum(total_n_halo_atoms, para_env%group)
+      CALL para_env%max(max_natoms)
+      CALL para_env%min(min_natoms)
+      CALL para_env%sum(total_n_halos)
+      CALL para_env%sum(total_n_halo_atoms)
       ave_natoms = REAL(total_n_halo_atoms, dp)/REAL(total_n_halos, dp)
       ! write info
       IF (unit_nr > 0) THEN

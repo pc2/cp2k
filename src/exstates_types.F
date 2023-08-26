@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,8 +13,8 @@
 ! **************************************************************************************************
 MODULE exstates_types
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
-   USE cp_fm_types,                     ONLY: cp_fm_p_type,&
-                                              cp_fm_release
+   USE cp_fm_types,                     ONLY: cp_fm_release,&
+                                              cp_fm_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE input_constants,                 ONLY: xc_kernel_method_best
    USE input_section_types,             ONLY: section_vals_type,&
@@ -34,6 +34,17 @@ MODULE exstates_types
 
    PUBLIC :: excited_energy_type, exstate_release, exstate_create
    PUBLIC :: exstate_matrix_release, exstate_potential_release
+   PUBLIC :: wfn_history_type
+
+! *****************************************************************************
+
+   TYPE wfn_history_type
+      INTEGER                                            :: state
+      REAL(KIND=dp)                                      :: evalue
+      TYPE(cp_fm_type), POINTER, DIMENSION(:)            :: evect => NULL()
+      TYPE(cp_fm_type), POINTER, DIMENSION(:)            :: cpmos => NULL()
+      REAL(KIND=dp)                                      :: xsval, gsval, gsmin
+   END TYPE wfn_history_type
 
 ! *****************************************************************************
 !> \brief Contains information on the excited states energy
@@ -45,8 +56,9 @@ MODULE exstates_types
       INTEGER                                            :: state
       REAL(KIND=dp)                                      :: evalue
       INTEGER                                            :: xc_kernel_method
-      TYPE(cp_fm_p_type), POINTER, DIMENSION(:)          :: evect => NULL()
-      TYPE(cp_fm_p_type), POINTER, DIMENSION(:)          :: cpmos => NULL()
+      LOGICAL                                            :: debug_forces = .FALSE.
+      TYPE(cp_fm_type), POINTER, DIMENSION(:)            :: evect => NULL()
+      TYPE(cp_fm_type), POINTER, DIMENSION(:)            :: cpmos => NULL()
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_pe => NULL()
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hz => NULL()
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_pe_admm => NULL()
@@ -56,12 +68,12 @@ MODULE exstates_types
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_px1_admm_asymm => NULL()
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_wx1 => NULL()
       TYPE(pw_type)                                      :: vh_rspace
-      TYPE(pw_type), DIMENSION(:), POINTER             :: vxc_rspace => NULL()
-      TYPE(pw_type), DIMENSION(:), POINTER             :: vtau_rspace => NULL()
-      TYPE(pw_type), DIMENSION(:), POINTER             :: vadmm_rspace => NULL()
+      TYPE(pw_type), DIMENSION(:), POINTER               :: vxc_rspace => NULL()
+      TYPE(pw_type), DIMENSION(:), POINTER               :: vtau_rspace => NULL()
+      TYPE(pw_type), DIMENSION(:), POINTER               :: vadmm_rspace => NULL()
       TYPE(local_rho_type), POINTER                      :: local_rho_set => NULL()
       TYPE(local_rho_type), POINTER                      :: local_rho_set_admm => NULL()
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: fingerprint
+      TYPE(wfn_history_type)                             :: wfn_history
    END TYPE excited_energy_type
 
 CONTAINS
@@ -73,33 +85,17 @@ CONTAINS
    SUBROUTINE exstate_release(ex_env)
       TYPE(excited_energy_type), POINTER                 :: ex_env
 
-      INTEGER                                            :: is
-
       IF (ASSOCIATED(ex_env)) THEN
 
-         IF (ASSOCIATED(ex_env%evect)) THEN
-            DO is = 1, SIZE(ex_env%evect)
-               CALL cp_fm_release(ex_env%evect(is)%matrix)
-               DEALLOCATE (ex_env%evect(is)%matrix)
-            END DO
-            DEALLOCATE (ex_env%evect)
-         END IF
-         IF (ASSOCIATED(ex_env%cpmos)) THEN
-            DO is = 1, SIZE(ex_env%cpmos)
-               CALL cp_fm_release(ex_env%cpmos(is)%matrix)
-               DEALLOCATE (ex_env%cpmos(is)%matrix)
-            END DO
-            DEALLOCATE (ex_env%cpmos)
-         END IF
+         CALL cp_fm_release(ex_env%evect)
+         CALL cp_fm_release(ex_env%cpmos)
          !
          CALL exstate_matrix_release(ex_env)
          !
          CALL exstate_potential_release(ex_env)
          !
-         IF (ASSOCIATED(ex_env%fingerprint)) THEN
-            DEALLOCATE (ex_env%fingerprint)
-            NULLIFY (ex_env%fingerprint)
-         END IF
+         CALL cp_fm_release(ex_env%wfn_history%evect)
+         CALL cp_fm_release(ex_env%wfn_history%cpmos)
 
          DEALLOCATE (ex_env)
 
@@ -203,11 +199,19 @@ CONTAINS
          CALL section_vals_val_get(dft_section, "EXCITED_STATES%STATE", i_val=ex_env%state)
          CALL section_vals_val_get(dft_section, "EXCITED_STATES%XC_KERNEL_METHOD", &
                                    i_val=ex_env%xc_kernel_method)
+         CALL section_vals_val_get(dft_section, "EXCITED_STATES%DEBUG_FORCES", &
+                                   l_val=ex_env%debug_forces)
       ELSE
          ex_env%state = 0
          ex_env%xc_kernel_method = xc_kernel_method_best
       END IF
-      NULLIFY (ex_env%fingerprint)
+      ex_env%wfn_history%evalue = 0.0_dp
+      ex_env%wfn_history%state = ex_env%state
+      ex_env%wfn_history%xsval = 1.0_dp
+      ex_env%wfn_history%gsval = 1.0_dp
+      ex_env%wfn_history%gsmin = 1.0_dp
+      NULLIFY (ex_env%wfn_history%cpmos)
+      NULLIFY (ex_env%wfn_history%evect)
 
    END SUBROUTINE exstate_create
 

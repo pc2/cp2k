@@ -6,8 +6,8 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
-spla_ver="1.5.4"
-spla_sha256="de30e427d24c741e2e4fcae3d7668162056ac2574afed6522c0bb49d6f1d0f79"
+spla_ver="1.5.5"
+spla_sha256="bc0c366e228344b1b2df55b9ce750d73c1165380e512da5a04d471db126d66ce"
 source "${SCRIPT_DIR}"/common_vars.sh
 source "${SCRIPT_DIR}"/tool_kit.sh
 source "${SCRIPT_DIR}"/signal_trap.sh
@@ -177,8 +177,8 @@ prepend_path CPATH "$pkg_install_dir/include/spla"
 export SPLA_INCLUDE_DIR="$pkg_install_dir/include/spla"
 export SPLA_LIBS="-lspla"
 export SPLA_ROOT="${pkg_install_dir}"
-prepend_path CMAKE_PREFIX_PATH "${pkg_install_dir}/lib/cmake"
-prepend_path PKG_CONFIG_PATH "${pkg_install_dir}/lib/pkgconfig"
+prepend_path PKG_CONFIG_PATH "$pkg_install_dir/lib/pkgconfig"
+prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
 EOF
   fi
   cat << EOF >> "${BUILDDIR}/setup_spla"
@@ -198,10 +198,13 @@ EOF
     cat << EOF >> "${BUILDDIR}/setup_spla"
 export CP_LDFLAGS="\${CP_LDFLAGS} IF_HIP(${SPLA_HIP_LDFLAGS}|${SPLA_LDFLAGS})"
 EOF
-  fi
-  if [ "$ENABLE_CUDA" = "__TRUE__" ]; then
+  elif [ "$ENABLE_CUDA" = "__TRUE__" ]; then
     cat << EOF >> "${BUILDDIR}/setup_spla"
 export CP_LDFLAGS="\${CP_LDFLAGS} IF_CUDA(${SPLA_CUDA_LDFLAGS}|${SPLA_LDFLAGS})"
+EOF
+  else
+    cat << EOF >> "${BUILDDIR}/setup_spla"
+export CP_LDFLAGS="\${CP_LDFLAGS} ${SPLA_LDFLAGS}"
 EOF
   fi
   cat "${BUILDDIR}/setup_spla" >> $SETUPFILE

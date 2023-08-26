@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -36,7 +36,8 @@ MODULE pw_poisson_types
                                               ps_implicit_parameters,&
                                               ps_implicit_release,&
                                               ps_implicit_type
-   USE ps_wavelet_types,                ONLY: ps_wavelet_release,&
+   USE ps_wavelet_types,                ONLY: WAVELET0D,&
+                                              ps_wavelet_release,&
                                               ps_wavelet_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_grids,                        ONLY: pw_grid_release
@@ -100,25 +101,25 @@ MODULE pw_poisson_types
 !> \author Ole Schuett
 ! **************************************************************************************************
    TYPE pw_poisson_parameter_type
-      INTEGER                        :: solver
+      INTEGER                        :: solver = pw_poisson_none
 
-      INTEGER, DIMENSION(3)          :: periodic
+      INTEGER, DIMENSION(3)          :: periodic = 0
       INTEGER                        :: ewald_type = do_ewald_none
-      INTEGER                        :: ewald_o_spline
-      REAL(KIND=dp)                 :: ewald_alpha
+      INTEGER                        :: ewald_o_spline = 0
+      REAL(KIND=dp)                 :: ewald_alpha = 0.0_dp
 
-      REAL(KIND=dp)                 :: mt_rel_cutoff
-      REAL(KIND=dp)                 :: mt_alpha
+      REAL(KIND=dp)                 :: mt_rel_cutoff = 0.0_dp
+      REAL(KIND=dp)                 :: mt_alpha = 0.0_dp
 
-      INTEGER                        :: wavelet_scf_type
-      INTEGER                        :: wavelet_method
-      INTEGER                        :: wavelet_special_dimension
-      CHARACTER(LEN=1)               :: wavelet_geocode
+      INTEGER                        :: wavelet_scf_type = 0
+      INTEGER                        :: wavelet_method = WAVELET0D
+      INTEGER                        :: wavelet_special_dimension = 0
+      CHARACTER(LEN=1)               :: wavelet_geocode = "S"
 
-      LOGICAL                        :: has_dielectric
-      TYPE(dielectric_parameters)    :: dielectric_params
-      TYPE(ps_implicit_parameters)   :: ps_implicit_params
-      TYPE(dirichlet_bc_parameters)  :: dbc_params
+      LOGICAL                        :: has_dielectric = .FALSE.
+      TYPE(dielectric_parameters)    :: dielectric_params = dielectric_parameters()
+      TYPE(ps_implicit_parameters)   :: ps_implicit_params = ps_implicit_parameters()
+      TYPE(dirichlet_bc_parameters)  :: dbc_params = dirichlet_bc_parameters()
    END TYPE pw_poisson_parameter_type
 
 ! **************************************************************************************************
@@ -126,20 +127,20 @@ MODULE pw_poisson_types
 !> \author fawzi
 ! **************************************************************************************************
    TYPE pw_poisson_type
-      INTEGER :: ref_count
-      INTEGER :: pw_level
-      INTEGER :: method
-      INTEGER :: used_grid
-      LOGICAL :: rebuild
-      TYPE(greens_fn_type), POINTER               :: green_fft
-      TYPE(ps_wavelet_type), POINTER               :: wavelet
-      TYPE(pw_poisson_parameter_type)             :: parameters
+      INTEGER :: ref_count = 0
+      INTEGER :: pw_level = 0
+      INTEGER :: method = pw_poisson_none
+      INTEGER :: used_grid = 0
+      LOGICAL :: rebuild = .TRUE.
+      TYPE(greens_fn_type), POINTER               :: green_fft => NULL()
+      TYPE(ps_wavelet_type), POINTER               :: wavelet => NULL()
+      TYPE(pw_poisson_parameter_type)             :: parameters = pw_poisson_parameter_type()
       REAL(KIND=dp), DIMENSION(3, 3)             :: cell_hmat = 0.0_dp
-      TYPE(pw_pool_p_type), DIMENSION(:), POINTER :: pw_pools
-      TYPE(pw_grid_type), POINTER                 :: mt_super_ref_pw_grid
-      TYPE(ps_implicit_type), POINTER             :: implicit_env
-      TYPE(pw_grid_type), POINTER                 :: dct_pw_grid
-      TYPE(realspace_grid_type), POINTER          :: diel_rs_grid
+      TYPE(pw_pool_p_type), DIMENSION(:), POINTER :: pw_pools => NULL()
+      TYPE(pw_grid_type), POINTER                 :: mt_super_ref_pw_grid => NULL()
+      TYPE(ps_implicit_type), POINTER             :: implicit_env => NULL()
+      TYPE(pw_grid_type), POINTER                 :: dct_pw_grid => NULL()
+      TYPE(realspace_grid_type), POINTER          :: diel_rs_grid => NULL()
    END TYPE pw_poisson_type
 
 ! **************************************************************************************************
@@ -147,25 +148,25 @@ MODULE pw_poisson_types
 !> \author JGH,Teo,fawzi
 ! **************************************************************************************************
    TYPE greens_fn_type
-      INTEGER :: method
-      INTEGER :: special_dimension
-      REAL(KIND=dp) :: radius
-      REAL(KIND=dp) :: MT_alpha
-      REAL(KIND=dp) :: MT_rel_cutoff
-      REAL(KIND=dp) :: slab_size
-      REAL(KIND=dp) :: alpha
-      LOGICAL :: p3m
-      INTEGER :: p3m_order
-      REAL(KIND=dp) :: p3m_alpha
-      REAL(KIND=dp), DIMENSION(:, :), POINTER :: p3m_coeff
-      REAL(KIND=dp), DIMENSION(:, :), POINTER :: p3m_bm2
-      LOGICAL :: sr_screening
-      REAL(KIND=dp) :: sr_alpha
-      REAL(KIND=dp) :: sr_rc
-      TYPE(pw_type) :: influence_fn
-      TYPE(pw_type), POINTER :: dct_influence_fn
-      TYPE(pw_type), POINTER :: screen_fn
-      TYPE(pw_type), POINTER :: p3m_charge
+      INTEGER :: method = PERIODIC3D
+      INTEGER :: special_dimension = 0
+      REAL(KIND=dp) :: radius = 0.0_dp
+      REAL(KIND=dp) :: MT_alpha = 1.0_dp
+      REAL(KIND=dp) :: MT_rel_cutoff = 1.0_dp
+      REAL(KIND=dp) :: slab_size = 0.0_dp
+      REAL(KIND=dp) :: alpha = 0.0_dp
+      LOGICAL :: p3m = .FALSE.
+      INTEGER :: p3m_order = 0
+      REAL(KIND=dp) :: p3m_alpha = 0.0_dp
+      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: p3m_coeff
+      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: p3m_bm2
+      LOGICAL :: sr_screening = .FALSE.
+      REAL(KIND=dp) :: sr_alpha = 1.0_dp
+      REAL(KIND=dp) :: sr_rc = 0.0_dp
+      TYPE(pw_type) :: influence_fn = pw_type()
+      TYPE(pw_type), POINTER :: dct_influence_fn => NULL()
+      TYPE(pw_type), POINTER :: screen_fn => NULL()
+      TYPE(pw_type), POINTER :: p3m_charge => NULL()
    END TYPE greens_fn_type
 
 CONTAINS
@@ -196,26 +197,6 @@ CONTAINS
       TYPE(pw_grid_type), POINTER                        :: dct_grid
       TYPE(pw_pool_type), POINTER                        :: pw_pool_xpndd
       TYPE(pw_type), POINTER                             :: dct_gf
-
-      green%p3m = .FALSE.
-      green%special_dimension = 0
-      green%radius = 0.0_dp
-      green%slab_size = 0.0_dp
-      green%alpha = 0.0_dp
-      green%method = PERIODIC3D
-      green%MT_alpha = 1.0_dp
-      green%MT_rel_cutoff = 1.0_dp
-      green%p3m = .FALSE.
-      green%p3m_order = 0
-      green%p3m_alpha = 0.0_dp
-      green%sr_screening = .FALSE.
-      green%sr_alpha = 1.0_dp
-      green%sr_rc = 0.0_dp
-
-      NULLIFY (green%p3m_charge)
-      NULLIFY (green%p3m_coeff, green%p3m_bm2)
-      NULLIFY (green%dct_influence_fn)
-      NULLIFY (green%screen_fn)
 
       !CPASSERT(cell%orthorhombic)
       DO i = 1, 3
@@ -353,7 +334,8 @@ CONTAINS
                nz = grid%g_hat(iz, ig)
                g2 = grid%gsq(ig)
                g3d = fourpi/g2
-               gg = 0.5_dp*SQRT(g2)
+               gxy = MAX(0.0_dp, g2 - grid%g(iz, ig)*grid%g(iz, ig))
+               gg = 0.5_dp*SQRT(gxy)
                gf%cc(ig) = g3d*(1.0_dp - (-1.0_dp)**nz*EXP(-gg*zlength))
             END DO
             IF (grid%have_g0) gf%cc(1) = 0.0_dp
@@ -477,9 +459,9 @@ CONTAINS
             DEALLOCATE (gftype%p3m_charge)
          END IF
       END IF
-      IF (ASSOCIATED(gftype%p3m_bm2)) &
+      IF (ALLOCATED(gftype%p3m_bm2)) &
          DEALLOCATE (gftype%p3m_bm2)
-      IF (ASSOCIATED(gftype%p3m_coeff)) &
+      IF (ALLOCATED(gftype%p3m_coeff)) &
          DEALLOCATE (gftype%p3m_coeff)
    END SUBROUTINE pw_green_release
 
@@ -507,13 +489,13 @@ CONTAINS
 
       lb => gftype%influence_fn%pw_grid%bounds(1, :)
       ub => gftype%influence_fn%pw_grid%bounds(2, :)
-      IF (ASSOCIATED(gftype%p3m_bm2)) THEN
+      IF (ALLOCATED(gftype%p3m_bm2)) THEN
          IF (LBOUND(gftype%p3m_bm2, 2) /= MINVAL(lb(:)) .OR. &
              UBOUND(gftype%p3m_bm2, 2) /= MAXVAL(ub(:))) THEN
             DEALLOCATE (gftype%p3m_bm2)
          END IF
       END IF
-      IF (.NOT. ASSOCIATED(gftype%p3m_bm2)) THEN
+      IF (.NOT. ALLOCATED(gftype%p3m_bm2)) THEN
          ALLOCATE (gftype%p3m_bm2(3, MINVAL(lb(:)):MAXVAL(ub(:))))
       END IF
 
@@ -551,31 +533,26 @@ CONTAINS
 !> \brief ...
 !> \param gf ...
 ! **************************************************************************************************
-   SUBROUTINE calc_p3m_charge(gf)
+   PURE SUBROUTINE calc_p3m_charge(gf)
 
-      TYPE(greens_fn_type), INTENT(IN)                   :: gf
+      TYPE(greens_fn_type), INTENT(INOUT)                :: gf
 
       INTEGER                                            :: ig, l, m, n
       REAL(KIND=dp)                                      :: arg, novol
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: bm2
-      TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_type), POINTER                             :: pc
-
-      grid => gf%influence_fn%pw_grid
 
       ! check if charge function is consistent with current box volume
 
-      pc => gf%p3m_charge
-      bm2 => gf%p3m_bm2
-      arg = 1.0_dp/(8.0_dp*gf%p3m_alpha**2)
-      novol = REAL(grid%ngpts, KIND=dp)/grid%vol
-      DO ig = 1, grid%ngpts_cut_local
-         l = grid%g_hat(1, ig)
-         m = grid%g_hat(2, ig)
-         n = grid%g_hat(3, ig)
-         pc%cr(ig) = novol*EXP(-arg*grid%gsq(ig))* &
-                     bm2(1, l)*bm2(2, m)*bm2(3, n)
-      END DO
+      ASSOCIATE (grid => gf%influence_fn%pw_grid, bm2 => gf%p3m_bm2)
+         arg = 1.0_dp/(8.0_dp*gf%p3m_alpha**2)
+         novol = REAL(grid%ngpts, KIND=dp)/grid%vol
+         DO ig = 1, grid%ngpts_cut_local
+            l = grid%g_hat(1, ig)
+            m = grid%g_hat(2, ig)
+            n = grid%g_hat(3, ig)
+            gf%p3m_charge%cr(ig) = novol*EXP(-arg*grid%gsq(ig))* &
+                                   bm2(1, l)*bm2(2, m)*bm2(3, n)
+         END DO
+      END ASSOCIATE
 
    END SUBROUTINE calc_p3m_charge
 
@@ -595,17 +572,6 @@ CONTAINS
 
       CPASSERT(.NOT. ASSOCIATED(poisson_env))
       ALLOCATE (poisson_env)
-      poisson_env%ref_count = 1
-      poisson_env%method = pw_poisson_none
-      poisson_env%rebuild = .TRUE.
-      NULLIFY (poisson_env%green_fft, &
-               poisson_env%pw_pools, &
-               poisson_env%mt_super_ref_pw_grid, &
-               poisson_env%wavelet, &
-               poisson_env%implicit_env, &
-               poisson_env%dct_pw_grid, &
-               poisson_env%diel_rs_grid)
-      poisson_env%pw_level = -1
       poisson_env%ref_count = 1
 
    END SUBROUTINE pw_poisson_create

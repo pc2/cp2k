@@ -6,8 +6,8 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
-openblas_ver="0.3.21" # Keep in sync with get_openblas_arch.sh
-openblas_sha256="f36ba3d7a60e7c8bcc54cd9aaa9b1223dd42eaf02c811791c37e8ca707c241ca"
+openblas_ver="0.3.23" # Keep in sync with get_openblas_arch.sh
+openblas_sha256="5d9491d07168a5d00116cdc068a40022c3455bf9293c7cb86a65b1054d7e5114"
 openblas_pkg="OpenBLAS-${openblas_ver}.tar.gz"
 
 source "${SCRIPT_DIR}"/common_vars.sh
@@ -52,7 +52,38 @@ case "${with_openblas}" in
       #                     for a good compromise between memory usage and scalability
       #
       # Unfortunately, NO_SHARED=1 breaks ScaLAPACK build.
-      if [ "${TARGET_CPU}" = "generic" ]; then
+      case "${TARGET_CPU}" in
+        "generic")
+          TARGET="NEHALEM"
+          ;;
+        "native")
+          TARGET=${OPENBLAS_LIBCORE}
+          ;;
+        "broadwell" | "skylake")
+          TARGET="HASWELL"
+          ;;
+        "skylake-avx512")
+          TARGET="SKYLAKEX"
+          ;;
+        *)
+          TARGET=${TARGET_CPU}
+          ;;
+      esac
+      TARGET=$(echo ${TARGET} | tr '[:lower:]' '[:upper:]')
+      echo "Installing OpenBLAS library for target ${TARGET}"
+      (
+        make -j $(get_nprocs) \
+          MAKE_NB_JOBS=0 \
+          TARGET=${TARGET} \
+          NUM_THREADS=64 \
+          USE_THREAD=1 \
+          USE_OPENMP=1 \
+          NO_AFFINITY=1 \
+          CC="${CC}" \
+          FC="${FC}" \
+          PREFIX="${pkg_install_dir}" \
+          > make.log 2>&1 || tail -n ${LOG_LINES} make.log
+      ) || (
         make -j $(get_nprocs) \
           MAKE_NB_JOBS=0 \
           TARGET=NEHALEM \
@@ -63,35 +94,11 @@ case "${with_openblas}" in
           CC="${CC}" \
           FC="${FC}" \
           PREFIX="${pkg_install_dir}" \
-          > make.generic.log 2>&1 || tail -n ${LOG_LINES} make.generic.log
-      else
-        (
-          make -j $(get_nprocs) \
-            MAKE_NB_JOBS=0 \
-            NUM_THREADS=64 \
-            USE_THREAD=1 \
-            USE_OPENMP=1 \
-            NO_AFFINITY=1 \
-            CC="${CC}" \
-            FC="${FC}" \
-            PREFIX="${pkg_install_dir}" \
-            > make.log 2>&1 || tail -n ${LOG_LINES} make.log
-        ) || (
-          make -j $(get_nprocs) \
-            MAKE_NB_JOBS=0 \
-            TARGET=NEHALEM \
-            NUM_THREADS=64 \
-            USE_THREAD=1 \
-            USE_OPENMP=1 \
-            NO_AFFINITY=1 \
-            CC="${CC}" \
-            FC="${FC}" \
-            PREFIX="${pkg_install_dir}" \
-            > make.nehalem.log 2>&1 || tail -n ${LOG_LINES} make.nehalem.log
-        )
-      fi
+          > make.nehalem.log 2>&1 || tail -n ${LOG_LINES} make.nehalem.log
+      )
       make -j $(get_nprocs) \
         MAKE_NB_JOBS=0 \
+        TARGET=${TARGET} \
         NUM_THREADS=64 \
         USE_THREAD=1 \
         USE_OPENMP=1 \
@@ -106,7 +113,12 @@ case "${with_openblas}" in
     OPENBLAS_CFLAGS="-I'${pkg_install_dir}/include'"
     OPENBLAS_LDFLAGS="-L'${pkg_install_dir}/lib' -Wl,-rpath,'${pkg_install_dir}/lib'"
     OPENBLAS_ROOT="${pkg_install_dir}"
-    OPENBLAS_LIBS="-lopenblas"
+    # Prefer static library if available
+    if [ -f "${pkg_install_dir}/lib/libopenblas.a" ]; then
+      OPENBLAS_LIBS="-l:libopenblas.a"
+    else
+      OPENBLAS_LIBS="-lopenblas"
+    fi
     ;;
   __SYSTEM__)
     echo "==================== Finding LAPACK from system paths ===================="
@@ -142,6 +154,8 @@ if [ "$with_openblas" != "__DONTUSE__" ]; then
 prepend_path LD_LIBRARY_PATH "$pkg_install_dir/lib"
 prepend_path LD_RUN_PATH "$pkg_install_dir/lib"
 prepend_path LIBRARY_PATH "$pkg_install_dir/lib"
+prepend_path PKG_CONFIG_PATH "$pkg_install_dir/lib/pkgconfig"
+prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
 prepend_path CPATH "$pkg_install_dir/include"
 export OPENBLAS_ROOT=${pkg_install_dir}
 EOF
@@ -155,6 +169,8 @@ export OPENBLAS_LIBS="${OPENBLAS_LIBS}"
 export MATH_CFLAGS="\${MATH_CFLAGS} ${OPENBLAS_CFLAGS}"
 export MATH_LDFLAGS="\${MATH_LDFLAGS} ${OPENBLAS_LDFLAGS}"
 export MATH_LIBS="\${MATH_LIBS} ${OPENBLAS_LIBS}"
+prepend_path PKG_CONFIG_PATH "$pkg_install_dir/lib/pkgconfig"
+prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
 EOF
 fi
 

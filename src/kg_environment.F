@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -24,7 +24,6 @@ MODULE kg_environment
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE distribution_2d_types,           ONLY: distribution_2d_type
    USE external_potential_types,        ONLY: get_potential,&
@@ -46,9 +45,7 @@ MODULE kg_environment
                                               int_8
    USE lri_environment_init,            ONLY: lri_env_basis,&
                                               lri_env_init
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_gather,&
-                                              mp_max
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_types,                  ONLY: molecule_type
    USE particle_types,                  ONLY: particle_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -129,9 +126,9 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: bid
       REAL(KIND=dp)                                      :: load, radb, rmax
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(gto_basis_set_type), POINTER                  :: lri_aux_basis
       TYPE(integration_grid_type), POINTER               :: ig_full, ig_mol
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), POINTER                        :: qs_kind
       TYPE(section_vals_type), POINTER                   :: lri_section
 
@@ -320,13 +317,13 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: pair_radius
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(distribution_1d_type), POINTER                :: distribution_1d
       TYPE(distribution_2d_type), POINTER                :: distribution_2d
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
       TYPE(local_atoms_type), ALLOCATABLE, DIMENSION(:)  :: atom2d
       TYPE(local_potential_type), POINTER                :: tnadd_potential
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(section_vals_type), POINTER                   :: neighbor_list_section
@@ -558,7 +555,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE kg_build_subsets(kg_env, para_env)
       TYPE(kg_environment_type), POINTER                 :: kg_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'kg_build_subsets'
 
@@ -630,7 +627,7 @@ CONTAINS
       ! get the maximum number of local pairs on all nodes (size of the mssg)
       ! remember how many pairs we have local
       npairs_local = npairs
-      CALL mp_max(npairs, para_env%group)
+      CALL para_env%max(npairs)
 
       ! allocate message
       ALLOCATE (pairs(2, npairs))
@@ -644,7 +641,7 @@ CONTAINS
       ! better would be a scheme where duplicates are removed in a tree-like reduction scheme.
       ! this step can be needlessly memory intensive in the current implementation.
 
-      IF (para_env%source .EQ. para_env%mepos) THEN
+      IF (para_env%is_source()) THEN
          ALLOCATE (msg_gather(2, npairs*para_env%num_pe))
       ELSE
          ALLOCATE (msg_gather(2, 1))
@@ -652,11 +649,11 @@ CONTAINS
 
       msg_gather = 0
 
-      CALL mp_gather(pairs, msg_gather, para_env%source, para_env%group)
+      CALL para_env%gather(pairs, msg_gather)
 
       DEALLOCATE (pairs)
 
-      IF (para_env%source .EQ. para_env%mepos) THEN
+      IF (para_env%is_source()) THEN
 
          ! shift all non-zero entries to the beginning of the array and count the number of actual pairs
          npairs = 0
@@ -698,12 +695,12 @@ CONTAINS
       !WRITE(*,'(A27,40X,I6,1X,A6)') ' KG| Vertex coloring result', ncolors, 'colors'
 
       ! broadcast the number of colors to all nodes
-      CALL mp_bcast(ncolors, para_env%source, para_env%group)
+      CALL para_env%bcast(ncolors)
 
       IF (.NOT. ALLOCATED(color_of_node)) ALLOCATE (color_of_node(nmol))
 
       ! broadcast the resulting coloring to all nodes.....
-      CALL mp_bcast(color_of_node, para_env%source, para_env%group)
+      CALL para_env%bcast(color_of_node)
 
       IF ((kg_env%nsubsets .NE. 0) .AND. (ncolors .NE. kg_env%nsubsets)) THEN
          ! number of subsets has changed

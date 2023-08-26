@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -45,7 +45,6 @@ MODULE cp2k_shell
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE f77_interface,                   ONLY: &
         calc_energy_force, calc_force, create_force_env, destroy_force_env, get_cell, get_energy, &
         get_force, get_natom, get_pos, get_stress_tensor, set_cell, set_pos
@@ -59,7 +58,7 @@ MODULE cp2k_shell
                                               m_getlog,&
                                               m_getpid,&
                                               m_hostnm
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
    USE physcon,                         ONLY: angstrom,&
                                               evolt
    USE string_utilities,                ONLY: uppercase
@@ -75,10 +74,10 @@ MODULE cp2k_shell
       REAL(dp)                                           :: pos_fact = 1.0_dp
       REAL(dp)                                           :: e_fact = 1.0_dp
       LOGICAL                                            :: harsh = .FALSE.
-      TYPE(cp_para_env_type), POINTER                    :: para_env => Null()
+      TYPE(mp_para_env_type), POINTER                    :: para_env => Null()
       CHARACTER(LEN=5)                                   :: units = "au"
       INTEGER                                            :: env_id = -1
-      INTEGER                                            :: iw
+      INTEGER                                            :: iw = -1
    END TYPE cp2k_shell_type
 
    PUBLIC :: launch_cp2k_shell
@@ -199,9 +198,9 @@ CONTAINS
             success = .FALSE. ! EOF
          END IF
       END IF
-      CALL mp_bcast(success, shell%para_env%source, shell%para_env%group)
+      CALL shell%para_env%bcast(success)
       IF (.NOT. success) RETURN
-      CALL mp_bcast(line, shell%para_env%source, shell%para_env%group)
+      CALL shell%para_env%bcast(line)
 
       ! extract command
       line = TRIM(line)
@@ -579,7 +578,7 @@ CONTAINS
          CALL uppercase(line)
          IF (.NOT. my_assert(TRIM(line) == '*END', 'missing *END', shell)) RETURN
       END IF
-      CALL mp_bcast(pos, shell%para_env%source, shell%para_env%group)
+      CALL shell%para_env%bcast(pos)
       CALL get_pos(shell%env_id, old_pos, n_el=3*n_atom, ierr=ierr)
       IF (.NOT. my_assert(ierr == 0, 'get_pos error', shell)) RETURN
       CALL set_pos(shell%env_id, new_pos=pos, n_el=3*n_atom, ierr=ierr)
@@ -613,7 +612,7 @@ CONTAINS
          IF (.NOT. my_assert(iostat == 0, 'setcell read failed', shell)) RETURN
          cell(:, :) = cell(:, :)/shell%pos_fact
       END IF
-      CALL mp_bcast(cell, shell%para_env%source, shell%para_env%group)
+      CALL shell%para_env%bcast(cell)
       CALL set_cell(shell%env_id, new_cell=cell, ierr=ierr)
       IF (.NOT. my_assert(ierr == 0, 'set_cell failed', shell)) RETURN
    END SUBROUTINE set_cell_command

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -11,10 +11,10 @@
 
 MODULE cp_eri_mme_interface
    USE basis_set_types,                 ONLY: gto_basis_set_type
-   USE cell_types,                      ONLY: cell_create,&
-                                              cell_release,&
+   USE cell_methods,                    ONLY: cell_create,&
+                                              init_cell
+   USE cell_types,                      ONLY: cell_release,&
                                               cell_type,&
-                                              init_cell,&
                                               pbc
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
@@ -22,7 +22,6 @@ MODULE cp_eri_mme_interface
                                               cp_print_key_section_create,&
                                               cp_print_key_unit_nr,&
                                               medium_print_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE eri_mme_test,                    ONLY: eri_mme_2c_perf_acc_test,&
                                               eri_mme_3c_perf_acc_test
    USE eri_mme_types,                   ONLY: eri_mme_coulomb,&
@@ -47,7 +46,7 @@ MODULE cp_eri_mme_interface
    USE input_val_types,                 ONLY: real_t
    USE kinds,                           ONLY: default_string_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: init_orbital_pointers
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
@@ -78,13 +77,14 @@ MODULE cp_eri_mme_interface
    END INTERFACE
 
    TYPE cp_eri_mme_param
-      TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(eri_mme_param)                                :: par
+      TYPE(cp_logger_type), POINTER                      :: logger => NULL()
+      ! There is a bug with some older compilers preventing a default initialization of  derived types with allocatable components
+      TYPE(eri_mme_param)                                :: par != eri_mme_param()
       TYPE(section_vals_type), &
          POINTER                                         :: mme_section => NULL()
-      INTEGER                                            :: G_count_2c, R_count_2c
-      INTEGER                                            :: GG_count_3c, GR_count_3c, RR_count_3c
-      LOGICAL                                            :: do_calib
+      INTEGER                                            :: G_count_2c = 0, R_count_2c = 0
+      INTEGER                                            :: GG_count_3c = 0, GR_count_3c = 0, RR_count_3c = 0
+      LOGICAL                                            :: do_calib = .FALSE.
    END TYPE cp_eri_mme_param
 
 CONTAINS
@@ -344,12 +344,12 @@ CONTAINS
    SUBROUTINE eri_mme_set_params_from_basis(param, cell, qs_kind_set, basis_type_1, basis_type_2, para_env, &
                                             potential, pot_par)
       TYPE(cp_eri_mme_param), INTENT(INOUT)              :: param
-      TYPE(cell_type), INTENT(IN)                        :: cell
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(qs_kind_type), DIMENSION(:), INTENT(IN), &
          POINTER                                         :: qs_kind_set
       CHARACTER(len=*), INTENT(IN)                       :: basis_type_1
       CHARACTER(len=*), INTENT(IN), OPTIONAL             :: basis_type_2
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER, INTENT(IN), OPTIONAL                      :: potential
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: pot_par
 
@@ -391,7 +391,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: is_ortho
       REAL(KIND=dp), INTENT(IN)                          :: zet_min, zet_max
       INTEGER, INTENT(IN)                                :: l_max_zet, l_max
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER, INTENT(IN), OPTIONAL                      :: potential
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: pot_par
 
@@ -708,32 +708,32 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE cp_eri_mme_update_local_counts(param, para_env, G_count_2c, R_count_2c, GG_count_3c, GR_count_3c, RR_count_3c)
       TYPE(cp_eri_mme_param), INTENT(INOUT)              :: param
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER, INTENT(INOUT), OPTIONAL                   :: G_count_2c, R_count_2c, GG_count_3c, &
                                                             GR_count_3c, RR_count_3c
 
       IF (PRESENT(G_count_2c)) THEN
-         CALL mp_sum(G_count_2c, para_env%group)
+         CALL para_env%sum(G_count_2c)
          param%G_count_2c = param%G_count_2c + G_count_2c
       END IF
 
       IF (PRESENT(R_count_2c)) THEN
-         CALL mp_sum(R_count_2c, para_env%group)
+         CALL para_env%sum(R_count_2c)
          param%R_count_2c = param%R_count_2c + R_count_2c
       END IF
 
       IF (PRESENT(GG_count_3c)) THEN
-         CALL mp_sum(GG_count_3c, para_env%group)
+         CALL para_env%sum(GG_count_3c)
          param%GG_count_3c = param%GG_count_3c + GG_count_3c
       END IF
 
       IF (PRESENT(GR_count_3c)) THEN
-         CALL mp_sum(GR_count_3c, para_env%group)
+         CALL para_env%sum(GR_count_3c)
          param%GR_count_3c = param%GR_count_3c + GR_count_3c
       END IF
 
       IF (PRESENT(RR_count_3c)) THEN
-         CALL mp_sum(RR_count_3c, para_env%group)
+         CALL para_env%sum(RR_count_3c)
          param%RR_count_3c = param%RR_count_3c + RR_count_3c
       END IF
 
@@ -746,7 +746,7 @@ CONTAINS
 !> \param eri_mme_test_section ...
 ! **************************************************************************************************
    SUBROUTINE cp_eri_mme_perf_acc_test(para_env, iw, eri_mme_test_section)
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER, INTENT(IN)                                :: iw
       TYPE(section_vals_type), POINTER                   :: eri_mme_test_section
 

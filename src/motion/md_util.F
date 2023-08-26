@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,7 +16,6 @@ MODULE md_util
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_generate_filename
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_cp2k_restarts,             ONLY: write_restart
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -25,7 +24,7 @@ MODULE md_util
                                               dp
    USE md_energies,                     ONLY: md_write_output
    USE md_environment_types,            ONLY: md_environment_type
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -99,7 +98,7 @@ CONTAINS
                                         eigenvalues, &
                                         eigenvectors)
       TYPE(section_vals_type), POINTER                   :: md_section, vib_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(OUT)                               :: dof
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eigenvalues
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: eigenvectors
@@ -125,7 +124,7 @@ CONTAINS
                                                    my_local=.FALSE.)
       END IF
       ! read file
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          INQUIRE (FILE=filename, exist=exist)
          IF (.NOT. exist) THEN
             CPABORT("File "//filename//" is not found.")
@@ -149,11 +148,11 @@ CONTAINS
       END IF
       ! broadcast to all compulational nodes. note that it is assumed
       ! that source is the ionode
-      CALL mp_bcast(dof, para_env%source, para_env%group)
-      CALL mp_bcast(eigenvalues, para_env%source, para_env%group)
-      CALL mp_bcast(eigenvectors, para_env%source, para_env%group)
+      CALL para_env%bcast(dof)
+      CALL para_env%bcast(eigenvalues)
+      CALL para_env%bcast(eigenvectors)
       ! close file
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL close_file(unit_number=unit_nr)
       END IF
    END SUBROUTINE read_vib_eigs_unformatted

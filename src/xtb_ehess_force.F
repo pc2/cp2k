@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,7 +12,6 @@
 MODULE xtb_ehess_force
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind_set
-   USE atprop_types,                    ONLY: atprop_type
    USE cell_types,                      ONLY: cell_type,&
                                               get_cell,&
                                               pbc
@@ -21,7 +20,6 @@ MODULE xtb_ehess_force
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_get_block_p, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
         dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, dbcsr_type
@@ -34,7 +32,7 @@ MODULE xtb_ehess_force
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: oorootpi,&
                                               pi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_poisson_types,                ONLY: do_ewald_ewald,&
                                               do_ewald_none,&
@@ -99,9 +97,9 @@ CONTAINS
       INTEGER :: atom_i, atom_j, blk, ewald_type, handle, i, ia, iatom, icol, ikind, iounit, irow, &
          j, jatom, jkind, la, lb, lmaxa, lmaxb, natom, natorb_a, natorb_b, ni, nimg, nj, nkind, &
          nmat, za, zb
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of
       INTEGER, DIMENSION(25)                             :: laoa, laob
       INTEGER, DIMENSION(3)                              :: cellind, periodic
-      INTEGER, DIMENSION(:), POINTER                     :: atom_of_kind, kind_of
       LOGICAL                                            :: calculate_forces, defined, do_ewald, &
                                                             found, just_energy, use_virial
       REAL(KIND=dp)                                      :: alpha, deth, dr, etaa, etab, fi, gmij0, &
@@ -114,16 +112,15 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(5)                        :: kappaa, kappab
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: dsblock, pblock0, pblock1, sblock
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(atprop_type), POINTER                         :: atprop
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(distribution_1d_type), POINTER                :: local_particles
       TYPE(ewald_environment_type), POINTER              :: ewald_env
       TYPE(ewald_pw_type), POINTER                       :: ewald_pw
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -140,7 +137,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          iounit = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          iounit = -1
@@ -155,7 +152,6 @@ CONTAINS
                       rho=rho, &
                       energy=energy, &
                       virial=virial, &
-                      atprop=atprop, &
                       dft_control=dft_control)
 
       xtb_control => dft_control%qs_control%xtb_control
@@ -245,8 +241,8 @@ CONTAINS
             CALL get_cell(cell=cell, periodic=periodic, deth=deth)
             CALL ewald_env_get(ewald_env, alpha=alpha, ewald_type=ewald_type)
             CALL get_qs_env(qs_env=qs_env, sab_tbe=n_list)
-            CALL tb_ewald_overlap(gmcharge0, mcharge0, alpha, n_list, virial, use_virial, atprop)
-            CALL tb_ewald_overlap(gmcharge1, mcharge1, alpha, n_list, virial, use_virial, atprop)
+            CALL tb_ewald_overlap(gmcharge0, mcharge0, alpha, n_list, virial, use_virial)
+            CALL tb_ewald_overlap(gmcharge1, mcharge1, alpha, n_list, virial, use_virial)
             SELECT CASE (ewald_type)
             CASE DEFAULT
                CPABORT("Invalid Ewald type")
@@ -293,10 +289,10 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, &
                       atomic_kind_set=atomic_kind_set, &
                       force=force, para_env=para_env)
-      CALL mp_sum(gmcharge0(:, 1), para_env%group)
-      CALL mp_sum(gchrg0(:, :, 1), para_env%group)
-      CALL mp_sum(gmcharge1(:, 1), para_env%group)
-      CALL mp_sum(gchrg1(:, :, 1), para_env%group)
+      CALL para_env%sum(gmcharge0(:, 1))
+      CALL para_env%sum(gchrg0(:, :, 1))
+      CALL para_env%sum(gmcharge1(:, 1))
+      CALL para_env%sum(gchrg1(:, :, 1))
 
       IF (xtb_control%coulomb_lr) THEN
          IF (do_ewald) THEN
@@ -312,7 +308,6 @@ CONTAINS
          END IF
       END IF
 
-      ALLOCATE (atom_of_kind(natom), kind_of(natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                kind_of=kind_of, &
                                atom_of_kind=atom_of_kind)
@@ -345,7 +340,7 @@ CONTAINS
       END DO
       IF (debug_forces) THEN
          fodeb(1:3) = force(1)%rho_elec(1:3, 1) - fodeb(1:3)
-         CALL mp_sum(fodeb, para_env%group)
+         CALL para_env%sum(fodeb)
          IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: P*dH[Pz]    ", fodeb
       END IF
 
@@ -415,7 +410,7 @@ CONTAINS
       CALL dbcsr_iterator_stop(iter)
       IF (debug_forces) THEN
          fodeb(1:3) = force(1)%rho_elec(1:3, 1) - fodeb(1:3)
-         CALL mp_sum(fodeb, para_env%group)
+         CALL para_env%sum(fodeb)
          IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: Pz*H[P]*dS  ", fodeb
       END IF
 
@@ -432,7 +427,7 @@ CONTAINS
                                            matrix_p0(1)%matrix, matrix_p1(1)%matrix, xgamma)
          IF (debug_forces) THEN
             fodeb(1:3) = force(1)%rho_elec(1:3, 1) - fodeb(1:3)
-            CALL mp_sum(fodeb, para_env%group)
+            CALL para_env%sum(fodeb)
             IF (iounit > 0) WRITE (iounit, "(T3,A,T33,3F16.8)") "DEBUG:: Pz*H3[P]    ", fodeb
          END IF
          DEALLOCATE (xgamma)
@@ -451,7 +446,6 @@ CONTAINS
       END IF
 
       DEALLOCATE (gmcharge0, gchrg0, gmcharge1, gchrg1)
-      DEALLOCATE (atom_of_kind, kind_of)
 
       CALL timestop(handle)
 
@@ -477,8 +471,8 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'dftb3_diagonal_hessian_force'
 
       INTEGER                                            :: atom_i, atom_j, blk, handle, i, icol, &
-                                                            ikind, irow, jkind, natom
-      INTEGER, DIMENSION(:), POINTER                     :: atom_of_kind, kind_of
+                                                            ikind, irow, jkind
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of
       LOGICAL                                            :: found
       REAL(KIND=dp)                                      :: fi, gmijp, gmijq, ui, uj
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: dsblock, p0block, p1block, sblock
@@ -488,8 +482,7 @@ CONTAINS
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
 
       CALL timeset(routineN, handle)
-      CALL get_qs_env(qs_env=qs_env, matrix_s=matrix_s, natom=natom)
-      ALLOCATE (atom_of_kind(natom), kind_of(natom))
+      CALL get_qs_env(qs_env=qs_env, matrix_s=matrix_s)
       CALL get_qs_env(qs_env=qs_env, atomic_kind_set=atomic_kind_set)
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                kind_of=kind_of, atom_of_kind=atom_of_kind)
@@ -527,7 +520,6 @@ CONTAINS
          END DO
       END DO
       CALL dbcsr_iterator_stop(iter)
-      DEALLOCATE (atom_of_kind, kind_of)
 
       CALL timestop(handle)
 

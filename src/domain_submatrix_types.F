@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,6 +13,7 @@
 ! **************************************************************************************************
 MODULE domain_submatrix_types
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_comm_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -29,18 +30,18 @@ MODULE domain_submatrix_types
    ! submatrix storage with the meta-data necessary to convert
    ! the submatrix into the DBCSR format
    TYPE domain_submatrix_type
-      INTEGER                                       :: domain
+      INTEGER                                       :: domain = 0
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE    :: mdata
-      INTEGER                                       :: nbrows
-      INTEGER                                       :: nbcols
-      INTEGER                                       :: nrows
-      INTEGER                                       :: ncols
+      INTEGER                                       :: nbrows = 0
+      INTEGER                                       :: nbcols = 0
+      INTEGER                                       :: nrows = 0
+      INTEGER                                       :: ncols = 0
       INTEGER, DIMENSION(:), ALLOCATABLE            :: dbcsr_row
       INTEGER, DIMENSION(:), ALLOCATABLE            :: dbcsr_col
       INTEGER, DIMENSION(:), ALLOCATABLE            :: size_brow
       INTEGER, DIMENSION(:), ALLOCATABLE            :: size_bcol
-      INTEGER                                       :: nnodes
-      INTEGER                                       :: groupid
+      INTEGER                                       :: nnodes = 0
+      TYPE(mp_comm_type)                            :: group = mp_comm_type()
    END TYPE domain_submatrix_type
 
    TYPE domain_map_type

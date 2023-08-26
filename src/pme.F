@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -32,6 +32,7 @@ MODULE pme
                                               ewald_pw_type
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
+   USE message_passing,                 ONLY: mp_comm_type
    USE particle_types,                  ONLY: particle_type
    USE pme_tools,                       ONLY: get_center,&
                                               set_list
@@ -50,9 +51,14 @@ MODULE pme
                                               REALSPACE,&
                                               RECIPROCALSPACE,&
                                               pw_type
-   USE realspace_grid_types,            ONLY: &
-        pw2rs, realspace_grid_desc_type, realspace_grid_type, rs2pw, rs_grid_create, &
-        rs_grid_release, rs_grid_set_box, rs_grid_zero, rs_pw_transfer
+   USE realspace_grid_types,            ONLY: realspace_grid_desc_type,&
+                                              realspace_grid_type,&
+                                              rs_grid_create,&
+                                              rs_grid_release,&
+                                              rs_grid_set_box,&
+                                              rs_grid_zero,&
+                                              transfer_pw2rs,&
+                                              transfer_rs2pw
    USE shell_potential_types,           ONLY: shell_kind_type
    USE structure_factor_types,          ONLY: structure_factor_type
    USE structure_factors,               ONLY: structure_factor_allocate,&
@@ -111,14 +117,15 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'pme_evaluate'
 
-      INTEGER                                            :: group, handle, i, ig, ipart, j, nd(3), &
-                                                            npart, nshell, p1, p2
+      INTEGER                                            :: handle, i, ig, ipart, j, nd(3), npart, &
+                                                            nshell, p1, p2
       LOGICAL                                            :: is1_core, is2_core
       REAL(KIND=dp)                                      :: alpha, dvols, fat1, ffa, ffb
       REAL(KIND=dp), DIMENSION(3)                        :: fat
       REAL(KIND=dp), DIMENSION(3, 3)                     :: f_stress, h_stress
       TYPE(dg_rho0_type), POINTER                        :: dg_rho0
       TYPE(dg_type), POINTER                             :: dg
+      TYPE(mp_comm_type)                                 :: group
       TYPE(pw_grid_type), POINTER                        :: grid_b, grid_s
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: pw_big_pool, pw_small_pool
@@ -161,14 +168,16 @@ CONTAINS
       END IF
 
       CALL pw_pool_create_pw(pw_small_pool, rhos1, &
-                             use_data=REALDATA3D)
+                             use_data=REALDATA3D, in_space=REALSPACE)
       CALL pw_pool_create_pw(pw_small_pool, rhos2, &
-                             use_data=REALDATA3D)
+                             use_data=REALDATA3D, in_space=REALSPACE)
 
       ALLOCATE (rden)
       CALL rs_grid_create(rden, rs_desc)
       CALL rs_grid_set_box(grid_b, rs=rden)
       CALL rs_grid_zero(rden)
+
+      CPASSERT(ASSOCIATED(box))
 
       IF (rden%desc%parallel .AND. rden%desc%distributed) THEN
          CALL get_center(particle_set, box, exp_igr%centre, exp_igr%delta, grid_b%npts, 1)
@@ -236,7 +245,7 @@ CONTAINS
       END IF
 
       CALL pw_pool_create_pw(pw_big_pool, rhob_r, use_data=REALDATA3D, in_space=REALSPACE)
-      CALL rs_pw_transfer(rden, rhob_r, rs2pw)
+      CALL transfer_rs2pw(rden, rhob_r)
 
       !-------------- ELECTROSTATIC CALCULATION -----------
 
@@ -257,7 +266,7 @@ CONTAINS
          dvols = rhos1%pw_grid%dvol
          ALLOCATE (rpot)
          CALL rs_grid_create(rpot, rs_desc)
-         CALL rs_pw_transfer(rpot, phi_r, pw2rs)
+         CALL transfer_pw2rs(rpot, phi_r)
          ipart = 0
          DO
             CALL set_list(particle_set, npart, exp_igr%centre, p1, rden, ipart, exp_igr%core_centre)
@@ -309,7 +318,7 @@ CONTAINS
                   nd(j) = 1
                   CALL pw_derive(rhob_g, nd)
                   CALL pw_transfer(rhob_g, rhob_r)
-                  CALL rs_pw_transfer(rpot, rhob_r, pw2rs)
+                  CALL transfer_pw2rs(rpot, rhob_r)
 
                   ipart = 0
                   DO
@@ -363,7 +372,7 @@ CONTAINS
          CALL rs_grid_set_box(grid_b, rs=drpot(i))
          CALL pw_transfer(dphi_g(i), rhob_r)
          CALL pw_pool_give_back_pw(pw_big_pool, dphi_g(i))
-         CALL rs_pw_transfer(drpot(i), rhob_r, pw2rs)
+         CALL transfer_pw2rs(drpot(i), rhob_r)
       END DO
 
       CALL pw_pool_give_back_pw(pw_big_pool, rhob_r)
@@ -503,7 +512,7 @@ CONTAINS
       TYPE(dg_type), POINTER                             :: dg
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(structure_factor_type)                        :: exp_igr
-      TYPE(cell_type), INTENT(IN)                        :: box
+      TYPE(cell_type), POINTER                           :: box
       INTEGER, INTENT(IN)                                :: p1, p2
       TYPE(pw_grid_type), INTENT(IN)                     :: grid_b, grid_s
       TYPE(pw_type), INTENT(INOUT)                       :: rhos1, rhos2
@@ -577,6 +586,8 @@ CONTAINS
          ey1 => exp_igr%ey(:, p1)
          ez1 => exp_igr%ez(:, p1)
       END IF
+
+      CPASSERT(ASSOCIATED(box))
 
       CALL dg_get_strucfac(box%hmat, r1, grid_s%npts, grid_b%npts, center1, &
                            exp_igr%lb, ex1, ey1, ez1)

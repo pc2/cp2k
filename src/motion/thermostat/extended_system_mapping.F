@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -14,7 +14,6 @@
 ! **************************************************************************************************
 MODULE extended_system_mapping
 
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE extended_system_types,           ONLY: debug_isotropic_limit,&
                                               lnhc_parameters_type,&
@@ -25,7 +24,7 @@ MODULE extended_system_mapping
         nph_uniaxial_damped_ensemble, nph_uniaxial_ensemble, npt_f_ensemble, npt_i_ensemble, &
         npt_ia_ensemble, nve_ensemble, nvt_adiabatic_ensemble, nvt_ensemble, reftraj_ensemble
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: molecule_kind_type
    USE molecule_types,                  ONLY: global_constraint_type,&
                                               molecule_type
@@ -139,7 +138,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(lnhc_parameters_type), POINTER                :: nhc
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_constraint_type), POINTER              :: gci
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'nhc_to_particle_mapping'
@@ -178,7 +177,7 @@ CONTAINS
 
          ! if thermostats are replicated but molecules distributed, we have to
          ! sum s_kin over all processors
-         IF (map_info%dis_type == do_thermo_communication) CALL mp_sum(map_info%s_kin, para_env%group)
+         IF (map_info%dis_type == do_thermo_communication) CALL para_env%sum(map_info%s_kin)
 
          ! We know the total number of system thermostats.
          IF ((sum_of_thermostats == 1) .AND. (map_info%dis_type /= do_thermo_no_communication)) THEN
@@ -242,7 +241,7 @@ CONTAINS
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_molecules
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(OUT)                               :: natoms_local
       TYPE(simpar_type), POINTER                         :: simpar
       INTEGER, INTENT(OUT)                               :: sum_of_thermostats
@@ -305,7 +304,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(lnhc_parameters_type), POINTER                :: nhc
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_constraint_type), POINTER              :: gci
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'nhc_to_particle_mapping_slow'
@@ -341,7 +340,7 @@ CONTAINS
 
          ! if thermostats are replicated but molecules distributed, we have to
          ! sum s_kin over all processors
-         IF (map_info%dis_type == do_thermo_communication) CALL mp_sum(map_info%s_kin, para_env%group)
+         IF (map_info%dis_type == do_thermo_communication) CALL para_env%sum(map_info%s_kin)
 
          ! We know the total number of system thermostats.
          IF ((sum_of_thermostats == 1) .AND. (map_info%dis_type /= do_thermo_no_communication)) THEN
@@ -400,7 +399,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(lnhc_parameters_type), POINTER                :: nhc
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_constraint_type), POINTER              :: gci
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'nhc_to_particle_mapping_fast'
@@ -436,7 +435,7 @@ CONTAINS
 
          ! if thermostats are replicated but molecules distributed, we have to
          ! sum s_kin over all processors
-         IF (map_info%dis_type == do_thermo_communication) CALL mp_sum(map_info%s_kin, para_env%group)
+         IF (map_info%dis_type == do_thermo_communication) CALL para_env%sum(map_info%s_kin)
 
          ! We know the total number of system thermostats.
          IF ((sum_of_thermostats == 1) .AND. (map_info%dis_type /= do_thermo_no_communication)) THEN
@@ -500,7 +499,7 @@ CONTAINS
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_molecules
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(OUT)                               :: natoms_local
       TYPE(simpar_type), POINTER                         :: simpar
       INTEGER, INTENT(OUT)                               :: sum_of_thermostats
@@ -562,7 +561,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(lnhc_parameters_type), POINTER                :: nhc
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_constraint_type), POINTER              :: gci
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'nhc_to_shell_mapping'
@@ -601,7 +600,7 @@ CONTAINS
 
          ! If thermostats are replicated but molecules distributed, we have to
          ! sum s_kin over all processors
-         IF (map_info%dis_type == do_thermo_communication) CALL mp_sum(map_info%s_kin, para_env%group)
+         IF (map_info%dis_type == do_thermo_communication) CALL para_env%sum(map_info%s_kin)
 
          ! Now that we know how many there are stick this into nhc%nkt
          ! (number of degrees of freedom times k_B T )

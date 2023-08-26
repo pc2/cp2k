@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -27,8 +27,7 @@ MODULE averages_types
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE md_ener_types,                   ONLY: md_ener_type
-   USE virial_types,                    ONLY: virial_type,&
-                                              zero_virial
+   USE virial_types,                    ONLY: virial_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -37,21 +36,21 @@ MODULE averages_types
 
 ! **************************************************************************************************
    TYPE average_quantities_type
-      INTEGER                                       :: ref_count, itimes_start
-      LOGICAL                                       :: do_averages
-      TYPE(section_vals_type), POINTER              :: averages_section
+      INTEGER                                       :: ref_count = 0, itimes_start = -1
+      LOGICAL                                       :: do_averages = .FALSE.
+      TYPE(section_vals_type), POINTER              :: averages_section => NULL()
       ! Real Scalar Quantities
-      REAL(KIND=dp)                                 :: avetemp, avepot, avekin, &
-                                                       avevol, aveca, avecb, avecc
-      REAL(KIND=dp)                                 :: avetemp_baro, avehugoniot, avecpu
-      REAL(KIND=dp)                                 :: aveal, avebe, avega, avepress, &
-                                                       avekinc, avetempc, avepxx
-      REAL(KIND=dp)                                 :: avetemp_qm, avekin_qm, econs
+      REAL(KIND=dp)                                 :: avetemp = 0.0_dp, avepot = 0.0_dp, avekin = 0.0_dp, &
+                                                       avevol = 0.0_dp, aveca = 0.0_dp, avecb = 0.0_dp, avecc = 0.0_dp
+      REAL(KIND=dp)                                 :: avetemp_baro = 0.0_dp, avehugoniot = 0.0_dp, avecpu = 0.0_dp
+      REAL(KIND=dp)                                 :: aveal = 0.0_dp, avebe = 0.0_dp, avega = 0.0_dp, avepress = 0.0_dp, &
+                                                       avekinc = 0.0_dp, avetempc = 0.0_dp, avepxx = 0.0_dp
+      REAL(KIND=dp)                                 :: avetemp_qm = 0.0_dp, avekin_qm = 0.0_dp, econs = 0.0_dp
       ! Virial
-      TYPE(virial_type), POINTER                    :: virial
+      TYPE(virial_type), POINTER                    :: virial => NULL()
       ! Colvar
-      REAL(KIND=dp), POINTER, DIMENSION(:)          :: avecolvar
-      REAL(KIND=dp), POINTER, DIMENSION(:)          :: aveMmatrix
+      REAL(KIND=dp), POINTER, DIMENSION(:)          :: avecolvar => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:)          :: aveMmatrix => NULL()
    END TYPE average_quantities_type
 
 ! **************************************************************************************************
@@ -86,41 +85,15 @@ CONTAINS
       LOGICAL                                            :: do_colvars
 
       ALLOCATE (averages)
-      NULLIFY (averages%virial)
-      NULLIFY (averages%avecolvar)
-      NULLIFY (averages%aveMmatrix)
       ! Point to the averages section
       averages%averages_section => averages_section
-      ! Initialize averages
       averages%ref_count = 1
-      averages%itimes_start = -1
-      averages%avetemp = 0.0_dp
-      averages%avepot = 0.0_dp
-      averages%avekin = 0.0_dp
-      averages%avevol = 0.0_dp
-      averages%aveca = 0.0_dp
-      averages%avecb = 0.0_dp
-      averages%avecc = 0.0_dp
-      averages%avetemp_baro = 0.0_dp
-      averages%avehugoniot = 0.0_dp
-      averages%avecpu = 0.0_dp
-      averages%aveal = 0.0_dp
-      averages%avebe = 0.0_dp
-      averages%avega = 0.0_dp
-      averages%avepress = 0.0_dp
-      averages%avekinc = 0.0_dp
-      averages%avetempc = 0.0_dp
-      averages%avepxx = 0.0_dp
-      averages%avetemp_qm = 0.0_dp
-      averages%avekin_qm = 0.0_dp
-      averages%econs = 0.0_dp
       CALL section_vals_val_get(averages_section, "_SECTION_PARAMETERS_", l_val=averages%do_averages)
       IF (averages%do_averages) THEN
          ! Setup Virial if requested
          IF (PRESENT(virial_avg)) THEN
             IF (virial_avg) THEN
                ALLOCATE (averages%virial)
-               CALL zero_virial(averages%virial)
             END IF
          END IF
          CALL section_vals_val_get(averages_section, "AVERAGE_COLVAR", l_val=do_colvars)

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -14,13 +14,14 @@
 MODULE qs_active_space_types
 
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
-   USE cp_fm_types,                     ONLY: cp_fm_p_type,&
-                                              cp_fm_release
+   USE cp_fm_types,                     ONLY: cp_fm_release,&
+                                              cp_fm_type
    USE dbcsr_api,                       ONLY: dbcsr_csr_destroy,&
                                               dbcsr_csr_p_type,&
                                               dbcsr_p_type
    USE kinds,                           ONLY: default_path_length,&
                                               dp
+   USE message_passing,                 ONLY: mp_comm_type
    USE qs_mo_types,                     ONLY: deallocate_mo_set,&
                                               mo_set_type
 #include "./base/base_uses.f90"
@@ -39,25 +40,25 @@ MODULE qs_active_space_types
 !> \author JGH
 ! **************************************************************************************************
    TYPE eri_gpw_type
-      LOGICAL                       :: redo_poisson
-      REAL(KIND=dp)                 :: cutoff
-      REAL(KIND=dp)                 :: rel_cutoff
-      REAL(KIND=dp)                 :: eps_grid
-      INTEGER                       :: print_level
-      LOGICAL                       :: store_wfn
+      LOGICAL                       :: redo_poisson = .FALSE.
+      REAL(KIND=dp)                 :: cutoff = 0.0_dp
+      REAL(KIND=dp)                 :: rel_cutoff = 0.0_dp
+      REAL(KIND=dp)                 :: eps_grid = 0.0_dp
+      INTEGER                       :: print_level = 0
+      LOGICAL                       :: store_wfn = .FALSE.
    END TYPE eri_gpw_type
 
    TYPE eri_type
-      INTEGER                       :: method
-      INTEGER                       :: OPERATOR
-      REAL(KIND=dp)                 :: operator_parameter
-      INTEGER, DIMENSION(3)         :: periodicity
-      REAL(KIND=dp)                 :: cutoff_radius
-      REAL(KIND=dp)                 :: eps_integral
-      TYPE(eri_gpw_type)            :: eri_gpw
+      INTEGER                       :: method = 0
+      INTEGER                       :: OPERATOR = 0
+      REAL(KIND=dp)                 :: operator_parameter = 0.0_dp
+      INTEGER, DIMENSION(3)         :: periodicity = 0
+      REAL(KIND=dp)                 :: cutoff_radius = 0.0_dp
+      REAL(KIND=dp)                 :: eps_integral = 0.0_dp
+      TYPE(eri_gpw_type)            :: eri_gpw = eri_gpw_type()
       TYPE(dbcsr_csr_p_type), &
          DIMENSION(:), POINTER      :: eri => NULL()
-      INTEGER                       :: norb
+      INTEGER                       :: norb = 0
 
    CONTAINS
       PROCEDURE :: eri_foreach => eri_type_eri_foreach
@@ -72,31 +73,34 @@ MODULE qs_active_space_types
    END TYPE eri_type_eri_element_func
 
    TYPE active_space_type
-      INTEGER                       :: nelec_active
-      INTEGER, POINTER, DIMENSION(:, :):: active_orbitals
-      INTEGER, POINTER, DIMENSION(:, :):: inactive_orbitals
-      INTEGER                       :: nelec_inactive
-      INTEGER, DIMENSION(2)         :: nelec_inactive_spinwise
-      INTEGER, DIMENSION(2)         :: nelec_total
-      INTEGER                       :: multiplicity
-      INTEGER                       :: nspins
-      LOGICAL                       :: molecule
-      INTEGER                       :: model
-      REAL(KIND=dp)                 :: energy_total
-      REAL(KIND=dp)                 :: energy_ref
-      REAL(KIND=dp)                 :: energy_inactive
-      REAL(KIND=dp)                 :: energy_active
-      LOGICAL                       :: read_p_act
-      CHARACTER(LEN=default_path_length)                 :: p_act_filename
-      TYPE(mo_set_type), DIMENSION(:), POINTER  :: mos_active
-      TYPE(mo_set_type), DIMENSION(:), POINTER  :: mos_inactive
-      TYPE(eri_type)                :: eri
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER   :: p_active
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER   :: ks_sub
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER   :: vxc_sub
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER   :: h_sub
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER   :: fock_sub
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER:: pmat_inactive
+      INTEGER                                      :: nelec_active = 0
+      INTEGER                                      :: nelec_inactive = 0
+      INTEGER                                      :: nelec_total = 0
+      INTEGER, POINTER, DIMENSION(:, :)            :: active_orbitals => NULL()
+      INTEGER, POINTER, DIMENSION(:, :)            :: inactive_orbitals => NULL()
+      INTEGER                                      :: nmo_active = 0
+      INTEGER                                      :: nmo_inactive = 0
+      INTEGER                                      :: multiplicity = 0
+      INTEGER                                      :: nspins = 0
+      LOGICAL                                      :: molecule = .FALSE.
+      INTEGER                                      :: model = 0
+      REAL(KIND=dp)                                :: energy_total = 0.0_dp
+      REAL(KIND=dp)                                :: energy_ref = 0.0_dp
+      REAL(KIND=dp)                                :: energy_inactive = 0.0_dp
+      REAL(KIND=dp)                                :: energy_active = 0.0_dp
+      LOGICAL                                      :: do_scf_embedding = .FALSE.
+      LOGICAL                                      :: qcschema = .FALSE.
+      LOGICAL                                      :: fcidump = .FALSE.
+      CHARACTER(LEN=default_path_length)           :: qcschema_filename = ''
+      TYPE(eri_type)                               :: eri = eri_type()
+      TYPE(mo_set_type), DIMENSION(:), POINTER     :: mos_active => NULL()
+      TYPE(mo_set_type), DIMENSION(:), POINTER     :: mos_inactive => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER      :: p_active => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER      :: ks_sub => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER      :: vxc_sub => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER      :: h_sub => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER      :: fock_sub => NULL()
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER    :: pmat_inactive => NULL()
    END TYPE active_space_type
 
    ABSTRACT INTERFACE
@@ -149,7 +153,7 @@ CONTAINS
    SUBROUTINE release_active_space_type(active_space_env)
       TYPE(active_space_type), POINTER                   :: active_space_env
 
-      INTEGER                                            :: imo, isp
+      INTEGER                                            :: imo
 
       IF (ASSOCIATED(active_space_env)) THEN
 
@@ -177,45 +181,11 @@ CONTAINS
 
          CALL release_eri_type(active_space_env%eri)
 
-         IF (ASSOCIATED(active_space_env%p_active)) THEN
-            DO isp = 1, SIZE(active_space_env%p_active)
-               CALL cp_fm_release(active_space_env%p_active(isp)%matrix)
-               DEALLOCATE (active_space_env%p_active(isp)%matrix)
-            END DO
-            DEALLOCATE (active_space_env%p_active)
-         END IF
-
-         IF (ASSOCIATED(active_space_env%ks_sub)) THEN
-            DO isp = 1, SIZE(active_space_env%ks_sub)
-               CALL cp_fm_release(active_space_env%ks_sub(isp)%matrix)
-               DEALLOCATE (active_space_env%ks_sub(isp)%matrix)
-            END DO
-            DEALLOCATE (active_space_env%ks_sub)
-         END IF
-
-         IF (ASSOCIATED(active_space_env%vxc_sub)) THEN
-            DO isp = 1, SIZE(active_space_env%vxc_sub)
-               CALL cp_fm_release(active_space_env%vxc_sub(isp)%matrix)
-               DEALLOCATE (active_space_env%vxc_sub(isp)%matrix)
-            END DO
-            DEALLOCATE (active_space_env%vxc_sub)
-         END IF
-
-         IF (ASSOCIATED(active_space_env%h_sub)) THEN
-            DO isp = 1, SIZE(active_space_env%h_sub)
-               CALL cp_fm_release(active_space_env%h_sub(isp)%matrix)
-               DEALLOCATE (active_space_env%h_sub(isp)%matrix)
-            END DO
-            DEALLOCATE (active_space_env%h_sub)
-         END IF
-
-         IF (ASSOCIATED(active_space_env%fock_sub)) THEN
-            DO isp = 1, SIZE(active_space_env%fock_sub)
-               CALL cp_fm_release(active_space_env%fock_sub(isp)%matrix)
-               DEALLOCATE (active_space_env%fock_sub(isp)%matrix)
-            END DO
-            DEALLOCATE (active_space_env%fock_sub)
-         END IF
+         CALL cp_fm_release(active_space_env%p_active)
+         CALL cp_fm_release(active_space_env%ks_sub)
+         CALL cp_fm_release(active_space_env%vxc_sub)
+         CALL cp_fm_release(active_space_env%h_sub)
+         CALL cp_fm_release(active_space_env%fock_sub)
 
          IF (ASSOCIATED(active_space_env%pmat_inactive)) &
             CALL dbcsr_deallocate_matrix_set(active_space_env%pmat_inactive)
@@ -305,31 +275,32 @@ CONTAINS
 !>      04.2016 created [JGH]
 ! **************************************************************************************************
    FUNCTION get_irange_csr(nindex, mp_group) RESULT(irange)
-      USE message_passing, ONLY: mp_environ
-      INTEGER                                            :: nindex, mp_group
+      USE message_passing, ONLY: mp_comm_type
+      INTEGER, INTENT(IN)                                :: nindex
+      TYPE(mp_comm_type), INTENT(IN)                     :: mp_group
       INTEGER, DIMENSION(2)                              :: irange
 
-      INTEGER                                            :: numtask, taskid
       REAL(KIND=dp)                                      :: rat
 
-      CALL mp_environ(numtask, taskid, mp_group)
+      ASSOCIATE (numtask => mp_group%num_pe, taskid => mp_group%mepos)
 
-      IF (numtask == 1 .AND. taskid == 0) THEN
-         irange(1) = 1
-         irange(2) = nindex
-      ELSEIF (numtask >= nindex) THEN
-         IF (taskid >= nindex) THEN
+         IF (numtask == 1 .AND. taskid == 0) THEN
             irange(1) = 1
-            irange(2) = 0
+            irange(2) = nindex
+         ELSEIF (numtask >= nindex) THEN
+            IF (taskid >= nindex) THEN
+               irange(1) = 1
+               irange(2) = 0
+            ELSE
+               irange(1) = taskid + 1
+               irange(2) = taskid + 1
+            END IF
          ELSE
-            irange(1) = taskid + 1
-            irange(2) = taskid + 1
+            rat = REAL(nindex, KIND=dp)/REAL(numtask, KIND=dp)
+            irange(1) = NINT(rat*taskid) + 1
+            irange(2) = NINT(rat*taskid + rat)
          END IF
-      ELSE
-         rat = REAL(nindex, KIND=dp)/REAL(numtask, KIND=dp)
-         irange(1) = NINT(rat*taskid) + 1
-         irange(2) = NINT(rat*taskid + rat)
-      END IF
+      END ASSOCIATE
 
    END FUNCTION get_irange_csr
 
@@ -347,7 +318,6 @@ CONTAINS
 !> \note Calls MPI, must be executed on all ranks.
 ! **************************************************************************************************
    SUBROUTINE eri_type_eri_foreach(this, nspin, active_orbitals, fobj, spin1, spin2)
-      USE message_passing, ONLY: mp_sum, mp_sync
       CLASS(eri_type), INTENT(in)              :: this
       CLASS(eri_type_eri_element_func)         :: fobj
       INTEGER, DIMENSION(:, :), INTENT(IN)     :: active_orbitals
@@ -357,6 +327,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)       :: colind
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: erival
       REAL(KIND=dp)                            :: erint
+      TYPE(mp_comm_type) :: mp_group
 
       IF (.NOT. PRESENT(spin1)) THEN
          spin1 = nspin
@@ -367,7 +338,8 @@ CONTAINS
 
       ASSOCIATE (eri => this%eri(nspin)%csr_mat, norb => this%norb)
          nindex = (norb*(norb + 1))/2
-         irange = get_irange_csr(nindex, eri%mp_group)
+         CALL mp_group%set_handle(eri%mp_group%get_handle())
+         irange = get_irange_csr(nindex, mp_group)
          ALLOCATE (erival(nindex), colind(nindex))
 
          nmo = SIZE(active_orbitals, 1)
@@ -390,10 +362,10 @@ CONTAINS
                   nindex = 0
                END IF
 
-               CALL mp_sum(nindex, eri%mp_group)
-               CALL mp_sum(colind(1:nindex), eri%mp_group)
-               CALL mp_sum(erival(1:nindex), eri%mp_group)
-               CALL mp_sync(eri%mp_group)
+               CALL mp_group%sum(nindex)
+               CALL mp_group%sum(colind(1:nindex))
+               CALL mp_group%sum(erival(1:nindex))
+               CALL mp_group%sync()
 
                DO i34l = 1, nindex
                   i34 = colind(i34l)

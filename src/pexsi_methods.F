@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -41,7 +41,6 @@ MODULE pexsi_methods
    USE kinds,                           ONLY: dp,&
                                               int_4,&
                                               int_8
-   USE message_passing,                 ONLY: mp_bcast
    USE pexsi_interface,                 ONLY: cp_pexsi_dft_driver,&
                                               cp_pexsi_get_options,&
                                               cp_pexsi_load_real_hs_matrix,&
@@ -175,7 +174,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -249,7 +248,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -327,7 +326,7 @@ CONTAINS
 
       ! get a useful output_unit
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -483,7 +482,7 @@ CONTAINS
       END IF
 
       ! send kTS to all nodes:
-      CALL mp_bcast(kTS, 0, pexsi_env%mp_group)
+      CALL pexsi_env%mp_group%bcast(kTS, 0)
 
       ! Convert PEXSI CSR matrices to DBCSR matrices
       CALL dbcsr_convert_csr_to_dbcsr(pexsi_env%dbcsr_template_matrix_nonsym, &
@@ -600,7 +599,7 @@ CONTAINS
 
       ! get a useful output_unit
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1

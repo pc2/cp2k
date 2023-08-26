@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -58,10 +58,7 @@ MODULE helium_methods
                                               max_line_length
    USE mathconstants,                   ONLY: pi,&
                                               twopi
-   USE message_passing,                 ONLY: mp_allgather,&
-                                              mp_bcast,&
-                                              mp_comm_free,&
-                                              mp_comm_split_direct
+   USE message_passing,                 ONLY: mp_comm_type
    USE parallel_rng_types,              ONLY: GAUSSIAN,&
                                               UNIFORM,&
                                               rng_stream_p_type,&
@@ -113,8 +110,8 @@ CONTAINS
 
       CHARACTER(len=default_path_length)                 :: msg_str, potential_file_name
       INTEGER                                            :: color_sub, handle, i, input_unit, isize, &
-                                                            itmp, j, k, mepos, new_comm, nlines, &
-                                                            ntab, num_env, pdx
+                                                            itmp, j, k, mepos, nlines, ntab, &
+                                                            num_env, pdx
       INTEGER, DIMENSION(:), POINTER                     :: env_all
       LOGICAL                                            :: expl_cell, expl_dens, expl_nats, &
                                                             expl_pot, explicit, ltmp
@@ -122,6 +119,7 @@ CONTAINS
                                                             tcheck, x1, x_spline
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: pot_transfer
       TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(mp_comm_type)                                 :: new_comm
       TYPE(section_vals_type), POINTER                   :: helium_section, input_worm
 
       CALL timeset(routineN, handle)
@@ -157,7 +155,7 @@ CONTAINS
       NULLIFY (env_all)
       ALLOCATE (env_all(logger%para_env%num_pe))
       env_all(:) = 0
-      CALL mp_allgather(mepos, env_all, logger%para_env%group)
+      CALL logger%para_env%allgather(mepos, env_all)
 
       ! create new communicator for processors with helium_env
       IF (mepos == 0) THEN
@@ -165,18 +163,16 @@ CONTAINS
       ELSE
          color_sub = 1
       END IF
-      CALL mp_comm_split_direct(logger%para_env%group, new_comm, color_sub)
+      CALL new_comm%from_split(logger%para_env, color_sub)
       ! release new_comm for processors without helium_env
       IF (mepos == 0) THEN
-         CALL mp_comm_free(new_comm)
+         CALL new_comm%free()
       END IF
 
       NULLIFY (helium_env)
       IF (mepos .GT. 0) THEN
          ALLOCATE (helium_env(mepos))
          DO k = 1, mepos
-            !NULLIFY (helium_env%para_env)
-            !CALL cp_para_env_create(helium_env%para_env, new_comm)
             helium_env(k)%comm = new_comm
             NULLIFY (helium_env(k)%env_all)
             helium_env(k)%env_all => env_all
@@ -388,7 +384,7 @@ CONTAINS
 
          END DO ! k
 
-         IF (logger%para_env%ionode) THEN
+         IF (logger%para_env%is_source()) THEN
             CALL section_vals_val_get(helium_section, "POTENTIAL_FILE_NAME", &
                                       c_val=potential_file_name)
             CALL open_file(file_name=TRIM(potential_file_name), &
@@ -420,21 +416,15 @@ CONTAINS
             dx = dx/angstrom
          END IF
 
-         CALL mp_bcast(nlines, logger%para_env%source, &
-                       helium_env(1)%comm)
-         CALL mp_bcast(pdx, logger%para_env%source, &
-                       helium_env(1)%comm)
-         CALL mp_bcast(tau, logger%para_env%source, &
-                       helium_env(1)%comm)
-         CALL mp_bcast(x_spline, logger%para_env%source, &
-                       helium_env(1)%comm)
-         CALL mp_bcast(dx, logger%para_env%source, &
-                       helium_env(1)%comm)
-         CALL mp_bcast(he_mass, logger%para_env%source, &
-                       helium_env(1)%comm)
+         CALL helium_env(1)%comm%bcast(nlines, logger%para_env%source)
+         CALL helium_env(1)%comm%bcast(pdx, logger%para_env%source)
+         CALL helium_env(1)%comm%bcast(tau, logger%para_env%source)
+         CALL helium_env(1)%comm%bcast(x_spline, logger%para_env%source)
+         CALL helium_env(1)%comm%bcast(dx, logger%para_env%source)
+         CALL helium_env(1)%comm%bcast(he_mass, logger%para_env%source)
          isize = (pdx + 1)*(pdx + 2) + 1
          ALLOCATE (pot_transfer(nlines, isize))
-         IF (logger%para_env%ionode) THEN
+         IF (logger%para_env%is_source()) THEN
             IF (expl_pot) THEN
                DO i = 1, nlines
                   READ (input_unit, *) pot_transfer(i, :)
@@ -448,8 +438,7 @@ CONTAINS
             END IF
             CALL close_file(unit_number=input_unit)
          END IF
-         CALL mp_bcast(pot_transfer, logger%para_env%source, &
-                       helium_env(1)%comm)
+         CALL helium_env(1)%comm%bcast(pot_transfer, logger%para_env%source)
 
          CALL spline_data_create(helium_env(1)%helium%vij)
          CALL init_splinexy(helium_env(1)%helium%vij, nlines)
@@ -521,6 +510,9 @@ CONTAINS
             helium_env(k)%helium%he_mass_au = he_mass*massunit
             helium_env(k)%helium%hb2m = 1.0_dp/helium_env(k)%helium%he_mass_au
             helium_env(k)%helium%pweight = 0.0_dp
+
+            ! Default in case sampling_method is not helium_sampling_worm.
+            helium_env(k)%helium%worm_max_open_cycles = 0
 
             ! Choose sampling method:
             CALL section_vals_val_get(helium_section, "SAMPLING_METHOD", &
@@ -842,7 +834,7 @@ CONTAINS
       IF (ASSOCIATED(helium_env)) THEN
          DO k = 1, SIZE(helium_env)
             IF (k .EQ. 1) THEN
-               CALL mp_comm_free(helium_env(k)%comm)
+               CALL helium_env(k)%comm%free()
                DEALLOCATE (helium_env(k)%env_all)
             END IF
             NULLIFY (helium_env(k)%env_all)
@@ -1167,12 +1159,11 @@ CONTAINS
                END IF
             END IF
             !! Update pint_env force, assume always one helium_env at IONODE
-            !IF (pint_env%logger%para_env%ionode) THEN
+            !IF (pint_env%logger%para_env%is_source()) THEN
             !   pint_env%f(:, :) = pint_env%f(:, :) + helium_env(1)%helium%force_avrg(:, :)
             !END IF
-            !CALL mp_bcast(pint_env%f,&
-            !              pint_env%logger%para_env%source,&
-            !              pint_env%logger%para_env%group)
+            !CALL pint_env%logger%para_env%bcast(pint_env%f,&
+            !              pint_env%logger%para_env%source)
 
          END IF
       END IF
@@ -1880,14 +1871,13 @@ CONTAINS
 
       NULLIFY (logger)
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          CALL section_vals_val_get(helium_env(1)%helium%input, &
                                    "MOTION%PINT%HELIUM%RNG_SEED", &
                                    i_val=helium_seed)
       END IF
-      CALL mp_bcast(helium_seed, &
-                    logger%para_env%source, &
-                    helium_env(1)%comm)
+      CALL helium_env(1)%comm%bcast(helium_seed, &
+                                    logger%para_env%source)
       initial_seed(:, :) = REAL(helium_seed, dp)
 
       ALLOCATE (uniform_array(helium_env(1)%helium%num_env), &

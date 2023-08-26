@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -30,7 +30,7 @@ MODULE pair_potential_types
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'pair_potential_types'
 
    PRIVATE
-   ! when adding a new nonbonedd potential please update also the list_pot
+   ! when adding a new nonbonded potential please update also the list_pot
    ! used for the linear scaling screening of potential calculation
    INTEGER, PUBLIC, PARAMETER :: multi_type = -1, &
                                  nn_type = 0, &
@@ -49,10 +49,12 @@ MODULE pair_potential_types
                                  siepmann_type = 13, &
                                  gal_type = 14, &
                                  quip_type = 15, &
-                                 gal21_type = 16, &
-                                 tab_type = 17
+                                 nequip_type = 16, &
+                                 allegro_type = 17, &
+                                 gal21_type = 18, &
+                                 tab_type = 19
 
-   INTEGER, PUBLIC, PARAMETER, DIMENSION(18) :: list_pot = (/nn_type, &
+   INTEGER, PUBLIC, PARAMETER, DIMENSION(20) :: list_pot = (/nn_type, &
                                                              lj_type, &
                                                              lj_charmm_type, &
                                                              ft_type, &
@@ -68,6 +70,8 @@ MODULE pair_potential_types
                                                              siepmann_type, &
                                                              gal_type, &
                                                              quip_type, &
+                                                             nequip_type, &
+                                                             allegro_type, &
                                                              gal21_type, &
                                                              tab_type/)
 
@@ -102,6 +106,8 @@ MODULE pair_potential_types
              ipbv_pot_type, &
              eam_pot_type, &
              quip_pot_type, &
+             nequip_pot_type, &
+             allegro_pot_type, &
              tersoff_pot_type, &
              siepmann_pot_type, &
              gal_pot_type, &
@@ -113,264 +119,288 @@ MODULE pair_potential_types
 
 ! **************************************************************************************************
    TYPE ipbv_pot_type
-      REAL(KIND=dp), DIMENSION(2:15) :: a
-      REAL(KIND=dp) :: rcore
-      REAL(KIND=dp) :: m
-      REAL(KIND=dp) :: b
+      REAL(KIND=dp), DIMENSION(2:15) :: a = 0.0_dp
+      REAL(KIND=dp) :: rcore = 0.0_dp
+      REAL(KIND=dp) :: m = 0.0_dp
+      REAL(KIND=dp) :: b = 0.0_dp
    END TYPE ipbv_pot_type
 
 ! **************************************************************************************************
    TYPE lj_pot_type
-      REAL(KIND=dp) :: epsilon
-      REAL(KIND=dp) :: sigma6
-      REAL(KIND=dp) :: sigma12
+      REAL(KIND=dp) :: epsilon = 0.0_dp
+      REAL(KIND=dp) :: sigma6 = 0.0_dp
+      REAL(KIND=dp) :: sigma12 = 0.0_dp
    END TYPE Lj_pot_type
 
 ! **************************************************************************************************
    TYPE ft_pot_type
-      REAL(KIND=dp) :: A
-      REAL(KIND=dp) :: B
-      REAL(KIND=dp) :: C
-      REAL(KIND=dp) :: D
+      REAL(KIND=dp) :: A = 0.0_dp
+      REAL(KIND=dp) :: B = 0.0_dp
+      REAL(KIND=dp) :: C = 0.0_dp
+      REAL(KIND=dp) :: D = 0.0_dp
    END TYPE ft_pot_type
 
 ! **************************************************************************************************
    TYPE ftd_pot_type
-      REAL(KIND=dp) :: A
-      REAL(KIND=dp) :: B
-      REAL(KIND=dp) :: C
-      REAL(KIND=dp) :: D
-      REAL(KIND=dp), DIMENSION(2) :: BD
+      REAL(KIND=dp) :: A = 0.0_dp
+      REAL(KIND=dp) :: B = 0.0_dp
+      REAL(KIND=dp) :: C = 0.0_dp
+      REAL(KIND=dp) :: D = 0.0_dp
+      REAL(KIND=dp), DIMENSION(2) :: BD = 0.0_dp
    END TYPE ftd_pot_type
 
 ! **************************************************************************************************
    TYPE williams_pot_type
-      REAL(KIND=dp) :: a
-      REAL(KIND=dp) :: b
-      REAL(KIND=dp) :: c
+      REAL(KIND=dp) :: a = 0.0_dp
+      REAL(KIND=dp) :: b = 0.0_dp
+      REAL(KIND=dp) :: c = 0.0_dp
    END TYPE williams_pot_type
 
 ! **************************************************************************************************
    TYPE goodwin_pot_type
-      REAL(KIND=dp) :: vr0
-      REAL(KIND=dp) :: m, mc
-      REAL(KIND=dp) :: d, dc
+      REAL(KIND=dp) :: vr0 = 0.0_dp
+      REAL(KIND=dp) :: m = 0.0_dp, mc = 0.0_dp
+      REAL(KIND=dp) :: d = 0.0_dp, dc = 0.0_dp
    END TYPE goodwin_pot_type
 
 ! **************************************************************************************************
    TYPE eam_pot_type
-      CHARACTER(LEN=default_path_length)     :: eam_file_name
-      INTEGER                                 :: npoints
-      REAL(KIND=dp)                          :: drar, drhoar, acutal
-      REAL(KIND=dp), POINTER, DIMENSION(:)    :: rho, phi, frho, rhoval, rval
-      REAL(KIND=dp), POINTER, DIMENSION(:)    :: rhop, phip, frhop
+      CHARACTER(LEN=default_path_length)     :: eam_file_name = ""
+      INTEGER                                 :: npoints = 0
+      REAL(KIND=dp)                          :: drar = 0.0_dp, drhoar = 0.0_dp, acutal = 0.0_dp
+      REAL(KIND=dp), POINTER, DIMENSION(:)    :: rho => NULL(), phi => NULL(), frho => NULL(), rhoval => NULL(), rval => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:)    :: rhop => NULL(), phip => NULL(), frhop => NULL()
    END TYPE eam_pot_type
 
 ! **************************************************************************************************
    TYPE quip_pot_type
-      CHARACTER(LEN=default_path_length)     :: quip_file_name
-      CHARACTER(LEN=1024)                    :: init_args
-      CHARACTER(LEN=1024)                    :: calc_args
+      CHARACTER(LEN=default_path_length)     :: quip_file_name = ""
+      CHARACTER(LEN=1024)                    :: init_args = ""
+      CHARACTER(LEN=1024)                    :: calc_args = ""
    END TYPE quip_pot_type
 
 ! **************************************************************************************************
+   TYPE nequip_pot_type
+      CHARACTER(LEN=default_path_length)     :: nequip_file_name = 'NULL', nequip_version = 'NULL', &
+                                                unit_coords = 'NULL', unit_forces = 'NULL', &
+                                                unit_energy = 'NULL', unit_cell = 'NULL'
+      REAL(KIND=dp)                          :: rcutsq = 0.0_dp, unit_coords_val = 1.0_dp, &
+                                                unit_forces_val = 1.0_dp, unit_energy_val = 1.0_dp, &
+                                                unit_cell_val = 1.0_dp
+      LOGICAL                                :: do_nequip_sp = .FALSE.
+   END TYPE nequip_pot_type
+
+! **************************************************************************************************
+   TYPE allegro_pot_type
+      CHARACTER(LEN=default_path_length)     :: allegro_file_name = 'NULL', unit_cell = 'NULL', &
+                                                nequip_version = 'NULL', unit_coords = 'NULL', &
+                                                unit_forces = 'NULL', unit_energy = 'NULL'
+      REAL(KIND=dp)                          :: rcutsq = 0.0_dp, unit_coords_val = 1.0_dp, &
+                                                unit_forces_val = 1.0_dp, unit_cell_val = 1.0_dp, &
+                                                unit_energy_val = 1.0_dp
+      LOGICAL                                :: do_allegro_sp = .FALSE.
+   END TYPE allegro_pot_type
+
+! **************************************************************************************************
    TYPE buck4ran_pot_type
-      REAL(KIND=dp) :: a
-      REAL(KIND=dp) :: b
-      REAL(KIND=dp) :: c
-      REAL(KIND=dp) :: r1
-      REAL(KIND=dp) :: r2
-      REAL(KIND=dp) :: r3
-      INTEGER :: npoly1, npoly2
-      REAL(KIND=dp), DIMENSION(0:10) :: poly1
-      REAL(KIND=dp), DIMENSION(0:10) :: poly2
+      REAL(KIND=dp) :: a = 0.0_dp
+      REAL(KIND=dp) :: b = 0.0_dp
+      REAL(KIND=dp) :: c = 0.0_dp
+      REAL(KIND=dp) :: r1 = 0.0_dp
+      REAL(KIND=dp) :: r2 = 0.0_dp
+      REAL(KIND=dp) :: r3 = 0.0_dp
+      INTEGER :: npoly1 = 0, npoly2 = 0
+      REAL(KIND=dp), DIMENSION(0:10) :: poly1 = 0.0_dp
+      REAL(KIND=dp), DIMENSION(0:10) :: poly2 = 0.0_dp
    END TYPE buck4ran_pot_type
 
 ! **************************************************************************************************
    TYPE buckmorse_pot_type
-      REAL(KIND=dp) :: f0
-      REAL(KIND=dp) :: a1
-      REAL(KIND=dp) :: a2
-      REAL(KIND=dp) :: b1
-      REAL(KIND=dp) :: b2
-      REAL(KIND=dp) :: c
-      REAL(KIND=dp) :: d
-      REAL(KIND=dp) :: r0
-      REAL(KIND=dp) :: beta
+      REAL(KIND=dp) :: f0 = 0.0_dp
+      REAL(KIND=dp) :: a1 = 0.0_dp
+      REAL(KIND=dp) :: a2 = 0.0_dp
+      REAL(KIND=dp) :: b1 = 0.0_dp
+      REAL(KIND=dp) :: b2 = 0.0_dp
+      REAL(KIND=dp) :: c = 0.0_dp
+      REAL(KIND=dp) :: d = 0.0_dp
+      REAL(KIND=dp) :: r0 = 0.0_dp
+      REAL(KIND=dp) :: beta = 0.0_dp
    END TYPE buckmorse_pot_type
 
 ! **************************************************************************************************
    TYPE gp_pot_type
-      INTEGER                                   :: myid
-      CHARACTER(LEN=default_path_length)       :: potential
+      INTEGER                                   :: myid = 0
+      CHARACTER(LEN=default_path_length)       :: potential = ""
       CHARACTER(LEN=default_string_length), &
-         POINTER, DIMENSION(:)                   :: parameters, units
-      CHARACTER(LEN=default_string_length)     :: variables
-      REAL(KIND=dp), DIMENSION(:), POINTER      :: values
+         POINTER, DIMENSION(:)                   :: parameters => NULL(), units => NULL()
+      CHARACTER(LEN=default_string_length)     :: variables = ""
+      REAL(KIND=dp), DIMENSION(:), POINTER      :: values => NULL()
    END TYPE gp_pot_type
 
 ! **************************************************************************************************
    TYPE tersoff_pot_type
       ! Get this stuff from the PRB V38, N14 9902 (1988) by Tersoff
-      REAL(KIND=dp) :: A
-      REAL(KIND=dp) :: B
-      REAL(KIND=dp) :: lambda1
-      REAL(KIND=dp) :: lambda2
-      REAL(KIND=dp) :: alpha
-      REAL(KIND=dp) :: beta
-      REAL(KIND=dp) :: n
-      REAL(KIND=dp) :: c
-      REAL(KIND=dp) :: d
-      REAL(KIND=dp) :: h
-      REAL(KIND=dp) :: lambda3
-      REAL(KIND=dp) :: bigR ! Used to be R = Rij + D
-      REAL(KIND=dp) :: bigD ! Used to be D = Rij - D
-      REAL(KIND=dp) :: rcutsq ! Always set to (bigR+bigD)^2
+      REAL(KIND=dp) :: A = 0.0_dp
+      REAL(KIND=dp) :: B = 0.0_dp
+      REAL(KIND=dp) :: lambda1 = 0.0_dp
+      REAL(KIND=dp) :: lambda2 = 0.0_dp
+      REAL(KIND=dp) :: alpha = 0.0_dp
+      REAL(KIND=dp) :: beta = 0.0_dp
+      REAL(KIND=dp) :: n = 0.0_dp
+      REAL(KIND=dp) :: c = 0.0_dp
+      REAL(KIND=dp) :: d = 0.0_dp
+      REAL(KIND=dp) :: h = 0.0_dp
+      REAL(KIND=dp) :: lambda3 = 0.0_dp
+      REAL(KIND=dp) :: bigR = 0.0_dp ! Used to be R = Rij + D
+      REAL(KIND=dp) :: bigD = 0.0_dp ! Used to be D = Rij - D
+      REAL(KIND=dp) :: rcutsq = 0.0_dp ! Always set to (bigR+bigD)^2
    END TYPE tersoff_pot_type
 
 ! **************************************************************************************************
    TYPE siepmann_pot_type
-      REAL(KIND=dp) :: B
-      REAL(KIND=dp) :: D
-      REAL(KIND=dp) :: E
-      REAL(KIND=dp) :: F
-      REAL(KIND=dp) :: beta
-      REAL(KIND=dp) :: rcutsq
-      LOGICAL        :: allow_oh_formation
-      LOGICAL        :: allow_h3o_formation
-      LOGICAL        :: allow_o_formation
+      REAL(KIND=dp) :: B = 0.0_dp
+      REAL(KIND=dp) :: D = 0.0_dp
+      REAL(KIND=dp) :: E = 0.0_dp
+      REAL(KIND=dp) :: F = 0.0_dp
+      REAL(KIND=dp) :: beta = 0.0_dp
+      REAL(KIND=dp) :: rcutsq = 0.0_dp
+      LOGICAL        :: allow_oh_formation = .FALSE.
+      LOGICAL        :: allow_h3o_formation = .FALSE.
+      LOGICAL        :: allow_o_formation = .FALSE.
    END TYPE siepmann_pot_type
 
 ! **************************************************************************************************
    TYPE gal_pot_type
-      CHARACTER(LEN=2) :: met1
-      CHARACTER(LEN=2) :: met2
-      REAL(KIND=dp) :: epsilon
-      REAL(KIND=dp) :: bxy
-      REAL(KIND=dp) :: bz
-      REAL(KIND=dp) :: r1
-      REAL(KIND=dp) :: r2
-      REAL(KIND=dp) :: a1
-      REAL(KIND=dp) :: a2
-      REAL(KIND=dp) :: a3
-      REAL(KIND=dp) :: a4
-      REAL(KIND=dp) :: a
-      REAL(KIND=dp) :: b
-      REAL(KIND=dp) :: c
-      REAL(KIND=dp), POINTER, DIMENSION(:) :: gcn
+      CHARACTER(LEN=2) :: met1 = ""
+      CHARACTER(LEN=2) :: met2 = ""
+      REAL(KIND=dp) :: epsilon = 0.0_dp
+      REAL(KIND=dp) :: bxy = 0.0_dp
+      REAL(KIND=dp) :: bz = 0.0_dp
+      REAL(KIND=dp) :: r1 = 0.0_dp
+      REAL(KIND=dp) :: r2 = 0.0_dp
+      REAL(KIND=dp) :: a1 = 0.0_dp
+      REAL(KIND=dp) :: a2 = 0.0_dp
+      REAL(KIND=dp) :: a3 = 0.0_dp
+      REAL(KIND=dp) :: a4 = 0.0_dp
+      REAL(KIND=dp) :: a = 0.0_dp
+      REAL(KIND=dp) :: b = 0.0_dp
+      REAL(KIND=dp) :: c = 0.0_dp
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: gcn => NULL()
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)    :: n_vectors
-      REAL(KIND=dp)  :: rcutsq
-      LOGICAL        :: express
+      REAL(KIND=dp)  :: rcutsq = 0.0_dp
+      LOGICAL        :: express = .FALSE.
    END TYPE gal_pot_type
 
 ! **************************************************************************************************
 
    TYPE gal21_pot_type
-      CHARACTER(LEN=2) :: met1
-      CHARACTER(LEN=2) :: met2
-      REAL(KIND=dp) :: epsilon1
-      REAL(KIND=dp) :: epsilon2
-      REAL(KIND=dp) :: epsilon3
-      REAL(KIND=dp) :: bxy1
-      REAL(KIND=dp) :: bxy2
-      REAL(KIND=dp) :: bz1
-      REAL(KIND=dp) :: bz2
-      REAL(KIND=dp) :: r1
-      REAL(KIND=dp) :: r2
-      REAL(KIND=dp) :: a11
-      REAL(KIND=dp) :: a12
-      REAL(KIND=dp) :: a13
-      REAL(KIND=dp) :: a21
-      REAL(KIND=dp) :: a22
-      REAL(KIND=dp) :: a23
-      REAL(KIND=dp) :: a31
-      REAL(KIND=dp) :: a32
-      REAL(KIND=dp) :: a33
-      REAL(KIND=dp) :: a41
-      REAL(KIND=dp) :: a42
-      REAL(KIND=dp) :: a43
-      REAL(KIND=dp) :: AO1
-      REAL(KIND=dp) :: AO2
-      REAL(KIND=dp) :: BO1
-      REAL(KIND=dp) :: BO2
-      REAL(KIND=dp) :: c
-      REAL(KIND=dp) :: AH1
-      REAL(KIND=dp) :: AH2
-      REAL(KIND=dp) :: BH1
-      REAL(KIND=dp) :: BH2
-      REAL(KIND=dp), POINTER, DIMENSION(:) :: gcn
+      CHARACTER(LEN=2) :: met1 = ""
+      CHARACTER(LEN=2) :: met2 = ""
+      REAL(KIND=dp) :: epsilon1 = 0.0_dp
+      REAL(KIND=dp) :: epsilon2 = 0.0_dp
+      REAL(KIND=dp) :: epsilon3 = 0.0_dp
+      REAL(KIND=dp) :: bxy1 = 0.0_dp
+      REAL(KIND=dp) :: bxy2 = 0.0_dp
+      REAL(KIND=dp) :: bz1 = 0.0_dp
+      REAL(KIND=dp) :: bz2 = 0.0_dp
+      REAL(KIND=dp) :: r1 = 0.0_dp
+      REAL(KIND=dp) :: r2 = 0.0_dp
+      REAL(KIND=dp) :: a11 = 0.0_dp
+      REAL(KIND=dp) :: a12 = 0.0_dp
+      REAL(KIND=dp) :: a13 = 0.0_dp
+      REAL(KIND=dp) :: a21 = 0.0_dp
+      REAL(KIND=dp) :: a22 = 0.0_dp
+      REAL(KIND=dp) :: a23 = 0.0_dp
+      REAL(KIND=dp) :: a31 = 0.0_dp
+      REAL(KIND=dp) :: a32 = 0.0_dp
+      REAL(KIND=dp) :: a33 = 0.0_dp
+      REAL(KIND=dp) :: a41 = 0.0_dp
+      REAL(KIND=dp) :: a42 = 0.0_dp
+      REAL(KIND=dp) :: a43 = 0.0_dp
+      REAL(KIND=dp) :: AO1 = 0.0_dp
+      REAL(KIND=dp) :: AO2 = 0.0_dp
+      REAL(KIND=dp) :: BO1 = 0.0_dp
+      REAL(KIND=dp) :: BO2 = 0.0_dp
+      REAL(KIND=dp) :: c = 0.0_dp
+      REAL(KIND=dp) :: AH1 = 0.0_dp
+      REAL(KIND=dp) :: AH2 = 0.0_dp
+      REAL(KIND=dp) :: BH1 = 0.0_dp
+      REAL(KIND=dp) :: BH2 = 0.0_dp
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: gcn => NULL()
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)    :: n_vectors
-      REAL(KIND=dp)  :: rcutsq
-      LOGICAL        :: express
+      REAL(KIND=dp)  :: rcutsq = 0.0_dp
+      LOGICAL        :: express = .FALSE.
    END TYPE gal21_pot_type
 
 ! **************************************************************************************************
 
    TYPE tab_pot_type
-      CHARACTER(LEN=default_path_length)      :: tabpot_file_name
-      INTEGER                                 :: npoints, index
-      REAL(KIND=dp)                           :: dr, rcut
-      REAL(KIND=dp), POINTER, DIMENSION(:)    :: r, e, f
+      CHARACTER(LEN=default_path_length)      :: tabpot_file_name = ""
+      INTEGER                                 :: npoints = 0, index = 0
+      REAL(KIND=dp)                           :: dr = 0.0_dp, rcut = 0.0_dp
+      REAL(KIND=dp), POINTER, DIMENSION(:)    :: r => NULL(), e => NULL(), f => NULL()
    END TYPE tab_pot_type
 
 ! **************************************************************************************************
 
    TYPE pot_set_type
-      REAL(KIND=dp)                      :: rmin, rmax
-      TYPE(ipbv_pot_type), POINTER :: ipbv
-      TYPE(gp_pot_type), POINTER :: gp
-      TYPE(lj_pot_type), POINTER :: lj
-      TYPE(ft_pot_type), POINTER :: ft
-      TYPE(williams_pot_type), POINTER :: willis
-      TYPE(goodwin_pot_type), POINTER :: goodwin
-      TYPE(eam_pot_type), POINTER :: eam
-      TYPE(quip_pot_type), POINTER :: quip
-      TYPE(buck4ran_pot_type), POINTER :: buck4r
-      TYPE(buckmorse_pot_type), POINTER :: buckmo
-      TYPE(tersoff_pot_type), POINTER :: tersoff
-      TYPE(siepmann_pot_type), POINTER :: siepmann
-      TYPE(gal_pot_type), POINTER :: gal
-      TYPE(gal21_pot_type), POINTER :: gal21
-      TYPE(ftd_pot_type), POINTER :: ftd
-      TYPE(tab_pot_type), POINTER :: tab
+      REAL(KIND=dp)                      :: rmin = 0.0_dp, rmax = 0.0_dp
+      TYPE(ipbv_pot_type), POINTER :: ipbv => NULL()
+      TYPE(gp_pot_type), POINTER :: gp => NULL()
+      TYPE(lj_pot_type), POINTER :: lj => NULL()
+      TYPE(ft_pot_type), POINTER :: ft => NULL()
+      TYPE(williams_pot_type), POINTER :: willis => NULL()
+      TYPE(goodwin_pot_type), POINTER :: goodwin => NULL()
+      TYPE(eam_pot_type), POINTER :: eam => NULL()
+      TYPE(quip_pot_type), POINTER :: quip => NULL()
+      TYPE(nequip_pot_type), POINTER :: nequip => NULL()
+      TYPE(allegro_pot_type), POINTER :: allegro => NULL()
+      TYPE(buck4ran_pot_type), POINTER :: buck4r => NULL()
+      TYPE(buckmorse_pot_type), POINTER :: buckmo => NULL()
+      TYPE(tersoff_pot_type), POINTER :: tersoff => NULL()
+      TYPE(siepmann_pot_type), POINTER :: siepmann => NULL()
+      TYPE(gal_pot_type), POINTER :: gal => NULL()
+      TYPE(gal21_pot_type), POINTER :: gal21 => NULL()
+      TYPE(ftd_pot_type), POINTER :: ftd => NULL()
+      TYPE(tab_pot_type), POINTER :: tab => NULL()
    END TYPE pot_set_type
 
 ! **************************************************************************************************
    TYPE pair_potential_single_type
-      REAL(KIND=dp) :: rcutsq
-      REAL(KIND=dp) :: e_fac
-      REAL(KIND=dp) :: e_fcc
-      REAL(KIND=dp) :: e_fcs
-      REAL(KIND=dp) :: e_fsc
-      REAL(KIND=dp) :: z1
-      REAL(KIND=dp) :: z2
-      REAL(KIND=dp) :: zbl_poly(0:5)
-      REAL(KIND=dp) :: zbl_rcut(2)
-      LOGICAL        :: undef, & ! non-bonding interaction not defined
-                        no_mb, & ! no many-body potential
-                        no_pp ! no pair (=two-body) potential
-      INTEGER        :: shell_type
-      CHARACTER(LEN=default_string_length)   :: at1
-      CHARACTER(LEN=default_string_length)   :: at2
-      INTEGER, POINTER, DIMENSION(:)              :: TYPE
-      TYPE(pot_set_type), POINTER, DIMENSION(:) :: set
-      TYPE(spline_data_p_type), POINTER, DIMENSION(:) :: pair_spline_data
-      TYPE(spline_factor_type), POINTER :: spl_f
+      REAL(KIND=dp) :: rcutsq = 0.0_dp
+      REAL(KIND=dp) :: e_fac = 0.0_dp
+      REAL(KIND=dp) :: e_fcc = 0.0_dp
+      REAL(KIND=dp) :: e_fcs = 0.0_dp
+      REAL(KIND=dp) :: e_fsc = 0.0_dp
+      REAL(KIND=dp) :: z1 = 0.0_dp
+      REAL(KIND=dp) :: z2 = 0.0_dp
+      REAL(KIND=dp), DIMENSION(0:5) :: zbl_poly = 0.0_dp
+      REAL(KIND=dp), DIMENSION(2) :: zbl_rcut = 0.0_dp
+      LOGICAL        :: undef = .FALSE., & ! non-bonding interaction not defined
+                        no_mb = .FALSE., & ! no many-body potential
+                        no_pp = .FALSE. ! no pair (=two-body) potential
+      INTEGER        :: shell_type = 0
+      CHARACTER(LEN=default_string_length)   :: at1 = ""
+      CHARACTER(LEN=default_string_length)   :: at2 = ""
+      INTEGER, POINTER, DIMENSION(:)              :: TYPE => NULL()
+      TYPE(pot_set_type), POINTER, DIMENSION(:) :: set => NULL()
+      TYPE(spline_data_p_type), POINTER, DIMENSION(:) :: pair_spline_data => NULL()
+      TYPE(spline_factor_type), POINTER :: spl_f => NULL()
    END TYPE pair_potential_single_type
 
 ! **************************************************************************************************
    TYPE pair_potential_type
-      TYPE(pair_potential_single_type), POINTER :: pot
+      TYPE(pair_potential_single_type), POINTER :: pot => NULL()
    END TYPE pair_potential_type
 
 ! **************************************************************************************************
    TYPE pair_potential_p_type
-      TYPE(pair_potential_type), DIMENSION(:), POINTER :: pot
+      TYPE(pair_potential_type), DIMENSION(:), POINTER :: pot => NULL()
    END TYPE pair_potential_p_type
 
 ! **************************************************************************************************
    TYPE pair_potential_pp_type
-      TYPE(pair_potential_type), DIMENSION(:, :), POINTER :: pot
+      TYPE(pair_potential_type), DIMENSION(:, :), POINTER :: pot => NULL()
    END TYPE pair_potential_pp_type
 
 CONTAINS
@@ -436,6 +466,18 @@ CONTAINS
             IF ((pot1%set(i)%quip%quip_file_name == pot2%set(i)%quip%quip_file_name) .AND. &
                 (pot1%set(i)%quip%init_args == pot2%set(i)%quip%init_args) .AND. &
                 (pot1%set(i)%quip%calc_args == pot2%set(i)%quip%calc_args)) mycompare = .TRUE.
+         CASE (nequip_type)
+            IF ((pot1%set(i)%nequip%nequip_file_name == pot2%set(i)%nequip%nequip_file_name) .AND. &
+                (pot1%set(i)%nequip%unit_coords == pot2%set(i)%nequip%unit_coords) .AND. &
+                (pot1%set(i)%nequip%unit_forces == pot2%set(i)%nequip%unit_forces) .AND. &
+                (pot1%set(i)%nequip%unit_energy == pot2%set(i)%nequip%unit_energy) .AND. &
+                (pot1%set(i)%nequip%unit_cell == pot2%set(i)%nequip%unit_cell)) mycompare = .TRUE.
+         CASE (allegro_type)
+            IF ((pot1%set(i)%allegro%allegro_file_name == pot2%set(i)%allegro%allegro_file_name) .AND. &
+                (pot1%set(i)%allegro%unit_coords == pot2%set(i)%allegro%unit_coords) .AND. &
+                (pot1%set(i)%allegro%unit_forces == pot2%set(i)%allegro%unit_forces) .AND. &
+                (pot1%set(i)%allegro%unit_energy == pot2%set(i)%allegro%unit_energy) .AND. &
+                (pot1%set(i)%allegro%unit_cell == pot2%set(i)%allegro%unit_cell)) mycompare = .TRUE.
          CASE (ft_type)
             IF ((pot1%set(i)%ft%A == pot2%set(i)%ft%A) .AND. &
                 (pot1%set(i)%ft%B == pot2%set(i)%ft%B) .AND. &
@@ -572,6 +614,8 @@ CONTAINS
                   potparm%set(i)%goodwin, &
                   potparm%set(i)%eam, &
                   potparm%set(i)%quip, &
+                  potparm%set(i)%nequip, &
+                  potparm%set(i)%allegro, &
                   potparm%set(i)%buck4r, &
                   potparm%set(i)%buckmo, &
                   potparm%set(i)%tersoff, &
@@ -615,6 +659,8 @@ CONTAINS
          CALL pair_potential_goodwin_clean(potparm%set(i)%goodwin)
          CALL pair_potential_eam_clean(potparm%set(i)%eam)
          CALL pair_potential_quip_clean(potparm%set(i)%quip)
+         CALL pair_potential_nequip_clean(potparm%set(i)%nequip)
+         CALL pair_potential_allegro_clean(potparm%set(i)%allegro)
          CALL pair_potential_buck4r_clean(potparm%set(i)%buck4r)
          CALL pair_potential_buckmo_clean(potparm%set(i)%buckmo)
          CALL pair_potential_bmhft_clean(potparm%set(i)%ft)
@@ -670,6 +716,8 @@ CONTAINS
          CALL pair_potential_goodwin_copy(potparm_source%set(i)%goodwin, potparm_dest%set(i)%goodwin)
          CALL pair_potential_eam_copy(potparm_source%set(i)%eam, potparm_dest%set(i)%eam)
          CALL pair_potential_quip_copy(potparm_source%set(i)%quip, potparm_dest%set(i)%quip)
+         CALL pair_potential_nequip_copy(potparm_source%set(i)%nequip, potparm_dest%set(i)%nequip)
+         CALL pair_potential_allegro_copy(potparm_source%set(i)%allegro, potparm_dest%set(i)%allegro)
          CALL pair_potential_bmhft_copy(potparm_source%set(i)%ft, potparm_dest%set(i)%ft)
          CALL pair_potential_bmhftd_copy(potparm_source%set(i)%ftd, potparm_dest%set(i)%ftd)
          CALL pair_potential_ipbv_copy(potparm_source%set(i)%ipbv, potparm_dest%set(i)%ipbv)
@@ -718,6 +766,8 @@ CONTAINS
                     (ASSOCIATED(potparm_dest%set(1)%goodwin)) .OR. &
                     (ASSOCIATED(potparm_dest%set(1)%eam)) .OR. &
                     (ASSOCIATED(potparm_dest%set(1)%quip)) .OR. &
+                    (ASSOCIATED(potparm_dest%set(1)%nequip)) .OR. &
+                    (ASSOCIATED(potparm_dest%set(1)%allegro)) .OR. &
                     (ASSOCIATED(potparm_dest%set(1)%ft)) .OR. &
                     (ASSOCIATED(potparm_dest%set(1)%ftd)) .OR. &
                     (ASSOCIATED(potparm_dest%set(1)%ipbv)) .OR. &
@@ -768,6 +818,8 @@ CONTAINS
             CALL pair_potential_goodwin_copy(potparm_tmp%set(i)%goodwin, potparm_dest%set(i)%goodwin)
             CALL pair_potential_eam_copy(potparm_tmp%set(i)%eam, potparm_dest%set(i)%eam)
             CALL pair_potential_quip_copy(potparm_tmp%set(i)%quip, potparm_dest%set(i)%quip)
+            CALL pair_potential_nequip_copy(potparm_tmp%set(i)%nequip, potparm_dest%set(i)%nequip)
+            CALL pair_potential_allegro_copy(potparm_tmp%set(i)%allegro, potparm_dest%set(i)%allegro)
             CALL pair_potential_bmhft_copy(potparm_tmp%set(i)%ft, potparm_dest%set(i)%ft)
             CALL pair_potential_bmhftd_copy(potparm_tmp%set(i)%ftd, potparm_dest%set(i)%ftd)
             CALL pair_potential_ipbv_copy(potparm_tmp%set(i)%ipbv, potparm_dest%set(i)%ipbv)
@@ -802,6 +854,8 @@ CONTAINS
          CALL pair_potential_goodwin_copy(potparm_source%set(j)%goodwin, potparm_dest%set(i)%goodwin)
          CALL pair_potential_eam_copy(potparm_source%set(j)%eam, potparm_dest%set(i)%eam)
          CALL pair_potential_quip_copy(potparm_source%set(j)%quip, potparm_dest%set(i)%quip)
+         CALL pair_potential_nequip_copy(potparm_source%set(j)%nequip, potparm_dest%set(i)%nequip)
+         CALL pair_potential_allegro_copy(potparm_source%set(j)%allegro, potparm_dest%set(i)%allegro)
          CALL pair_potential_bmhft_copy(potparm_source%set(j)%ft, potparm_dest%set(i)%ft)
          CALL pair_potential_bmhftd_copy(potparm_source%set(j)%ftd, potparm_dest%set(i)%ftd)
          CALL pair_potential_ipbv_copy(potparm_source%set(j)%ipbv, potparm_dest%set(i)%ipbv)
@@ -838,6 +892,8 @@ CONTAINS
          CALL pair_potential_goodwin_release(potparm%set(i)%goodwin)
          CALL pair_potential_eam_release(potparm%set(i)%eam)
          CALL pair_potential_quip_release(potparm%set(i)%quip)
+         CALL pair_potential_nequip_release(potparm%set(i)%nequip)
+         CALL pair_potential_allegro_release(potparm%set(i)%allegro)
          CALL pair_potential_buck4r_release(potparm%set(i)%buck4r)
          CALL pair_potential_buckmo_release(potparm%set(i)%buckmo)
          CALL pair_potential_gp_release(potparm%set(i)%gp)
@@ -1011,6 +1067,8 @@ CONTAINS
 !> \param goodwin ...
 !> \param eam ...
 !> \param quip ...
+!> \param nequip ...
+!> \param allegro ...
 !> \param bmhft ...
 !> \param bmhftd ...
 !> \param ipbv ...
@@ -1024,19 +1082,17 @@ CONTAINS
 !> \param tab ...
 !> \author Teodoro Laino [Teo] 11.2005
 ! **************************************************************************************************
-   SUBROUTINE pair_potential_reallocate(p, lb1_new, ub1_new, lj, lj_charmm, williams, &
-                                        goodwin, eam, quip, bmhft, bmhftd, ipbv, buck4r, buckmo, gp, tersoff, &
-                                        siepmann, gal, gal21, tab)
+   SUBROUTINE pair_potential_reallocate(p, lb1_new, ub1_new, lj, lj_charmm, williams, goodwin, eam, &
+                                        quip, nequip, allegro, bmhft, bmhftd, ipbv, buck4r, buckmo, &
+                                        gp, tersoff, siepmann, gal, gal21, tab)
       TYPE(pair_potential_p_type), POINTER               :: p
       INTEGER, INTENT(IN)                                :: lb1_new, ub1_new
-      LOGICAL, INTENT(IN), OPTIONAL                      :: lj, lj_charmm, williams, goodwin, eam, &
-                                                            quip, bmhft, bmhftd, ipbv, buck4r, &
-                                                            buckmo, gp, tersoff, siepmann, gal, &
-                                                            gal21, tab
+      LOGICAL, INTENT(IN), OPTIONAL :: lj, lj_charmm, williams, goodwin, eam, quip, nequip, &
+         allegro, bmhft, bmhftd, ipbv, buck4r, buckmo, gp, tersoff, siepmann, gal, gal21, tab
 
       INTEGER                                            :: i, ipot, lb1_old, std_dim, ub1_old
-      LOGICAL :: check, lbmhft, lbmhftd, lbuck4r, lbuckmo, leam, lgal, lgal21, lgoodwin, lgp, &
-         lipbv, llj, llj_charmm, lquip, lsiepmann, ltab, ltersoff, lwilliams
+      LOGICAL :: check, lallegro, lbmhft, lbmhftd, lbuck4r, lbuckmo, leam, lgal, lgal21, lgoodwin, &
+         lgp, lipbv, llj, llj_charmm, lnequip, lquip, lsiepmann, ltab, ltersoff, lwilliams
       TYPE(pair_potential_p_type), POINTER               :: work
 
       NULLIFY (work)
@@ -1047,6 +1103,8 @@ CONTAINS
       lgoodwin = .FALSE.; IF (PRESENT(goodwin)) lgoodwin = goodwin
       leam = .FALSE.; IF (PRESENT(eam)) leam = eam
       lquip = .FALSE.; IF (PRESENT(quip)) lquip = quip
+      lnequip = .FALSE.; IF (PRESENT(nequip)) lnequip = nequip
+      lallegro = .FALSE.; IF (PRESENT(allegro)) lallegro = allegro
       lbmhft = .FALSE.; IF (PRESENT(bmhft)) lbmhft = bmhft
       lbmhftd = .FALSE.; IF (PRESENT(bmhftd)) lbmhftd = bmhftd
       lipbv = .FALSE.; IF (PRESENT(ipbv)) lipbv = ipbv
@@ -1061,105 +1119,135 @@ CONTAINS
 
       IF (llj) THEN
          ipot = lj_type
-         check = .NOT. (llj_charmm .OR. lwilliams .OR. lgoodwin .OR. leam .OR. lquip .OR. lbmhft &
-                        .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+         check = .NOT. (llj_charmm .OR. lwilliams .OR. lgoodwin .OR. leam .OR. lquip .OR. lnequip .OR. lallegro &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
                         .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (llj_charmm) THEN
          ipot = lj_charmm_type
-         check = .NOT. (llj .OR. lwilliams .OR. lgoodwin .OR. leam .OR. lquip .OR. lbmhft .OR. lbmhftd .OR. lipbv &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. lwilliams .OR. lgoodwin .OR. leam .OR. lquip .OR. lnequip .OR. lallegro &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lwilliams) THEN
          ipot = wl_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lbmhft .OR. lbmhftd .OR. lipbv &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lnequip .OR. lallegro &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lgoodwin) THEN
          ipot = gw_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lwilliams .OR. leam .OR. lquip .OR. lbmhft .OR. lbmhftd .OR. lipbv &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip .OR. lallegro &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (leam) THEN
          ipot = ea_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. lquip .OR. lbmhft .OR. lbmhftd .OR. lipbv &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. lquip .OR. lnequip .OR. lallegro &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lquip) THEN
          ipot = quip_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lbmhft .OR. lbmhftd .OR. lipbv &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lnequip .OR. lallegro &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         CPASSERT(check)
+      END IF
+      IF (lnequip) THEN
+         ipot = nequip_type
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lallegro &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         CPASSERT(check)
+      END IF
+      IF (lallegro) THEN
+         ipot = allegro_type
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lbmhft) THEN
          ipot = ft_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhftd .OR. lipbv &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lbmhftd) THEN
          ipot = ftd_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lipbv &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lipbv) THEN
          ipot = ip_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lbuck4r) THEN
          ipot = b4_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuckmo .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lbuckmo) THEN
          ipot = bm_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuck4r .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lgp .OR. ltersoff &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (ltersoff) THEN
          ipot = tersoff_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lgp .OR. lbuckmo &
+                        .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lsiepmann) THEN
          ipot = siepmann_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lgp .OR. lbuckmo &
+                        .OR. ltersoff .OR. lgal .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lgal) THEN
          ipot = gal_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lgp .OR. lbuckmo &
+                        .OR. ltersoff .OR. lsiepmann .OR. lgal21 .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lgal21) THEN
          ipot = gal21_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lquip .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lgp .OR. lbuckmo &
+                        .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. ltab)
          CPASSERT(check)
       END IF
       IF (lgp) THEN
          ipot = gp_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21 .OR. ltab)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lgal21 .OR. lbuckmo &
+                        .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. ltab)
          CPASSERT(check)
       END IF
       IF (ltab) THEN
          ipot = tab_type
-         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. leam .OR. lwilliams .OR. lbmhft .OR. lbmhftd &
-                        .OR. lipbv .OR. lbuck4r .OR. lbuckmo .OR. lgp .OR. ltersoff .OR. lsiepmann .OR. lgal .OR. lgal21)
+         check = .NOT. (llj .OR. llj_charmm .OR. lgoodwin .OR. lwilliams .OR. leam .OR. lquip .OR. lnequip &
+                        .OR. lallegro .OR. lbmhft .OR. lbmhftd .OR. lipbv .OR. lbuck4r .OR. lgp .OR. lgal21 &
+                        .OR. lbuckmo .OR. ltersoff .OR. lsiepmann .OR. lgal)
          CPASSERT(check)
       END IF
 
@@ -1201,6 +1289,10 @@ CONTAINS
             CALL pair_potential_eam_create(p%pot(i)%pot%set(std_dim)%eam)
          CASE (quip_type)
             CALL pair_potential_quip_create(p%pot(i)%pot%set(std_dim)%quip)
+         CASE (nequip_type)
+            CALL pair_potential_nequip_create(p%pot(i)%pot%set(std_dim)%nequip)
+         CASE (allegro_type)
+            CALL pair_potential_allegro_create(p%pot(i)%pot%set(std_dim)%allegro)
          CASE (ft_type)
             CALL pair_potential_bmhft_create(p%pot(i)%pot%set(std_dim)%ft)
          CASE (ftd_type)
@@ -1664,6 +1756,113 @@ CONTAINS
          DEALLOCATE (quip)
       END IF
    END SUBROUTINE pair_potential_quip_release
+
+! **************************************************************************************************
+!> \brief Creates the NEQUIP potential type
+!> \param nequip ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_nequip_create(nequip)
+      TYPE(nequip_pot_type), POINTER                     :: nequip
+
+      CPASSERT(.NOT. ASSOCIATED(nequip))
+      ALLOCATE (nequip)
+   END SUBROUTINE pair_potential_nequip_create
+
+! **************************************************************************************************
+!> \brief Copy two NEQUIP potential type
+!> \param nequip_source ...
+!> \param nequip_dest ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_nequip_copy(nequip_source, nequip_dest)
+      TYPE(nequip_pot_type), POINTER                     :: nequip_source, nequip_dest
+
+      IF (.NOT. ASSOCIATED(nequip_source)) RETURN
+      IF (ASSOCIATED(nequip_dest)) CALL pair_potential_nequip_release(nequip_dest)
+      CALL pair_potential_nequip_create(nequip_dest)
+      nequip_dest = nequip_source
+
+   END SUBROUTINE pair_potential_nequip_copy
+
+! **************************************************************************************************
+!> \brief Creates the NEQUIP potential type
+!> \param nequip ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_nequip_clean(nequip)
+      TYPE(nequip_pot_type), POINTER                     :: nequip
+
+      IF (.NOT. ASSOCIATED(nequip)) RETURN
+      nequip = nequip_pot_type()
+
+   END SUBROUTINE pair_potential_nequip_clean
+
+! **************************************************************************************************
+!> \brief Destroys the NEQUIP potential type
+!> \param nequip ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_nequip_release(nequip)
+      TYPE(nequip_pot_type), POINTER                     :: nequip
+
+      IF (ASSOCIATED(nequip)) THEN
+         DEALLOCATE (nequip)
+      END IF
+   END SUBROUTINE pair_potential_nequip_release
+
+! **************************************************************************************************
+!> \brief Creates the ALLEGRO potential type
+!> \param allegro ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_allegro_create(allegro)
+      TYPE(allegro_pot_type), POINTER                    :: allegro
+
+      CPASSERT(.NOT. ASSOCIATED(allegro))
+      ALLOCATE (allegro)
+   END SUBROUTINE pair_potential_allegro_create
+
+! **************************************************************************************************
+!> \brief Copy two ALLEGRO potential type
+!> \param allegro_source ...
+!> \param allegro_dest ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_allegro_copy(allegro_source, allegro_dest)
+      TYPE(allegro_pot_type), POINTER                    :: allegro_source, allegro_dest
+
+      IF (.NOT. ASSOCIATED(allegro_source)) RETURN
+      IF (ASSOCIATED(allegro_dest)) CALL pair_potential_allegro_release(allegro_dest)
+      CALL pair_potential_allegro_create(allegro_dest)
+      allegro_dest = allegro_source
+   END SUBROUTINE pair_potential_allegro_copy
+
+! **************************************************************************************************
+!> \brief Creates the ALLEGRO potential type
+!> \param allegro ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_allegro_clean(allegro)
+      TYPE(allegro_pot_type), POINTER                    :: allegro
+
+      IF (.NOT. ASSOCIATED(allegro)) RETURN
+      allegro = allegro_pot_type()
+
+   END SUBROUTINE pair_potential_allegro_clean
+
+! **************************************************************************************************
+!> \brief Destroys the ALLEGRO potential type
+!> \param allegro ...
+!> \author Gabriele Tocci 2023
+! **************************************************************************************************
+   SUBROUTINE pair_potential_allegro_release(allegro)
+      TYPE(allegro_pot_type), POINTER                    :: allegro
+
+      IF (ASSOCIATED(allegro)) THEN
+         DEALLOCATE (allegro)
+      END IF
+   END SUBROUTINE pair_potential_allegro_release
 
 ! **************************************************************************************************
 !> \brief Creates the BMHFT (TOSI-FUMI) potential type

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,10 +23,10 @@ MODULE graph_utils
    PRIVATE
 
    TYPE mep_input_data_type
-      REAL(KIND=dp), DIMENSION(:, :), POINTER :: minima
-      INTEGER                                :: max_iter
-      INTEGER                                :: nreplica
-      REAL(KIND=dp)                          :: kb
+      REAL(KIND=dp), DIMENSION(:, :), POINTER :: minima => NULL()
+      INTEGER                                :: max_iter = 0
+      INTEGER                                :: nreplica = 0
+      REAL(KIND=dp)                          :: kb = 0.0_dp
    END TYPE mep_input_data_type
 
    PUBLIC :: get_val_res, &

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,10 +16,10 @@ MODULE qs_tddfpt_types
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
-                                              cp_fm_p_type,&
-                                              cp_fm_release
-   USE cp_para_types,                   ONLY: cp_para_env_type
+                                              cp_fm_release,&
+                                              cp_fm_type
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_matrix_pools,                 ONLY: mpools_get
@@ -31,9 +31,9 @@ MODULE qs_tddfpt_types
 ! **************************************************************************************************
    TYPE tddfpt_env_type
       REAL(KIND=dp), DIMENSION(:), POINTER               :: evals ! eigenvalues
-      TYPE(cp_fm_p_type), DIMENSION(:, :), &
+      TYPE(cp_fm_type), DIMENSION(:, :), &
          POINTER                                       :: evecs ! eigenvectors
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: invS ! the inverse of the metric
+      TYPE(cp_fm_type), DIMENSION(:), POINTER          :: invS ! the inverse of the metric
       TYPE(cp_fm_pool_p_type), DIMENSION(:), &
          POINTER                                       :: ao_mo_fm_pools
    END TYPE tddfpt_env_type
@@ -67,8 +67,8 @@ CONTAINS
       INTEGER                                            :: i, n_ev, n_spins, spin
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (dft_control, para_env, blacs_env)
 
@@ -85,9 +85,8 @@ CONTAINS
       ALLOCATE (t_env%evecs(n_ev, n_spins))
       DO spin = 1, n_spins
          DO i = 1, n_ev
-            ALLOCATE (t_env%evecs(i, spin)%matrix)
             CALL fm_pool_create_fm(t_env%ao_mo_fm_pools(spin)%pool, &
-                                   t_env%evecs(i, spin)%matrix)
+                                   t_env%evecs(i, spin))
          END DO
       END DO
 
@@ -99,8 +98,7 @@ CONTAINS
          NULLIFY (fm_struct)
          CALL cp_fm_struct_create(fm_struct, para_env, blacs_env, &
                                   p_env%n_ao(spin), p_env%n_ao(spin))
-         ALLOCATE (t_env%invS(spin)%matrix)
-         CALL cp_fm_create(t_env%invS(spin)%matrix, fm_struct, routineP//"invS")
+         CALL cp_fm_create(t_env%invS(spin), fm_struct, routineP//"invS")
          CALL cp_fm_struct_release(fm_struct)
       END DO
 
@@ -119,20 +117,12 @@ CONTAINS
       DO spin = 1, SIZE(t_env%evecs, 2)
          DO i = 1, SIZE(t_env%evecs, 1)
             CALL fm_pool_give_back_fm(t_env%ao_mo_fm_pools(spin)%pool, &
-                                      t_env%evecs(i, spin)%matrix)
-            DEALLOCATE (t_env%evecs(i, spin)%matrix)
+                                      t_env%evecs(i, spin))
          END DO
       END DO
+      DEALLOCATE (t_env%evecs, t_env%evals)
 
-      DO spin = 1, SIZE(t_env%invS)
-         IF (ASSOCIATED(t_env%invS(spin)%matrix)) THEN
-            CALL cp_fm_release(t_env%invS(spin)%matrix)
-            DEALLOCATE (t_env%invS(spin)%matrix)
-         END IF
-      END DO
-      DEALLOCATE (t_env%invS, t_env%evecs, t_env%evals)
-
-      NULLIFY (t_env%invS)
+      CALL cp_fm_release(t_env%invS)
 
    END SUBROUTINE tddfpt_env_deallocate
 

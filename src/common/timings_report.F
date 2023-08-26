@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,7 +20,6 @@ MODULE timings_report
                                               callgraph_items
    USE cp_files,                        ONLY: close_file,&
                                               open_file
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE kinds,                           ONLY: default_string_length,&
                                               dp,&
                                               int_8
@@ -32,10 +31,7 @@ MODULE timings_report
                                               list_push,&
                                               list_size
    USE list_routinereport,              ONLY: list_routinereport_type
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_max,&
-                                              mp_maxloc,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE routine_map,                     ONLY: routine_map_get,&
                                               routine_map_haskey
    USE timings,                         ONLY: get_timer_env
@@ -73,7 +69,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: sort_by_self_time
       INTEGER, INTENT(IN)                                :: cost_type
       LOGICAL, INTENT(IN)                                :: report_maxloc
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       TYPE(list_routinereport_type)                      :: reports
       TYPE(routine_report_type), POINTER                 :: r_report
@@ -103,7 +99,7 @@ CONTAINS
    SUBROUTINE collect_reports_from_ranks(reports, cost_type, para_env)
       TYPE(list_routinereport_type), INTENT(INOUT)       :: reports
       INTEGER, INTENT(IN)                                :: cost_type
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       CHARACTER(LEN=default_string_length)               :: routineN
       INTEGER                                            :: local_routine_id, sending_rank
@@ -124,15 +120,15 @@ CONTAINS
       ! and the actual dictionary are consistent in the loop below, preventing out of bounds.
       ! this hack makes sure they are called before
       routineN = ""
-      CALL mp_bcast(routineN, 0, para_env%group)
+      CALL para_env%bcast(routineN, 0)
       sending_rank = 0
-      CALL mp_max(sending_rank, para_env%group)
-      CALL mp_sum(sending_rank, para_env%group)
+      CALL para_env%max(sending_rank)
+      CALL para_env%sum(sending_rank)
       foobar = 0.0_dp
-      CALL mp_max(foobar, para_env%group)
+      CALL para_env%max(foobar)
       dbuf = 0.0_dp
-      CALL mp_maxloc(dbuf, para_env%group)
-      CALL mp_sum(foobar, para_env%group)
+      CALL para_env%maxloc(dbuf)
+      CALL para_env%sum(foobar)
       ! end hack
 
       ! Array collected is used as a bit field.
@@ -144,14 +140,14 @@ CONTAINS
          ! does any rank have uncollected stats?
          sending_rank = -1
          IF (.NOT. ALL(collected == 1)) sending_rank = para_env%mepos
-         CALL mp_max(sending_rank, para_env%group)
+         CALL para_env%max(sending_rank)
          IF (sending_rank < 0) EXIT ! every rank got all routines collected
          IF (sending_rank == para_env%mepos) THEN
             local_routine_id = MINLOC(collected, dim=1)
             r_stat => list_get(timer_env%routine_stats, local_routine_id)
             routineN = r_stat%routineN
          END IF
-         CALL mp_bcast(routineN, sending_rank, para_env%group)
+         CALL para_env%bcast(routineN, sending_rank)
 
          ! Create new report for routineN
          ALLOCATE (r_report)
@@ -183,25 +179,25 @@ CONTAINS
          END IF
 
          ! collect stats of routineN via MPI
-         CALL mp_max(r_report%max_total_calls, para_env%group)
-         CALL mp_sum(r_report%sum_total_calls, para_env%group)
-         CALL mp_sum(r_report%sum_stackdepth, para_env%group)
+         CALL para_env%max(r_report%max_total_calls)
+         CALL para_env%sum(r_report%sum_total_calls)
+         CALL para_env%sum(r_report%sum_stackdepth)
 
          ! get value and rank of the maximum inclusive cost
          dbuf = (/r_report%max_icost, REAL(para_env%mepos, KIND=dp)/)
-         CALL mp_maxloc(dbuf, para_env%group)
+         CALL para_env%maxloc(dbuf)
          r_report%max_icost = dbuf(1)
          r_report%max_irank = INT(dbuf(2))
 
-         CALL mp_sum(r_report%sum_icost, para_env%group)
+         CALL para_env%sum(r_report%sum_icost)
 
          ! get value and rank of the maximum exclusive cost
          dbuf = (/r_report%max_ecost, REAL(para_env%mepos, KIND=dp)/)
-         CALL mp_maxloc(dbuf, para_env%group)
+         CALL para_env%maxloc(dbuf)
          r_report%max_ecost = dbuf(1)
          r_report%max_erank = INT(dbuf(2))
 
-         CALL mp_sum(r_report%sum_ecost, para_env%group)
+         CALL para_env%sum(r_report%sum_ecost)
       END DO
 
    END SUBROUTINE collect_reports_from_ranks
@@ -226,7 +222,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: sort_by_exclusiv_cost
       INTEGER, INTENT(IN)                                :: cost_type
       LOGICAL, INTENT(IN)                                :: report_maxloc
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       CHARACTER(LEN=4)                                   :: label
       CHARACTER(LEN=default_string_length)               :: fmt, title

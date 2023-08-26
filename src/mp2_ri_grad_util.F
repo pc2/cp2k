@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,7 +25,6 @@ MODULE mp2_ri_grad_util
    USE cp_fm_types,                     ONLY: &
         cp_fm_create, cp_fm_get_info, cp_fm_indxg2l, cp_fm_indxg2p, cp_fm_indxl2g, cp_fm_release, &
         cp_fm_set_all, cp_fm_to_fm, cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type,&
                                               dbcsr_type,&
                                               dbcsr_type_no_symmetry
@@ -35,12 +34,9 @@ MODULE mp2_ri_grad_util
                                               release_group_dist
    USE kinds,                           ONLY: dp
    USE libint_2c_3c,                    ONLY: compare_potential_types
-   USE message_passing,                 ONLY: mp_allgather,&
-                                              mp_irecv,&
-                                              mp_isend,&
-                                              mp_sendrecv,&
-                                              mp_sum,&
-                                              mp_wait,&
+   USE message_passing,                 ONLY: mp_para_env_type,&
+                                              mp_request_null,&
+                                              mp_request_type,&
                                               mp_waitall
    USE mp2_types,                       ONLY: integ_mat_buffer_type,&
                                               mp2_type
@@ -90,7 +86,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :), &
          INTENT(INOUT)                                   :: B_ia_Q
       INTEGER, INTENT(IN)                                :: dimen_RI, homo, virtual
-      TYPE(cp_para_env_type), POINTER                    :: para_env, para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env, para_env_sub
       INTEGER, INTENT(IN)                                :: ngroup, my_group_L_size, &
                                                             my_group_L_start, my_group_L_end, &
                                                             my_B_size, my_B_virtual_start
@@ -347,7 +343,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: homo, my_B_size, virtual, &
                                                             my_B_virtual_start, my_ia_start, &
                                                             my_ia_end, my_ia_size, my_group_L_size
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_sub
       TYPE(group_dist_d1_type), INTENT(IN)               :: gd_B_virtual
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'mat_3d_to_2d'
@@ -379,9 +375,8 @@ CONTAINS
          ALLOCATE (BIb_C_rec(homo, rec_B_size, my_group_L_size))
          BIb_C_rec = 0.0_dp
 
-         CALL mp_sendrecv(B_ia_Q, proc_send, &
-                          BIb_C_rec, proc_receive, &
-                          para_env_sub%group)
+         CALL para_env_sub%sendrecv(B_ia_Q, proc_send, &
+                                    BIb_C_rec, proc_receive)
 
          DO iiB = 1, homo
             DO jjB = 1, rec_B_size
@@ -423,7 +418,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: homo, my_B_size, virtual, &
                                                             my_B_virtual_start, my_ia_start, &
                                                             my_ia_end, my_ia_size, my_group_L_size
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_sub
       TYPE(group_dist_d1_type), INTENT(IN)               :: gd_B_virtual
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'mat_3d_to_2d_gamma'
@@ -455,9 +450,8 @@ CONTAINS
          ALLOCATE (BIb_C_rec(rec_B_size, homo, my_group_L_size))
          BIb_C_rec = 0.0_dp
 
-         CALL mp_sendrecv(B_ia_Q, proc_send, &
-                          BIb_C_rec, proc_receive, &
-                          para_env_sub%group)
+         CALL para_env_sub%sendrecv(B_ia_Q, proc_send, &
+                                    BIb_C_rec, proc_receive)
 
          DO iiB = 1, homo
             DO jjB = 1, rec_B_size
@@ -522,16 +516,17 @@ CONTAINS
          ref_send_prow, send_counter, send_pcol, send_prow, size_rec_buffer, size_send_buffer
       INTEGER :: start_col_block, start_row_block
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: iii_vet, index_col_rec, map_rec_size, &
-                                                            map_send_size, req_send
+                                                            map_send_size
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: blocks_ranges_col, blocks_ranges_row, &
                                                             grid_2_mepos, grid_ref_2_send_pos, &
                                                             mepos_2_grid
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
       LOGICAL                                            :: convert_pos, my_do_release_mat
       REAL(KIND=dp)                                      :: part_col, part_row
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(integ_mat_buffer_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: buffer_rec, buffer_send
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_request_type), ALLOCATABLE, DIMENSION(:)   :: req_send
 
       CALL timeset(routineN, handle)
 
@@ -567,8 +562,8 @@ CONTAINS
       ALLOCATE (mepos_2_grid(2, 0:para_env%num_pe - 1))
       grid_2_mepos(myprow, mypcol) = para_env%mepos
       ! sum infos
-      CALL mp_sum(grid_2_mepos, para_env%group)
-      CALL mp_allgather([myprow, mypcol], mepos_2_grid, para_env%group)
+      CALL para_env%sum(grid_2_mepos)
+      CALL para_env%allgather([myprow, mypcol], mepos_2_grid)
 
       ! 1) loop over my local data and define a map for the proc to send data
       ALLOCATE (map_send_size(0:para_env%num_pe - 1))
@@ -718,7 +713,7 @@ CONTAINS
 
       ! 5) similarly to what done for the buffer_send
       !    create the buffer for receive, post the message with irecv
-      !    and send the messages with mp_isend
+      !    and send the messages non-blocking
       CALL timeset(routineN//"_isendrecv", handle2)
       ! count the number of messages to be received
       number_of_rec = 0
@@ -742,8 +737,8 @@ CONTAINS
             buffer_rec(rec_counter)%msg = 0.0_dp
             buffer_rec(rec_counter)%proc = proc_receive
             ! post the message to be received
-            CALL mp_irecv(buffer_rec(rec_counter)%msg, proc_receive, para_env%group, &
-                          buffer_rec(rec_counter)%msg_req)
+            CALL para_env%irecv(buffer_rec(rec_counter)%msg, proc_receive, &
+                                buffer_rec(rec_counter)%msg_req)
          END IF
       END DO
 
@@ -754,8 +749,8 @@ CONTAINS
          proc_send = MODULO(para_env%mepos + proc_shift, para_env%num_pe)
          IF (map_send_size(proc_send) > 0) THEN
             send_counter = send_counter + 1
-            CALL mp_isend(buffer_send(send_counter)%msg, proc_send, para_env%group, &
-                          buffer_send(send_counter)%msg_req)
+            CALL para_env%isend(buffer_send(send_counter)%msg, proc_send, &
+                                buffer_send(send_counter)%msg_req)
             req_send(send_counter) = buffer_send(send_counter)%msg_req
          END IF
       END DO
@@ -837,7 +832,7 @@ CONTAINS
             CALL get_group_dist(gd_row, proc_receive, rec_row_start, rec_row_end, rec_row_size)
 
             ! wait for the message
-            CALL mp_wait(buffer_rec(rec_counter)%msg_req)
+            CALL buffer_rec(rec_counter)%msg_req%wait()
 
             ! fill the local data in fm_mat
             iii = 0
@@ -921,14 +916,15 @@ CONTAINS
          proc_shift, rec_col_size, rec_counter, rec_pcol, rec_prow, rec_row_size, ref_send_pcol, &
          ref_send_prow, send_counter, send_pcol, send_prow, size_rec_buffer, size_send_buffer
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: iii_vet, index_row_rec, map_rec_size, &
-                                                            map_send_size, req_send
+                                                            map_send_size
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: grid_2_mepos, grid_ref_2_send_pos, &
                                                             mepos_2_grid, sizes
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
       REAL(KIND=dp)                                      :: part_col, part_row
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(integ_mat_buffer_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: buffer_rec, buffer_send
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_request_type), ALLOCATABLE, DIMENSION(:)   :: req_send
 
       CALL timeset(routineN, handle)
 
@@ -965,8 +961,8 @@ CONTAINS
       grid_2_mepos(myprow, mypcol) = para_env%mepos
 
       ! sum infos
-      CALL mp_sum(grid_2_mepos, para_env%group)
-      CALL mp_allgather([myprow, mypcol], mepos_2_grid, para_env%group)
+      CALL para_env%sum(grid_2_mepos)
+      CALL para_env%allgather([myprow, mypcol], mepos_2_grid)
 
       ! 1) loop over my local data and define a map for the proc to send data
       ALLOCATE (map_send_size(0:para_env%num_pe - 1))
@@ -1126,7 +1122,7 @@ CONTAINS
 
       ! 5) similarly to what done for the buffer_send
       !    create the buffer for receive, post the message with irecv
-      !    and send the messages with mp_isend
+      !    and send the messages with non-blocking
       CALL timeset(routineN//"_isendrecv", handle2)
       ! count the number of messages to be received
       number_of_rec = 0
@@ -1150,8 +1146,8 @@ CONTAINS
             buffer_rec(rec_counter)%msg = 0.0_dp
             buffer_rec(rec_counter)%proc = proc_receive
             ! post the message to be received
-            CALL mp_irecv(buffer_rec(rec_counter)%msg, proc_receive, para_env%group, &
-                          buffer_rec(rec_counter)%msg_req)
+            CALL para_env%irecv(buffer_rec(rec_counter)%msg, proc_receive, &
+                                buffer_rec(rec_counter)%msg_req)
          END IF
       END DO
 
@@ -1162,8 +1158,8 @@ CONTAINS
          proc_send = MODULO(para_env%mepos + proc_shift, para_env%num_pe)
          IF (map_send_size(proc_send) > 0) THEN
             send_counter = send_counter + 1
-            CALL mp_isend(buffer_send(send_counter)%msg, proc_send, para_env%group, &
-                          buffer_send(send_counter)%msg_req)
+            CALL para_env%isend(buffer_send(send_counter)%msg, proc_send, &
+                                buffer_send(send_counter)%msg_req)
             req_send(send_counter) = buffer_send(send_counter)%msg_req
          END IF
       END DO
@@ -1176,7 +1172,7 @@ CONTAINS
                           nrow_local=nrow_local, &
                           ncol_local=ncol_local)
       ALLOCATE (sizes(2, 0:para_env%num_pe - 1))
-      CALL mp_allgather([nrow_local, ncol_local], sizes, para_env%group)
+      CALL para_env%allgather([nrow_local, ncol_local], sizes)
       iiB = MAXVAL(sizes(1, :))
       ALLOCATE (index_row_rec(iiB))
       index_row_rec = 0
@@ -1202,7 +1198,7 @@ CONTAINS
                END IF
             END DO
 
-            CALL mp_wait(buffer_rec(rec_counter)%msg_req)
+            CALL buffer_rec(rec_counter)%msg_req%wait()
 
             iii = 0
             DO jjB = 1, rec_col_size
@@ -1257,7 +1253,7 @@ CONTAINS
                                  gd_ia, dbcsr_Gamma, mo_coeff_o)
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: Gamma_2D
       INTEGER, INTENT(IN)                                :: homo, virtual, dimen_ia
-      TYPE(cp_para_env_type), POINTER                    :: para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env_sub
       INTEGER, INTENT(IN)                                :: my_ia_start, my_ia_end, my_group_L_size
       TYPE(group_dist_d1_type), INTENT(IN)               :: gd_ia
       TYPE(dbcsr_p_type), DIMENSION(:), INTENT(INOUT)    :: dbcsr_Gamma
@@ -1271,8 +1267,7 @@ CONTAINS
          rec_counter, rec_iaia_end, rec_iaia_size, rec_iaia_start, rec_pcol, rec_prow, &
          ref_send_pcol, ref_send_prow, send_counter, send_pcol, send_prow, size_rec_buffer, &
          size_send_buffer
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: iii_vet, map_rec_size, map_send_size, &
-                                                            req_send
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: iii_vet, map_rec_size, map_send_size
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: grid_2_mepos, grid_ref_2_send_pos, &
                                                             indeces_map_my, mepos_2_grid
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
@@ -1283,6 +1278,7 @@ CONTAINS
       TYPE(index_map), ALLOCATABLE, DIMENSION(:)         :: indeces_rec
       TYPE(integ_mat_buffer_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: buffer_rec, buffer_send
+      TYPE(mp_request_type), ALLOCATABLE, DIMENSION(:)   :: req_send
 
       CALL timeset(routineN, handle)
 
@@ -1320,8 +1316,8 @@ CONTAINS
       ! fill the info array
       grid_2_mepos(myprow, mypcol) = para_env_sub%mepos
       ! sum infos
-      CALL mp_sum(grid_2_mepos, para_env_sub%group)
-      CALL mp_allgather([myprow, mypcol], mepos_2_grid, para_env_sub%group)
+      CALL para_env_sub%sum(grid_2_mepos)
+      CALL para_env_sub%allgather([myprow, mypcol], mepos_2_grid)
 
       ! loop over local index range and define the sending map
       ALLOCATE (map_send_size(0:para_env_sub%num_pe - 1))
@@ -1477,8 +1473,8 @@ CONTAINS
             IF (map_rec_size(proc_receive) > 0) THEN
                rec_counter = rec_counter + 1
                buffer_rec(rec_counter)%msg = 0.0_dp
-               CALL mp_irecv(buffer_rec(rec_counter)%msg, proc_receive, para_env_sub%group, &
-                             buffer_rec(rec_counter)%msg_req)
+               CALL para_env_sub%irecv(buffer_rec(rec_counter)%msg, proc_receive, &
+                                       buffer_rec(rec_counter)%msg_req)
             END IF
          END DO
          ! fill the sending buffer and send the messages
@@ -1509,14 +1505,14 @@ CONTAINS
                buffer_send(send_counter)%msg(iii) = Gamma_2D(iaia - my_ia_start + 1, kkB)
             END IF
          END DO
-         req_send = 0
+         req_send = mp_request_null
          send_counter = 0
          DO proc_shift = 1, para_env_sub%num_pe - 1
             proc_send = MODULO(para_env_sub%mepos + proc_shift, para_env_sub%num_pe)
             IF (map_send_size(proc_send) > 0) THEN
                send_counter = send_counter + 1
-               CALL mp_isend(buffer_send(send_counter)%msg, proc_send, para_env_sub%group, &
-                             buffer_send(send_counter)%msg_req)
+               CALL para_env_sub%isend(buffer_send(send_counter)%msg, proc_send, &
+                                       buffer_send(send_counter)%msg_req)
                req_send(send_counter) = buffer_send(send_counter)%msg_req
             END IF
          END DO
@@ -1529,7 +1525,7 @@ CONTAINS
             IF (map_rec_size(proc_receive) > 0) THEN
                rec_counter = rec_counter + 1
                ! wait for the message
-               CALL mp_wait(buffer_rec(rec_counter)%msg_req)
+               CALL buffer_rec(rec_counter)%msg_req%wait()
                DO iii = 1, size_rec_buffer
                   i_local = indeces_rec(rec_counter)%map(1, iii)
                   j_local = indeces_rec(rec_counter)%map(2, iii)
@@ -1591,7 +1587,7 @@ CONTAINS
    SUBROUTINE prepare_redistribution(para_env, para_env_sub, ngroup, &
                                      group_grid_2_mepos, mepos_2_grid_group, &
                                      pos_info)
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env, para_env_sub
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env, para_env_sub
       INTEGER, INTENT(IN)                                :: ngroup
       INTEGER, ALLOCATABLE, DIMENSION(:, :), INTENT(OUT) :: group_grid_2_mepos, mepos_2_grid_group
       INTEGER, ALLOCATABLE, DIMENSION(:), INTENT(OUT), &
@@ -1601,7 +1597,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: my_pos_info
 
       ALLOCATE (my_pos_info(0:para_env%num_pe - 1))
-      CALL mp_allgather(para_env_sub%mepos, my_pos_info, para_env%group)
+      CALL para_env%allgather(para_env_sub%mepos, my_pos_info)
 
       ALLOCATE (group_grid_2_mepos(0:para_env_sub%num_pe - 1, 0:ngroup - 1))
       group_grid_2_mepos = 0

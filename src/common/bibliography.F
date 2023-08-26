@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -72,7 +72,7 @@ MODULE bibliography
                             Kantorovich2008a, Wellendorff2012, Niklasson2014, Borstnik2014, &
                             Rayson2009, Grimme2011, Fattebert2002, Andreussi2012, &
                             Khaliullin2007, Khaliullin2008, Merlot2014, Lin2009, Lin2013, &
-                            QUIP_ref, DelBen2015, Souza2002, Umari2002, Stengel2009, &
+                            QUIP_ref, Batzner2022, DelBen2015, Souza2002, Umari2002, Stengel2009, &
                             Luber2014, Berghold2011, DelBen2015b, Campana2009, &
                             Schiffmann2015, Bruck2014, Rappe1992, Ceriotti2012, &
                             Ceriotti2010, Walewski2014, Monkhorst1976, MacDonald1978, &
@@ -86,10 +86,11 @@ MODULE bibliography
                             Grimme2017, Kondov2007, Clabaut2020, Clabaut2021, &
                             Ren2011, Ren2013, Cohen2000, Rogers2002, Filippetti2000, &
                             Limpanuparb2011, Martin2003, Yin2017, Goerigk2017, &
-                            Wilhelm2016a, Wilhelm2016b, Wilhelm2017, Wilhelm2018, Lass2018, cp2kqs2020, &
-                            Behler2007, Behler2011, Schran2020a, Schran2020b, &
+                            Wilhelm2016a, Wilhelm2016b, Wilhelm2017, Wilhelm2018, Wilhelm2021, Lass2018, &
+                            cp2kqs2020, Behler2007, Behler2011, Schran2020a, Schran2020b, &
                             Rycroft2009, Thomas2015, Brehm2018, Brehm2020, Shigeta2001, Heinecke2016, &
-                            Brehm2021, Bussy2021a, Bussy2021b, Ditler2021, Mattiat2019, Mattiat2022
+                            Brehm2021, Bussy2021a, Bussy2021b, Ditler2021, Ditler2022, Mattiat2019, Mattiat2022, &
+                            Belleflamme2023, Knizia2013, Musaelian2023, Eriksen2020
 
 CONTAINS
 
@@ -206,6 +207,26 @@ CONTAINS
                          "PY 2014", &
                          "ER"), &
                          DOI="")
+
+      CALL add_reference(key=Batzner2022, ISI_record=s2a( &
+                         "PT J", &
+                         "AU Batzner, S", &
+                         "   Musaelian, A", &
+                         "   Sun, L", &
+                         "   Geiger, M", &
+                         "   Mailoa, JP", &
+                         "   Kornbluth, M", &
+                         "   Molinari, N", &
+                         "   Smidt, TE", &
+                         "   Kozinsky, B", &
+                         "TI E(3)-equivariant graph neural networks for data-efficient", &
+                         "    and accurate interatomic potentials", &
+                         "SO Nature Communications", &
+                         "PY 2022", &
+                         "VL 13", &
+                         "AR 2453", &
+                         "ER"), &
+                         DOI="10.1038/s41467-022-29939-5")
 
       CALL add_reference(key=VandenCic2006, ISI_record=s2a( &
                          "AU Vanden-Eijnden, E", &
@@ -4458,6 +4479,25 @@ CONTAINS
                          "ER"), &
                          DOI="10.1021/acs.jpclett.7b02740")
 
+      CALL add_reference(key=Wilhelm2021, ISI_record=s2a( &
+                         "PT J", &
+                         "AU Wilhelm, J", &
+                         "   Seewald, P", &
+                         "   Golze, D", &
+                         "AF Wilhelm, Jan", &
+                         "   Seewald, Patrick", &
+                         "   Golze, Dorothea", &
+                         "TI Low-Scaling GW with Benchmark Accuracy and Application to Phosphorene Nanosheets", &
+                         "SO JOURNAL OF CHEMICAL THEORY AND COMPUTATION", &
+                         "PD FEB", &
+                         "BP 1662", &
+                         "EP 1677", &
+                         "PY 2021", &
+                         "VL 9", &
+                         "DI 10.1021/acs.jctc.0c01282", &
+                         "ER"), &
+                         DOI="10.1021/acs.jctc.0c01282")
+
       CALL add_reference(key=Lass2018, ISI_record=s2a( &
                          "PT C", &
                          "AU Lass, M", &
@@ -4719,6 +4759,24 @@ CONTAINS
                          "ER"), &
                          DOI="10.1063/5.0041056")
 
+      CALL add_reference(key=Ditler2022, ISI_record=s2a( &
+                         "TY JOUR", &
+                         "PT J", &
+                         "AU Ditler, Edward", &
+                         "   Zimmermann, Tomas", &
+                         "   Kumar, Chandan", &
+                         "   Luber, Sandra", &
+                         "TI Implementation of Nuclear Velocity Perturbation and Magnetic Field Perturbation", &
+                         "     Theory in CP2K and Their Application to Vibrational Circular Dichroism", &
+                         "SO The Journal of Chemical Theory and Computation", &
+                         "PY 2022", &
+                         "VL 18", &
+                         "BP 2448", &
+                         "EP 2461", &
+                         "DI 10.1021/acs.jctc.2c00006", &
+                         "ER"), &
+                         DOI="10.1021/acs.jctc.2c00006")
+
       CALL add_reference(key=Mattiat2019, ISI_record=s2a( &
                          "TY JOUR", &
                          "PT J", &
@@ -4750,6 +4808,69 @@ CONTAINS
                          "DI 10.1021/acs.jctc.2c00644", &
                          "ER"), &
                          DOI="10.1021/acs.jctc.2c00644")
+
+      CALL add_reference(key=Belleflamme2023, ISI_record=s2a( &
+                         "TY JOUR", &
+                         "PT J", &
+                         "AU Belleflamme, Fabian", &
+                         "   Hehn, Anna", &
+                         "   Iannuzzi, Marcella", &
+                         "   Hutter, Juerg", &
+                         "TI A variational formulation of the Harris functional as a correction", &
+                         "   to approximate Kohn–Sham density functional theory", &
+                         "SO The Journal of Chemical Physics", &
+                         "PY 2023", &
+                         "VL 158", &
+                         "AR 054111", &
+                         "DI 10.1063/5.0122671", &
+                         "ER"), &
+                         DOI="10.1063/5.0122671")
+
+      CALL add_reference(key=Knizia2013, ISI_record=s2a( &
+                         "TY JOUR", &
+                         "PT J", &
+                         "AU Knizia Gerald", &
+                         "TI Intrinsic Atomic Orbitals: An Unbiased Bridge between Quantum", &
+                         "   Theory and Chemical Concepts", &
+                         "SO Journal of Chemical Theory and Computation", &
+                         "PY 2013", &
+                         "VL 9", &
+                         "BP 4834", &
+                         "EP 4843", &
+                         "DI 10.1021/ct400687b", &
+                         "ER"), &
+                         DOI="10.1021/ct400687b")
+
+      CALL add_reference(key=Musaelian2023, ISI_record=s2a( &
+                         "TY JOUR", &
+                         "PT J", &
+                         "AU Musaelian, A", &
+                         "   Batzner, S", &
+                         "   Johansson, A", &
+                         "   Sun, L", &
+                         "   Owen, CJ", &
+                         "   Kornbluth, M", &
+                         "   Kozinsky, B", &
+                         "TI Learning local equivariant representations for large-scale", &
+                         "    atomistic dynamice", &
+                         "SO Nature Communications", &
+                         "PY 2023", &
+                         "VL 14", &
+                         "AR 579", &
+                         "ER"), &
+                         DOI="10.1038/s41467-023-36329-y")
+
+      CALL add_reference(key=Eriksen2020, ISI_record=s2a( &
+                         "TY JOUR", &
+                         "PT J", &
+                         "AU Eriksen, JJ", &
+                         "TI Mean-Field density matrix decompositions", &
+                         "SO The Journal of Chemical Physics", &
+                         "PY 2020", &
+                         "VL 153", &
+                         "AR 214109", &
+                         "ER"), &
+                         DOI="10.1063/5.0030764")
 
    END SUBROUTINE add_all_references
 

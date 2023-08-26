@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -40,8 +40,8 @@ MODULE xas_tdp_methods
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: &
         cp_fm_copy_general, cp_fm_create, cp_fm_get_diag, cp_fm_get_info, cp_fm_get_submatrix, &
-        cp_fm_p_type, cp_fm_read_unformatted, cp_fm_release, cp_fm_set_all, cp_fm_to_fm, &
-        cp_fm_to_fm_submat, cp_fm_type, cp_fm_write_unformatted
+        cp_fm_read_unformatted, cp_fm_release, cp_fm_set_all, cp_fm_to_fm, cp_fm_to_fm_submat, &
+        cp_fm_type, cp_fm_write_unformatted
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type,&
@@ -52,10 +52,11 @@ MODULE xas_tdp_methods
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr,&
                                               debug_print_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
-        dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_filter, dbcsr_finalize, dbcsr_get_info, &
-        dbcsr_get_occupation, dbcsr_multiply, dbcsr_p_type, dbcsr_set, dbcsr_type_no_symmetry
+        dbcsr_add_on_diag, dbcsr_complete_redistribute, dbcsr_copy, dbcsr_create, dbcsr_filter, &
+        dbcsr_finalize, dbcsr_get_info, dbcsr_get_occupation, dbcsr_multiply, dbcsr_p_type, &
+        dbcsr_release, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, &
+        dbcsr_type_symmetric
    USE input_constants,                 ONLY: &
         do_admm_purify_cauchy_subspace, do_admm_purify_mo_diag, do_admm_purify_none, do_loc_none, &
         do_potential_coulomb, do_potential_id, do_potential_short, do_potential_truncated, &
@@ -77,7 +78,8 @@ MODULE xas_tdp_methods
    USE machine,                         ONLY: m_flush
    USE mathlib,                         ONLY: get_diag
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE parallel_rng_types,              ONLY: UNIFORM,&
                                               rng_stream_type
@@ -92,8 +94,8 @@ MODULE xas_tdp_methods
    USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE qs_loc_main,                     ONLY: qs_loc_driver
    USE qs_loc_methods,                  ONLY: centers_spreads_berry,&
-                                              qs_loc_driver,&
                                               qs_print_cubes
    USE qs_loc_types,                    ONLY: get_qs_loc_env,&
                                               localized_wfn_control_create,&
@@ -148,7 +150,7 @@ MODULE xas_tdp_methods
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'xas_tdp_methods'
 
-   PUBLIC :: xas_tdp
+   PUBLIC :: xas_tdp, xas_tdp_init
 
 CONTAINS
 
@@ -277,7 +279,10 @@ CONTAINS
          END IF
 !        closed shell or ROKS => myspin=1
          IF (xas_tdp_control%do_uks) THEN
-            CALL qs_loc_driver(qs_env, xas_tdp_env%qs_loc_env, xas_tdp_control%print_loc_subsection)
+            DO ispin = 1, dft_control%nspins
+               CALL qs_loc_driver(qs_env, xas_tdp_env%qs_loc_env, &
+                                  xas_tdp_control%print_loc_subsection, myspin=ispin)
+            END DO
          ELSE
             CALL qs_loc_driver(qs_env, xas_tdp_env%qs_loc_env, &
                                xas_tdp_control%print_loc_subsection, myspin=1)
@@ -332,7 +337,7 @@ CONTAINS
          END IF
 
          IF (xas_tdp_control%do_soc .OR. xas_tdp_control%do_gw2x) THEN
-            CALL integrate_soc_atoms(xas_tdp_env%orb_soc, xas_atom_env, qs_env)
+            CALL integrate_soc_atoms(xas_tdp_env%orb_soc, xas_atom_env=xas_atom_env, qs_env=qs_env)
          END IF
 
          CALL xas_atom_env_release(xas_atom_env)
@@ -568,6 +573,7 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s, rho_ao
+      TYPE(dbcsr_type)                                   :: matrix_tmp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: tmp_basis
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
@@ -829,8 +835,18 @@ CONTAINS
       ALLOCATE (xas_tdp_env%dipmat(3))
       DO i = 1, 3
          ALLOCATE (xas_tdp_env%dipmat(i)%matrix)
-         CALL dbcsr_copy(xas_tdp_env%dipmat(i)%matrix, matrix_s(1)%matrix, name="XAS TDP dipole matrix")
+         CALL dbcsr_copy(matrix_tmp, matrix_s(1)%matrix, name="XAS TDP dipole matrix")
+         IF (xas_tdp_control%dipole_form == xas_dip_vel) THEN
+            CALL dbcsr_create(xas_tdp_env%dipmat(i)%matrix, template=matrix_s(1)%matrix, &
+                              matrix_type=dbcsr_type_antisymmetric)
+            CALL dbcsr_complete_redistribute(matrix_tmp, xas_tdp_env%dipmat(i)%matrix)
+         ELSE
+            CALL dbcsr_create(xas_tdp_env%dipmat(i)%matrix, template=matrix_s(1)%matrix, &
+                              matrix_type=dbcsr_type_symmetric)
+            CALL dbcsr_copy(xas_tdp_env%dipmat(i)%matrix, matrix_tmp)
+         END IF
          CALL dbcsr_set(xas_tdp_env%dipmat(i)%matrix, 0.0_dp)
+         CALL dbcsr_release(matrix_tmp)
       END DO
 
 !  Create the structure for the electric quadrupole in the AO basis, if required
@@ -1356,9 +1372,9 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: ks_struct, lmo_struct
       TYPE(cp_fm_type)                                   :: evecs, ks_fm, lmo_fm, work
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (mos, mo_coeff, matrix_ks, para_env, blacs_env, lmo_struct, ks_struct)
 
@@ -1469,10 +1485,10 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: eval_mat_struct, gs_struct
       TYPE(cp_fm_type)                                   :: eval_mat, work_mat
       TYPE(cp_fm_type), POINTER                          :: gs_coeffs, mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks
       TYPE(gto_basis_set_type), POINTER                  :: kind_basis_set, sto_to_gto_basis_set
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(sto_basis_set_type), POINTER                  :: sto_basis_set
@@ -1792,17 +1808,17 @@ CONTAINS
       REAL(dp), DIMENSION(6)                             :: weights
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: moloc_coeff
-      TYPE(cp_fm_p_type), DIMENSION(:, :), POINTER       :: zij_fm_set
       TYPE(cp_fm_struct_type), POINTER                   :: tmp_fm_struct
       TYPE(cp_fm_type)                                   :: opvec
+      TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:, :)     :: zij_fm_set
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: moloc_coeff
       TYPE(cp_fm_type), POINTER                          :: vectors
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: op_sm_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_loc_env_type), POINTER                     :: qs_loc_env
       TYPE(section_vals_type), POINTER                   :: print_loc_section, prog_run_info
 
-      NULLIFY (qs_loc_env, zij_fm_set, cell, print_loc_section, op_sm_set, moloc_coeff, vectors)
+      NULLIFY (qs_loc_env, cell, print_loc_section, op_sm_set, moloc_coeff, vectors)
       NULLIFY (tmp_fm_struct, para_env, blacs_env, prog_run_info)
 
 !  Initialization
@@ -1824,7 +1840,7 @@ CONTAINS
                           moloc_coeff=moloc_coeff)
 
 !  Prepare for zij
-      vectors => moloc_coeff(1)%matrix
+      vectors => moloc_coeff(1)
       CALL cp_fm_get_info(vectors, nrow_global=nao)
       CALL cp_fm_create(opvec, vectors%matrix_struct)
 
@@ -1839,8 +1855,7 @@ CONTAINS
       ALLOCATE (zij_fm_set(2, dim_op))
       DO i = 1, dim_op
          DO j = 1, 2
-            ALLOCATE (zij_fm_set(j, i)%matrix)
-            CALL cp_fm_create(zij_fm_set(j, i)%matrix, tmp_fm_struct)
+            CALL cp_fm_create(zij_fm_set(j, i), tmp_fm_struct)
          END DO
       END DO
 
@@ -1849,13 +1864,13 @@ CONTAINS
 
       DO ispin = 1, nspins
 !     zij computation, copied from qs_loc_methods:optimize_loc_berry
-         vectors => moloc_coeff(ispin)%matrix
+         vectors => moloc_coeff(ispin)
          DO i = 1, dim_op
             DO j = 1, 2
-               CALL cp_fm_set_all(zij_fm_set(j, i)%matrix, 0.0_dp)
+               CALL cp_fm_set_all(zij_fm_set(j, i), 0.0_dp)
                CALL cp_dbcsr_sm_fm_multiply(op_sm_set(j, i)%matrix, vectors, opvec, ncol=n_centers)
                CALL parallel_gemm("T", "N", n_centers, n_centers, nao, 1.0_dp, vectors, opvec, 0.0_dp, &
-                                  zij_fm_set(j, i)%matrix)
+                                  zij_fm_set(j, i))
             END DO
          END DO
 
@@ -1868,13 +1883,7 @@ CONTAINS
 !  Clean-up
       CALL cp_fm_release(opvec)
       CALL cp_fm_struct_release(tmp_fm_struct)
-      DO i = 1, dim_op
-         DO j = 1, 2
-            CALL cp_fm_release(zij_fm_set(j, i)%matrix)
-            DEALLOCATE (zij_fm_set(j, i)%matrix)
-         END DO
-      END DO
-      DEALLOCATE (zij_fm_set)
+      CALL cp_fm_release(zij_fm_set)
 
 !  Make sure we leave with the correct do_loc value
       qs_loc_env%do_localize = xas_tdp_control%do_loc
@@ -2036,16 +2045,17 @@ CONTAINS
       INTEGER                                            :: handle, iosc, j, nao, ndo_mo, ndo_so, &
                                                             ngs, nosc, nspins
       LOGICAL                                            :: do_sc, do_sg
-      REAL(dp)                                           :: pref
+      REAL(dp)                                           :: osc_xyz, pref
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: tot_contr
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: dip_block
-      REAL(dp), DIMENSION(:), POINTER                    :: lr_evals, osc_str
+      REAL(dp), DIMENSION(:), POINTER                    :: lr_evals
+      REAL(dp), DIMENSION(:, :), POINTER                 :: osc_str
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: col_struct, mat_struct
       TYPE(cp_fm_type)                                   :: col_work, mat_work
       TYPE(cp_fm_type), POINTER                          :: lr_coeffs
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: dipmat
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (dipmat, col_struct, mat_struct, para_env, blacs_env, lr_coeffs)
       NULLIFY (lr_evals, osc_str)
@@ -2070,7 +2080,7 @@ CONTAINS
       ndo_so = ndo_mo*nspins
       ngs = ndo_so; IF (xas_tdp_control%do_roks) ngs = ndo_mo !in ROKS, same gs coeffs
       nosc = SIZE(lr_evals)
-      ALLOCATE (donor_state%osc_str(nosc))
+      ALLOCATE (donor_state%osc_str(nosc, 4))
       osc_str => donor_state%osc_str
       osc_str = 0.0_dp
       dipmat => xas_tdp_env%dipmat
@@ -2111,17 +2121,21 @@ CONTAINS
                tot_contr(:) = tot_contr(:) + get_diag(dip_block(ndo_mo + 1:ndo_so, :)) !beta
             END IF
 
-            osc_str(iosc) = osc_str(iosc) + SUM(tot_contr)**2
+            osc_xyz = SUM(tot_contr)**2
+            osc_str(iosc, 4) = osc_str(iosc, 4) + osc_xyz
+            osc_str(iosc, j) = osc_xyz
 
          END DO !iosc
       END DO !j
 
       !compute the prefactor
-      IF (xas_tdp_control%dipole_form == xas_dip_len) THEN
-         osc_str(:) = pref*2.0_dp/3.0_dp*lr_evals(:)*osc_str(:)
-      ELSE
-         osc_str(:) = pref*2.0_dp/3.0_dp/lr_evals(:)*osc_str(:)
-      END IF
+      DO j = 1, 4
+         IF (xas_tdp_control%dipole_form == xas_dip_len) THEN
+            osc_str(:, j) = pref*2.0_dp/3.0_dp*lr_evals(:)*osc_str(:, j)
+         ELSE
+            osc_str(:, j) = pref*2.0_dp/3.0_dp/lr_evals(:)*osc_str(:, j)
+         END IF
+      END DO
 
       !clean-up
       CALL cp_fm_release(mat_work)
@@ -2159,8 +2173,8 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: col_struct, mat_struct
       TYPE(cp_fm_type)                                   :: col_work, mat_work
       TYPE(cp_fm_type), POINTER                          :: lr_coeffs
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: quadmat
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (lr_evals, osc_str, lr_coeffs, col_struct, mat_struct, para_env)
       NULLIFY (blacs_env)
@@ -2362,8 +2376,8 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: col_vect_struct
       TYPE(cp_fm_type)                                   :: work_vect
       TYPE(cp_fm_type), POINTER                          :: gs_coeffs
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -2465,10 +2479,10 @@ CONTAINS
       TYPE(cp_fm_type)                                   :: mo_coeff, work_fm
       TYPE(cp_fm_type), POINTER                          :: lr_coeffs
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
       TYPE(mo_set_type), POINTER                         :: mo_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(section_vals_type), POINTER                   :: print_key
@@ -2743,8 +2757,8 @@ CONTAINS
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct, lumo_struct
       TYPE(cp_fm_type)                                   :: amatrix, bmatrix, evecs, work_fm
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (matrix_ks, matrix_s, para_env, blacs_env)
       NULLIFY (lumo_struct, fm_struct)
@@ -2790,10 +2804,9 @@ CONTAINS
          !Storing results
          CALL cp_fm_struct_create(lumo_struct, para_env=para_env, context=blacs_env, &
                                   nrow_global=nao, ncol_global=nlumo(ispin))
-         ALLOCATE (xas_tdp_env%lumo_evecs(ispin)%matrix)
-         CALL cp_fm_create(xas_tdp_env%lumo_evecs(ispin)%matrix, lumo_struct)
+         CALL cp_fm_create(xas_tdp_env%lumo_evecs(ispin), lumo_struct)
 
-         CALL cp_fm_to_fm_submat(evecs, xas_tdp_env%lumo_evecs(ispin)%matrix, nrow=nao, &
+         CALL cp_fm_to_fm_submat(evecs, xas_tdp_env%lumo_evecs(ispin), nrow=nao, &
                                  ncol=nlumo(ispin), s_firstrow=1, s_firstcol=nocc(ispin) + 1, &
                                  t_firstrow=1, t_firstcol=1)
 
@@ -2844,8 +2857,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: scaling
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
       TYPE(cp_fm_type)                                   :: fm_prec, work_fm
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (fm_struct, para_env, matrix_s)
 
@@ -3016,15 +3029,23 @@ CONTAINS
                   " Index     Excitation energy (eV)    fosc dipole (a.u.)   fosc quadrupole (a.u.)"
                DO i = 1, SIZE(donor_state%sc_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F25.6)") &
-                     i, donor_state%sc_evals(i)*evolt, donor_state%osc_str(i), &
+                     i, donor_state%sc_evals(i)*evolt, donor_state%osc_str(i, 4), &
                      donor_state%quad_osc_str(i)
+               END DO
+            ELSE IF (xas_tdp_control%xyz_dip) THEN
+               WRITE (xas_tdp_unit, FMT="(T3,A)") &
+                  " Index     Excitation energy (eV)    fosc dipole (a.u.)   x-component   y-component   z-component"
+               DO i = 1, SIZE(donor_state%sc_evals)
+                  WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F14.6,F14.6,F14.6)") &
+                     i, donor_state%sc_evals(i)*evolt, donor_state%osc_str(i, 4), &
+                     donor_state%osc_str(i, 1), donor_state%osc_str(i, 2), donor_state%osc_str(i, 3)
                END DO
             ELSE
                WRITE (xas_tdp_unit, FMT="(T3,A)") &
                   " Index     Excitation energy (eV)    fosc dipole (a.u.)"
                DO i = 1, SIZE(donor_state%sc_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6)") &
-                     i, donor_state%sc_evals(i)*evolt, donor_state%osc_str(i)
+                     i, donor_state%sc_evals(i)*evolt, donor_state%osc_str(i, 4)
                END DO
             END IF
 
@@ -3048,7 +3069,7 @@ CONTAINS
                xas_tdp_env%state_type_char(donor_state%state_type), ",", &
                "from EXCITED ATOM: ", donor_state%at_index, ", of KIND (index/symbol): ", &
                donor_state%kind_index, "/", TRIM(donor_state%at_symbol), &
-               "==========================================================--======================"
+               "=================================================================================="
 
 !           Simply dump the excitation energies/ oscillator strength as they come
 
@@ -3058,6 +3079,13 @@ CONTAINS
                DO i = 1, SIZE(donor_state%sf_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F25.6)") &
                      i, donor_state%sf_evals(i)*evolt, 0.0_dp, 0.0_dp !spin-forbidden !
+               END DO
+            ELSE IF (xas_tdp_control%xyz_dip) THEN
+               WRITE (xas_tdp_unit, FMT="(T3,A)") &
+                  " Index     Excitation energy (eV)    fosc dipole (a.u.)   x-component   y-component   z-component"
+               DO i = 1, SIZE(donor_state%sf_evals)
+                  WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F14.6,F14.6,F14.6)") &
+                     i, donor_state%sf_evals(i)*evolt, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp
                END DO
             ELSE
                WRITE (xas_tdp_unit, FMT="(T3,A)") &
@@ -3096,15 +3124,23 @@ CONTAINS
                   " Index     Excitation energy (eV)    fosc dipole (a.u.)   fosc quadrupole (a.u.)"
                DO i = 1, SIZE(donor_state%sg_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F25.6)") &
-                     i, donor_state%sg_evals(i)*evolt, donor_state%osc_str(i), &
+                     i, donor_state%sg_evals(i)*evolt, donor_state%osc_str(i, 4), &
                      donor_state%quad_osc_str(i)
+               END DO
+            ELSE IF (xas_tdp_control%xyz_dip) THEN
+               WRITE (xas_tdp_unit, FMT="(T3,A)") &
+                  " Index     Excitation energy (eV)    fosc dipole (a.u.)   x-component   y-component   z-component"
+               DO i = 1, SIZE(donor_state%sg_evals)
+                  WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F14.6,F14.6,F14.6)") &
+                     i, donor_state%sg_evals(i)*evolt, donor_state%osc_str(i, 4), &
+                     donor_state%osc_str(i, 1), donor_state%osc_str(i, 2), donor_state%osc_str(i, 3)
                END DO
             ELSE
                WRITE (xas_tdp_unit, FMT="(T3,A)") &
                   " Index     Excitation energy (eV)    fosc dipole (a.u.)"
                DO i = 1, SIZE(donor_state%sg_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6)") &
-                     i, donor_state%sg_evals(i)*evolt, donor_state%osc_str(i)
+                     i, donor_state%sg_evals(i)*evolt, donor_state%osc_str(i, 4)
                END DO
             END IF
 
@@ -3137,6 +3173,13 @@ CONTAINS
                DO i = 1, SIZE(donor_state%tp_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F25.6)") &
                      i, donor_state%tp_evals(i)*evolt, 0.0_dp, 0.0_dp !spin-forbidden !
+               END DO
+            ELSE IF (xas_tdp_control%xyz_dip) THEN
+               WRITE (xas_tdp_unit, FMT="(T3,A)") &
+                  " Index     Excitation energy (eV)    fosc dipole (a.u.)   x-component   y-component   z-component"
+               DO i = 1, SIZE(donor_state%tp_evals)
+                  WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F14.6,F14.6,F14.6)") &
+                     i, donor_state%tp_evals(i)*evolt, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp
                END DO
             ELSE
                WRITE (xas_tdp_unit, FMT="(T3,A)") &
@@ -3174,15 +3217,23 @@ CONTAINS
                   " Index     Excitation energy (eV)    fosc dipole (a.u.)   fosc quadrupole (a.u.)"
                DO i = 1, SIZE(donor_state%soc_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F25.6)") &
-                     i, donor_state%soc_evals(i)*evolt, donor_state%soc_osc_str(i), &
+                     i, donor_state%soc_evals(i)*evolt, donor_state%soc_osc_str(i, 4), &
                      donor_state%soc_quad_osc_str(i)
+               END DO
+            ELSE IF (xas_tdp_control%xyz_dip) THEN
+               WRITE (xas_tdp_unit, FMT="(T3,A)") &
+                  " Index     Excitation energy (eV)    fosc dipole (a.u.)   x-component   y-component   z-component"
+               DO i = 1, SIZE(donor_state%soc_evals)
+                  WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6,F14.6,F14.6,F14.6)") &
+                     i, donor_state%soc_evals(i)*evolt, donor_state%soc_osc_str(i, 4), &
+                     donor_state%soc_osc_str(i, 1), donor_state%soc_osc_str(i, 2), donor_state%soc_osc_str(i, 3)
                END DO
             ELSE
                WRITE (xas_tdp_unit, FMT="(T3,A)") &
                   " Index     Excitation energy (eV)    fosc dipole (a.u.)"
                DO i = 1, SIZE(donor_state%soc_evals)
                   WRITE (xas_tdp_unit, FMT="(T3,I6,F27.6,F22.6)") &
-                     i, donor_state%soc_evals(i)*evolt, donor_state%soc_osc_str(i)
+                     i, donor_state%soc_evals(i)*evolt, donor_state%soc_osc_str(i, 4)
                END DO
             END IF
 
@@ -3337,17 +3388,17 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'read_donor_state_restart'
 
-      INTEGER                                            :: group, handle, ispin, nao, nex, nspins, &
-                                                            output_unit, read_params(7), rst_unit, &
-                                                            source
+      INTEGER                                            :: handle, ispin, nao, nex, nspins, &
+                                                            output_unit, read_params(7), rst_unit
       INTEGER, DIMENSION(:, :), POINTER                  :: mo_indices
       LOGICAL                                            :: file_exists
       REAL(dp), DIMENSION(:), POINTER                    :: lr_evals
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
       TYPE(cp_fm_type), POINTER                          :: lr_coeffs
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_comm_type)                                 :: group
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (lr_evals, lr_coeffs, para_env, fm_struct, blacs_env, mos)
 
@@ -3356,13 +3407,12 @@ CONTAINS
       output_unit = cp_logger_get_default_io_unit()
       CPASSERT(ASSOCIATED(donor_state))
       CALL get_qs_env(qs_env, para_env=para_env, blacs_env=blacs_env)
-      group = para_env%group
-      source = para_env%source
+      group = para_env
 
       file_exists = .FALSE.
       rst_unit = -1
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
 
          INQUIRE (FILE=filename, EXIST=file_exists)
          IF (.NOT. file_exists) CPABORT("Trying to read non-existing XAS_TDP restart file")
@@ -3382,7 +3432,7 @@ CONTAINS
          READ (rst_unit) read_params(1:4)
          READ (rst_unit) read_params(5:7)
       END IF
-      CALL mp_bcast(read_params, source, group)
+      CALL group%bcast(read_params)
       donor_state%at_index = read_params(1)
       donor_state%state_type = read_params(2)
       donor_state%ndo_mo = read_params(3)
@@ -3395,13 +3445,13 @@ CONTAINS
       IF (rst_unit > 0) THEN
          READ (rst_unit) mo_indices(1:donor_state%ndo_mo, 1:nspins)
       END IF
-      CALL mp_bcast(mo_indices, source, group)
+      CALL group%bcast(mo_indices)
       donor_state%mo_indices => mo_indices
 
       !read evals
       ALLOCATE (lr_evals(nex))
       IF (rst_unit > 0) READ (rst_unit) lr_evals(1:nex)
-      CALL mp_bcast(lr_evals, source, group)
+      CALL group%bcast(lr_evals)
 
       !read evecs
       CALL cp_fm_struct_create(fm_struct, context=blacs_env, para_env=para_env, &
@@ -3418,7 +3468,7 @@ CONTAINS
       END DO
 
       !closing file
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL close_file(unit_number=rst_unit)
       END IF
 

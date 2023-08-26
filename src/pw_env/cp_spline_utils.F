@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -56,7 +56,9 @@ CONTAINS
 !>      extremely slow (but correct) version
 ! **************************************************************************************************
    SUBROUTINE pw_restrict_s3(pw_fine_in, pw_coarse_out, coarse_pool, param_section)
-      TYPE(pw_type), INTENT(IN)                          :: pw_fine_in, pw_coarse_out
+
+      TYPE(pw_type), INTENT(IN)                          :: pw_fine_in
+      TYPE(pw_type), INTENT(INOUT)                       :: pw_coarse_out
       TYPE(pw_pool_type), POINTER                        :: coarse_pool
       TYPE(section_vals_type), POINTER                   :: param_section
 
@@ -124,6 +126,7 @@ CONTAINS
       CALL pw_pool_give_back_pw(coarse_pool, values)
       CALL pw_pool_give_back_pw(coarse_pool, coeffs)
       CALL timestop(handle)
+
    END SUBROUTINE pw_restrict_s3
 
 ! **************************************************************************************************
@@ -203,6 +206,7 @@ CONTAINS
       CALL pw_pool_give_back_pw(coarse_pool, coeffs)
 
       CALL timestop(handle)
+
    END SUBROUTINE pw_prolongate_s3
 
 END MODULE cp_spline_utils

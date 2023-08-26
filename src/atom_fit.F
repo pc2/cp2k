@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -58,7 +58,7 @@ MODULE atom_fit
    PUBLIC :: atom_fit_density, atom_fit_basis, atom_fit_pseudo, atom_fit_kgpot
 
    TYPE wfn_init
-      REAL(KIND=dp), DIMENSION(:, :, :), POINTER       :: wfn
+      REAL(KIND=dp), DIMENSION(:, :, :), POINTER       :: wfn => NULL()
    END TYPE wfn_init
 
 CONTAINS
@@ -1541,6 +1541,11 @@ CONTAINS
                            CALL atom_orbital_nodes(node, atom%orbitals%wfn(:, k, l), 2._dp*rcov, l, atom%basis)
                            afun = afun + atom%weight*atom%orbitals%wrefnod(k, l, 1)* &
                                   ABS(REAL(node, dp) - atom%orbitals%refnod(k, l, 1))
+!deb
+!                          IF (ABS(REAL(node, dp) - atom%orbitals%refnod(k, l, 1)) > 1.e-5_dp) THEN
+!                             WRITE (6, *) "NODES   ", k, l, node, atom%orbitals%refnod(k, l, 1)
+!                          END IF
+!deb
                         END IF
                         IF (l == 0) THEN
                            IF (atom%orbitals%wpsir0(k, 1) > 0._dp) THEN

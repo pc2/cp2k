@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -22,7 +22,6 @@ MODULE qs_dftb_parameters
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_get_next_line,&
                                               parser_get_object
    USE cp_parser_types,                 ONLY: cp_parser_type,&
@@ -35,7 +34,7 @@ MODULE qs_dftb_parameters
                                               default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: pi
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
    USE physcon,                         ONLY: angstrom,&
                                               kcalmol
    USE qmmm_ff_fist,                    ONLY: qmmm_ff_precond_only_qm
@@ -85,7 +84,7 @@ CONTAINS
       TYPE(qs_dftb_pairpot_type), DIMENSION(:, :), &
          POINTER                                         :: dftb_potential
       TYPE(section_vals_type), POINTER                   :: subsys_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(LEN=2)                                   :: iel, jel
       CHARACTER(LEN=6)                                   :: cspline
@@ -235,7 +234,7 @@ CONTAINS
          skself = 0._dp
          eta = 0._dp
          occupation = 0._dp
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             runit = get_unit_number()
             CALL open_file(file_name=sk_files(jkind, ikind), unit_number=runit)
             ! grid density and number of grid poin ts
@@ -263,15 +262,15 @@ CONTAINS
             IF (n_urpoly < 2) n_urpoly = 0
          END IF
 
-         CALL mp_bcast(n_urpoly, para_env%source, para_env%group)
-         CALL mp_bcast(uwork, para_env%source, para_env%group)
-         CALL mp_bcast(ngrd, para_env%source, para_env%group)
-         CALL mp_bcast(dgrd, para_env%source, para_env%group)
+         CALL para_env%bcast(n_urpoly)
+         CALL para_env%bcast(uwork)
+         CALL para_env%bcast(ngrd)
+         CALL para_env%bcast(dgrd)
 
-         CALL mp_bcast(skself, para_env%source, para_env%group)
-         CALL mp_bcast(energy, para_env%source, para_env%group)
-         CALL mp_bcast(eta, para_env%source, para_env%group)
-         CALL mp_bcast(occupation, para_env%source, para_env%group)
+         CALL para_env%bcast(skself)
+         CALL para_env%bcast(energy)
+         CALL para_env%bcast(eta)
+         CALL para_env%bcast(occupation)
 
          CALL set_dftb_atom_param(dftb_parameter=dftb_atom_a, &
                                   z=z, zeff=SUM(occupation), defined=.TRUE., &
@@ -280,15 +279,15 @@ CONTAINS
          ! Slater-Koster table
          ALLOCATE (fmat(ngrd, 10))
          ALLOCATE (smat(ngrd, 10))
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             DO k = 1, ngrd
                READ (runit, fmt=*, END=1, err=1) fwork(1:10), swork(1:10)
                fmat(k, 1:10) = fwork(1:10)
                smat(k, 1:10) = swork(1:10)
             END DO
          END IF
-         CALL mp_bcast(fmat, para_env%source, para_env%group)
-         CALL mp_bcast(smat, para_env%source, para_env%group)
+         CALL para_env%bcast(fmat)
+         CALL para_env%bcast(smat)
 
          !
          ! Determine lmax for atom type.
@@ -335,7 +334,7 @@ CONTAINS
 
          spdim = 0
          IF (n_urpoly == 0) THEN
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                ! Look for spline representation of repulsive potential
                search = .TRUE.
                DO WHILE (search)
@@ -359,21 +358,21 @@ CONTAINS
             END IF
          END IF
 
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             CALL close_file(unit_number=runit)
          END IF
 
-         CALL mp_bcast(spdim, para_env%source, para_env%group)
-         IF (spdim > 0 .AND. (.NOT. para_env%ionode)) THEN
+         CALL para_env%bcast(spdim)
+         IF (spdim > 0 .AND. (.NOT. para_env%is_source())) THEN
             ALLOCATE (spxr(spdim, 2))
             ALLOCATE (scoeff(spdim, 4))
          END IF
          IF (spdim > 0) THEN
-            CALL mp_bcast(spxr, para_env%source, para_env%group)
-            CALL mp_bcast(scoeff, para_env%source, para_env%group)
-            CALL mp_bcast(surr, para_env%source, para_env%group)
-            CALL mp_bcast(srep, para_env%source, para_env%group)
-            CALL mp_bcast(s_cut, para_env%source, para_env%group)
+            CALL para_env%bcast(spxr)
+            CALL para_env%bcast(scoeff)
+            CALL para_env%bcast(surr)
+            CALL para_env%bcast(srep)
+            CALL para_env%bcast(s_cut)
          END IF
 
          ! store potential data
@@ -446,7 +445,7 @@ CONTAINS
             skself = 0._dp
             eta = 0._dp
             occupation = 0._dp
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                runit = get_unit_number()
                CALL open_file(file_name=sk_files(ikind, jkind), unit_number=runit)
                ! grid density and number of grid poin ts
@@ -476,27 +475,27 @@ CONTAINS
                IF (n_urpoly < 2) n_urpoly = 0
             END IF
 
-            CALL mp_bcast(n_urpoly, para_env%source, para_env%group)
-            CALL mp_bcast(uwork, para_env%source, para_env%group)
-            CALL mp_bcast(ngrd, para_env%source, para_env%group)
-            CALL mp_bcast(dgrd, para_env%source, para_env%group)
+            CALL para_env%bcast(n_urpoly)
+            CALL para_env%bcast(uwork)
+            CALL para_env%bcast(ngrd)
+            CALL para_env%bcast(dgrd)
 
             ! Slater-Koster table
             ALLOCATE (fmat(ngrd, 10))
             ALLOCATE (smat(ngrd, 10))
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                DO k = 1, ngrd
                   READ (runit, fmt=*, END=1, err=1) fwork(1:10), swork(1:10)
                   fmat(k, 1:10) = fwork(1:10)
                   smat(k, 1:10) = swork(1:10)
                END DO
             END IF
-            CALL mp_bcast(fmat, para_env%source, para_env%group)
-            CALL mp_bcast(smat, para_env%source, para_env%group)
+            CALL para_env%bcast(fmat)
+            CALL para_env%bcast(smat)
 
             spdim = 0
             IF (n_urpoly == 0) THEN
-               IF (para_env%ionode) THEN
+               IF (para_env%is_source()) THEN
                   ! Look for spline representation of repulsive potential
                   search = .TRUE.
                   DO WHILE (search)
@@ -520,21 +519,21 @@ CONTAINS
                END IF
             END IF
 
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                CALL close_file(unit_number=runit)
             END IF
 
-            CALL mp_bcast(spdim, para_env%source, para_env%group)
-            IF (spdim > 0 .AND. (.NOT. para_env%ionode)) THEN
+            CALL para_env%bcast(spdim)
+            IF (spdim > 0 .AND. (.NOT. para_env%is_source())) THEN
                ALLOCATE (spxr(spdim, 2))
                ALLOCATE (scoeff(spdim, 4))
             END IF
             IF (spdim > 0) THEN
-               CALL mp_bcast(spxr, para_env%source, para_env%group)
-               CALL mp_bcast(scoeff, para_env%source, para_env%group)
-               CALL mp_bcast(surr, para_env%source, para_env%group)
-               CALL mp_bcast(srep, para_env%source, para_env%group)
-               CALL mp_bcast(s_cut, para_env%source, para_env%group)
+               CALL para_env%bcast(spxr)
+               CALL para_env%bcast(scoeff)
+               CALL para_env%bcast(surr)
+               CALL para_env%bcast(srep)
+               CALL para_env%bcast(s_cut)
             END IF
 
             ! store potential data

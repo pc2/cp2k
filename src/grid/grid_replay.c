@@ -1,6 +1,6 @@
 /*----------------------------------------------------------------------------*/
 /*  CP2K: A general program to perform molecular dynamics simulations         */
-/*  Copyright 2000-2022 CP2K developers group <https://cp2k.org>              */
+/*  Copyright 2000-2023 CP2K developers group <https://cp2k.org>              */
 /*                                                                            */
 /*  SPDX-License-Identifier: BSD-3-Clause                                     */
 /*----------------------------------------------------------------------------*/
@@ -20,9 +20,9 @@
 #include "common/grid_common.h"
 #include "grid_replay.h"
 
+#include "cpu/grid_cpu_collocate.h"
+#include "cpu/grid_cpu_integrate.h"
 #include "grid_task_list.h"
-#include "ref/grid_ref_collocate.h"
-#include "ref/grid_ref_integrate.h"
 
 /*******************************************************************************
  * \brief Reads next line from given filehandle and handles errors.
@@ -219,8 +219,9 @@ static void create_dummy_task_list(
  *        See grid_replay.h for details.
  * \author Ole Schuett
  ******************************************************************************/
-double grid_replay(const char *filename, const int cycles, const bool collocate,
-                   const bool batch, const int cycles_per_block) {
+bool grid_replay(const char *filename, const int cycles, const bool collocate,
+                 const bool batch, const int cycles_per_block,
+                 const double tolerance) {
 
   if (cycles < 1) {
     fprintf(stderr, "Error: Cycles have to be greater than zero.\n");
@@ -384,7 +385,7 @@ double grid_replay(const char *filename, const int cycles, const bool collocate,
       // collocate
       memset(grid_test->host_buffer, 0, npts_local_total * sizeof(double));
       for (int i = 0; i < cycles; i++) {
-        grid_ref_collocate_pgf_product(
+        grid_cpu_collocate_pgf_product(
             orthorhombic, border_mask, func, la_max, la_min, lb_max, lb_min,
             zeta, zetb, rscale, dh, dh_inv, ra, rab, npts_global, npts_local,
             shift_local, border_width, radius, o1, o2, n1, n2, pab,
@@ -396,7 +397,7 @@ double grid_replay(const char *filename, const int cycles, const bool collocate,
       memset(forces_test, 0, 2 * 3 * sizeof(double));
       double virials_test[2][3][3] = {0};
       for (int i = 0; i < cycles; i++) {
-        grid_ref_integrate_pgf_product(
+        grid_cpu_integrate_pgf_product(
             orthorhombic, compute_tau, border_mask, la_max, la_min, lb_max,
             lb_min, zeta, zetb, dh, dh_inv, ra, rab, npts_global, npts_local,
             shift_local, border_width, radius, o1, o2, n1, n2,
@@ -414,6 +415,7 @@ double grid_replay(const char *filename, const int cycles, const bool collocate,
 
   double max_value = 0.0;
   double max_rel_diff = 0.0;
+  const double derivatives_precision = 1e-4; // account for higher numeric noise
   if (collocate) {
     // collocate
     // compare grid
@@ -436,39 +438,37 @@ double grid_replay(const char *filename, const int cycles, const bool collocate,
         const double rel_diff = diff / fmax(1.0, fabs(ref_value));
         max_rel_diff = fmax(max_rel_diff, rel_diff);
         max_value = fmax(max_value, fabs(test_value));
-        if (max_rel_diff > 1e-14) {
-          printf("%i %i ref: %le test: %le diff:%le rel_diff: %le\n", i, j,
-                 ref_value, test_value, diff, rel_diff);
+        if (rel_diff > tolerance) {
+          printf("hab[%i, %i] ref: %le test: %le diff:%le rel_diff: %le\n", i,
+                 j, ref_value, test_value, diff, rel_diff);
         }
       }
     }
     // compare forces
-    const double forces_fudge_factor = 1e-4; // account for higher numeric noise
     for (int i = 0; i < 2; i++) {
       for (int j = 0; j < 3; j++) {
         const double ref_value = cycles * forces_ref[i][j];
         const double test_value = forces_test[i][j];
         const double diff = fabs(test_value - ref_value);
         const double rel_diff = diff / fmax(1.0, fabs(ref_value));
-        max_rel_diff = fmax(max_rel_diff, rel_diff * forces_fudge_factor);
-        if (max_rel_diff > 1e-14) {
-          printf("forces %i %i ref: %le test: %le diff:%le rel_diff: %le\n", i,
-                 j, ref_value, test_value, diff, rel_diff);
+        max_rel_diff = fmax(max_rel_diff, rel_diff * derivatives_precision);
+        if (rel_diff * derivatives_precision > tolerance) {
+          printf("forces[%i, %i] ref: %le test: %le diff:%le rel_diff: %le\n",
+                 i, j, ref_value, test_value, diff, rel_diff);
         }
       }
     }
     // compare virial
-    const double virial_fudge_factor = 1e-4; // account for higher numeric noise
     for (int i = 0; i < 3; i++) {
       for (int j = 0; j < 3; j++) {
         const double ref_value = cycles * virial_ref[i][j];
         const double test_value = virial_test[i][j];
         const double diff = fabs(test_value - ref_value);
         const double rel_diff = diff / fmax(1.0, fabs(ref_value));
-        max_rel_diff = fmax(max_rel_diff, rel_diff * virial_fudge_factor);
-        if (max_rel_diff > 1e-14) {
-          printf("virial %i %i ref: %le test: %le diff:%le rel_diff: %le\n", i,
-                 j, ref_value, test_value, diff, rel_diff);
+        max_rel_diff = fmax(max_rel_diff, rel_diff * derivatives_precision);
+        if (rel_diff * derivatives_precision > tolerance) {
+          printf("virial[ %i, %i] ref: %le test: %le diff:%le rel_diff: %le\n",
+                 i, j, ref_value, test_value, diff, rel_diff);
         }
       }
     }
@@ -476,7 +476,7 @@ double grid_replay(const char *filename, const int cycles, const bool collocate,
   printf("Task: %-55s   %9s %-7s   Cycles: %e   Max value: %le   "
          "Max rel diff: %le   Time: %le sec\n",
          filename, collocate ? "Collocate" : "Integrate",
-         batch ? "Batched" : "PGF-Ref", (float)cycles, max_value, max_rel_diff,
+         batch ? "Batched" : "PGF-CPU", (float)cycles, max_value, max_rel_diff,
          end_time - start_time);
 
   offload_free_buffer(grid_ref);
@@ -492,7 +492,7 @@ double grid_replay(const char *filename, const int cycles, const bool collocate,
     exit(1);
   }
 
-  return max_rel_diff;
+  return max_rel_diff < tolerance;
 }
 
 // EOF

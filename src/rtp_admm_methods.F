@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,10 +25,8 @@ MODULE rtp_admm_methods
    USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_decompose,&
                                               cp_fm_cholesky_invert
    USE cp_fm_types,                     ONLY: cp_fm_get_info,&
-                                              cp_fm_p_type,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_desymmetrize, &
         dbcsr_get_info, dbcsr_p_type, dbcsr_release, dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry
@@ -37,20 +35,24 @@ MODULE rtp_admm_methods
                                               do_admm_purify_none
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: default_string_length,&
+                                              dp
    USE mathconstants,                   ONLY: one,&
                                               zero
+   USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE pw_types,                        ONLY: pw_type
    USE qs_collocate_density,            ONLY: calculate_rho_elec
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
+   USE qs_gapw_densities,               ONLY: prepare_gapw_den
    USE qs_kind_types,                   ONLY: get_qs_kind_set,&
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: qs_ks_env_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
+   USE qs_rho_atom_methods,             ONLY: calculate_rho_atom_coeff
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
@@ -82,17 +84,18 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'rtp_admm_calc_rho_aux'
 
+      CHARACTER(LEN=default_string_length)               :: basis_type
       INTEGER                                            :: handle, ispin, nspins
-      LOGICAL                                            :: s_mstruct_changed
+      LOGICAL                                            :: gapw, s_mstruct_changed
       REAL(KIND=dp), DIMENSION(:), POINTER               :: tot_rho_r_aux
       TYPE(admm_type), POINTER                           :: admm_env
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: rtp_coeff_aux_fit
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: rtp_coeff_aux_fit
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_p_aux, matrix_p_aux_im, &
                                                             matrix_s_aux_fit, &
                                                             matrix_s_aux_fit_vs_orb
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_aux_fit
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_type), DIMENSION(:), POINTER               :: rho_g_aux, rho_r_aux
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho, rho_aux_fit
@@ -116,10 +119,7 @@ CONTAINS
       CALL get_admm_env(admm_env, matrix_s_aux_fit=matrix_s_aux_fit, task_list_aux_fit=task_list_aux_fit, &
                         matrix_s_aux_fit_vs_orb=matrix_s_aux_fit_vs_orb, mos_aux_fit=mos_aux_fit, &
                         rho_aux_fit=rho_aux_fit)
-
-      IF (admm_env%do_gapw) THEN
-         CPABORT("GAPW ADMM not implemented for real time propagation")
-      END IF
+      gapw = admm_env%do_gapw
 
       nspins = dft_control%nspins
 
@@ -142,6 +142,13 @@ CONTAINS
                                     matrix_p_aux_im(ispin)%matrix, &
                                     ispin)
 
+         !IF GAPW, only do the soft basis with PW
+         basis_type = "AUX_FIT"
+         IF (gapw) THEN
+            basis_type = "AUX_FIT_SOFT"
+            task_list_aux_fit => admm_env%admm_gapw_env%task_list
+         END IF
+
          CALL calculate_rho_elec(matrix_p=matrix_p_aux(ispin)%matrix, &
                                  rho=rho_r_aux(ispin), &
                                  rho_gspace=rho_g_aux(ispin), &
@@ -149,6 +156,18 @@ CONTAINS
                                  ks_env=ks_env, soft_valid=.FALSE., &
                                  basis_type="AUX_FIT", &
                                  task_list_external=task_list_aux_fit)
+
+         !IF GAPW, also need to atomic densities
+         IF (gapw) THEN
+            CALL calculate_rho_atom_coeff(qs_env, matrix_p_aux, &
+                                          rho_atom_set=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
+                                          qs_kind_set=admm_env%admm_gapw_env%admm_kind_set, &
+                                          oce=admm_env%admm_gapw_env%oce, sab=admm_env%sab_aux_fit, &
+                                          para_env=para_env)
+
+            CALL prepare_gapw_den(qs_env, local_rho_set=admm_env%admm_gapw_env%local_rho_set, &
+                                  do_rho0=.FALSE., kind_set_external=admm_env%admm_gapw_env%admm_kind_set)
+         END IF
       END DO
       CALL set_qs_env(qs_env, admm_env=admm_env)
       CALL qs_rho_set(rho_aux_fit, rho_r_valid=.TRUE., rho_g_valid=.TRUE.)
@@ -168,7 +187,7 @@ CONTAINS
    SUBROUTINE rtp_admm_calculate_dm(admm_env, rtp_coeff_aux_fit, density_matrix_aux, &
                                     density_matrix_aux_im, ispin)
       TYPE(admm_type), POINTER                           :: admm_env
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: rtp_coeff_aux_fit
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: rtp_coeff_aux_fit
       TYPE(dbcsr_type), POINTER                          :: density_matrix_aux, density_matrix_aux_im
       INTEGER, INTENT(in)                                :: ispin
 
@@ -210,11 +229,11 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(admm_control_type), POINTER                   :: admm_control
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s_aux_fit, matrix_s_mixed
       TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos, mos_aux_fit
       TYPE(rt_prop_type), POINTER                        :: rtp
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: rtp_coeff_aux_fit
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: rtp_coeff_aux_fit
       LOGICAL, INTENT(IN)                                :: geometry_did_change
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'rtp_admm_fit_mo_coeffs'
@@ -279,11 +298,11 @@ CONTAINS
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(admm_type), POINTER                           :: admm_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s_aux_fit, matrix_s_mixed
       TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos, mos_aux_fit
       TYPE(rt_prop_type), POINTER                        :: rtp
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: rtp_coeff_aux_fit
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: rtp_coeff_aux_fit
       LOGICAL, INTENT(IN)                                :: geometry_did_change
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'rtp_fit_mo_coeffs_none'
@@ -291,7 +310,7 @@ CONTAINS
       INTEGER                                            :: handle, ispin, nao_aux_fit, nao_orb, &
                                                             natoms, nmo, nmo_mos, nspins
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occ_num, occ_num_aux
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: mos_new
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: mos_new
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_aux_fit
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -345,13 +364,13 @@ CONTAINS
                          occupation_numbers=occ_num_aux)
 
          CALL parallel_gemm('N', 'N', nao_aux_fit, nmo, nao_orb, &
-                            1.0_dp, admm_env%A, mos_new(2*ispin - 1)%matrix, 0.0_dp, &
-                            rtp_coeff_aux_fit(2*ispin - 1)%matrix)
+                            1.0_dp, admm_env%A, mos_new(2*ispin - 1), 0.0_dp, &
+                            rtp_coeff_aux_fit(2*ispin - 1))
          CALL parallel_gemm('N', 'N', nao_aux_fit, nmo, nao_orb, &
-                            1.0_dp, admm_env%A, mos_new(2*ispin)%matrix, 0.0_dp, &
-                            rtp_coeff_aux_fit(2*ispin)%matrix)
+                            1.0_dp, admm_env%A, mos_new(2*ispin), 0.0_dp, &
+                            rtp_coeff_aux_fit(2*ispin))
 
-         CALL cp_fm_to_fm(rtp_coeff_aux_fit(2*ispin - 1)%matrix, mo_coeff_aux_fit)
+         CALL cp_fm_to_fm(rtp_coeff_aux_fit(2*ispin - 1), mo_coeff_aux_fit)
       END DO
 
       CALL timestop(handle)
@@ -369,7 +388,7 @@ CONTAINS
                                          rtp_coeff_aux_fit, ispin)
 
       TYPE(dbcsr_type), POINTER                          :: density_matrix_aux, density_matrix_aux_im
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: rtp_coeff_aux_fit
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: rtp_coeff_aux_fit
       INTEGER, INTENT(in)                                :: ispin
 
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_rtp_admm_density'
@@ -383,23 +402,23 @@ CONTAINS
       re = 2*ispin - 1; im = 2*ispin
       alpha = 3*one - REAL(SIZE(rtp_coeff_aux_fit)/2, dp)
       CALL dbcsr_set(density_matrix_aux, zero)
-      CALL cp_fm_get_info(rtp_coeff_aux_fit(re)%matrix, ncol_global=ncol)
+      CALL cp_fm_get_info(rtp_coeff_aux_fit(re), ncol_global=ncol)
       CALL cp_dbcsr_plus_fm_fm_t(sparse_matrix=density_matrix_aux, &
-                                 matrix_v=rtp_coeff_aux_fit(re)%matrix, &
+                                 matrix_v=rtp_coeff_aux_fit(re), &
                                  ncol=ncol, &
                                  alpha=alpha)
 
       ! It is actually complex conjugate but i*i=-1 therefore it must be added
       CALL cp_dbcsr_plus_fm_fm_t(sparse_matrix=density_matrix_aux, &
-                                 matrix_v=rtp_coeff_aux_fit(im)%matrix, &
+                                 matrix_v=rtp_coeff_aux_fit(im), &
                                  ncol=ncol, &
                                  alpha=alpha)
 
 !   compute the imaginary part of the dm
       CALL dbcsr_set(density_matrix_aux_im, zero)
       CALL cp_dbcsr_plus_fm_fm_t(sparse_matrix=density_matrix_aux_im, &
-                                 matrix_v=rtp_coeff_aux_fit(im)%matrix, &
-                                 matrix_g=rtp_coeff_aux_fit(re)%matrix, &
+                                 matrix_v=rtp_coeff_aux_fit(im), &
+                                 matrix_g=rtp_coeff_aux_fit(re), &
                                  ncol=ncol, &
                                  alpha=2.0_dp*alpha, &
                                  symmetry_mode=-1)
@@ -432,6 +451,8 @@ CONTAINS
                       matrix_ks=matrix_ks, &
                       matrix_ks_im=matrix_ks_im)
       CALL get_admm_env(admm_env, matrix_ks_aux_fit=matrix_ks_aux_fit, matrix_ks_aux_fit_im=matrix_ks_aux_fit_im)
+
+      !note: the GAPW contribution to ks_aux_fit taken care of in qs_ks_methods.F/update_admm_ks_atom
 
       DO ispin = 1, dft_control%nspins
 

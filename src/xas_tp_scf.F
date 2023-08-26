@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -37,7 +37,6 @@ MODULE xas_tp_scf
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr,&
                                               cp_rm_iter_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_copy,&
                                               dbcsr_p_type
    USE input_constants,                 ONLY: ot_precond_full_kinetic,&
@@ -48,7 +47,7 @@ MODULE xas_tp_scf
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
-   USE message_passing,                 ONLY: mp_sync
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_methods,                ONLY: get_particle_set
    USE particle_types,                  ONLY: particle_type
    USE preconditioner,                  ONLY: make_preconditioner
@@ -72,7 +71,7 @@ MODULE xas_tp_scf
    USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: qs_ks_did_change,&
                                               qs_ks_env_type
-   USE qs_loc_methods,                  ONLY: qs_loc_driver
+   USE qs_loc_main,                     ONLY: qs_loc_driver
    USE qs_loc_types,                    ONLY: get_qs_loc_env,&
                                               localized_wfn_control_type,&
                                               qs_loc_env_type
@@ -152,10 +151,10 @@ CONTAINS
       REAL(KIND=dp)                                      :: t1, t2
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: rho_ao_kp
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_charges_type), POINTER                     :: qs_charges
       TYPE(qs_energy_type), POINTER                      :: energy
@@ -369,12 +368,12 @@ CONTAINS
          CALL m_flush(output_unit)
       END IF
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
       CALL qs_ks_did_change(ks_env, rho_changed=.TRUE.)
 
       CALL cls_prepare_states(xas_control, xas_env, qs_env, iatom, xas_section, output_unit)
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
 
       CALL cp_print_key_finished_output(output_unit, logger, xas_section, &
                                         "PRINT%PROGRAM_RUN_INFO")
@@ -423,11 +422,11 @@ CONTAINS
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_type), POINTER                          :: all_vectors, excvec_coeff, &
                                                             excvec_overlap, mo_coeff, uno_orbs
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: kinetic, matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(localized_wfn_control_type), POINTER          :: localized_wfn_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(preconditioner_type), POINTER                 :: local_preconditioner
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -484,7 +483,7 @@ CONTAINS
          IF (output_unit > 0) THEN
             WRITE (UNIT=output_unit, FMT="(/,/,T2,A)") " Eigenstates are derived "// &
                "from the MOs optimized by OT. Follows localization of the core states"// &
-               " to identify the excited orital. "
+               " to identify the excited orbital. "
          END IF
 
          CALL get_xas_env(xas_env=xas_env, &
@@ -558,7 +557,7 @@ CONTAINS
          !
       END IF
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
       !Calculate the virtual states from the KS matrix matrix_ks(1)
       IF (nvirtual2 .GT. 0) THEN
          NULLIFY (mo_coeff)
@@ -599,7 +598,7 @@ CONTAINS
          DEALLOCATE (local_preconditioner)
       END IF
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
       ! Prapare arrays for the calculation of the spectrum
       IF (.NOT. xas_control%xas_method == xas_dscf) THEN
          ! Copy the final vectors in the array
@@ -655,10 +654,10 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: all_evals, eigenvalues
       TYPE(cp_fm_type), POINTER                          :: all_vectors, mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(section_vals_type), POINTER                   :: dft_section, scf_section, xas_section

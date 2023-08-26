@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,15 +20,12 @@ MODULE qs_dos
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE kpoint_types,                    ONLY: kpoint_type
-   USE message_passing,                 ONLY: mp_max,&
-                                              mp_min,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
@@ -76,7 +73,7 @@ CONTAINS
 
       NULLIFY (logger)
       logger => cp_get_default_logger()
-      ionode = logger%para_env%ionode
+      ionode = logger%para_env%is_source()
       should_output = BTEST(cp_print_key_should_output(logger%iter_info, dft_section, &
                                                        "PRINT%DOS"), cp_p_file)
       iounit = cp_logger_get_default_io_unit(logger)
@@ -101,6 +98,8 @@ CONTAINS
       emin = 1.e10_dp
       emax = -1.e10_dp
       nspins = SIZE(mos)
+      nmo(:) = 0
+
       DO ispin = 1, nspins
          mo_set => mos(ispin)
          CALL get_mo_set(mo_set=mo_set, nmo=nmo(ispin), mu=e_fermi(ispin))
@@ -220,14 +219,14 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: ehist, hist, occval
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:, :), POINTER        :: mos
       TYPE(mo_set_type), POINTER                         :: mo_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (logger)
       logger => cp_get_default_logger()
-      ionode = logger%para_env%ionode
+      ionode = logger%para_env%is_source()
       should_output = BTEST(cp_print_key_should_output(logger%iter_info, dft_section, &
                                                        "PRINT%DOS"), cp_p_file)
       iounit = cp_logger_get_default_io_unit(logger)
@@ -274,9 +273,9 @@ CONTAINS
             END DO
          END DO
       END IF
-      CALL mp_min(emin, para_env%group)
-      CALL mp_max(emax, para_env%group)
-      CALL mp_max(nmo, para_env%group)
+      CALL para_env%min(emin)
+      CALL para_env%max(emax)
+      CALL para_env%max(nmo)
 
       nhist = NINT((emax - emin)/de) + 1
       ALLOCATE (hist(nhist, nspins), occval(nhist, nspins), ehist(nhist, nspins))
@@ -302,8 +301,8 @@ CONTAINS
             END DO
          END DO
       END IF
-      CALL mp_sum(hist, para_env%group)
-      CALL mp_sum(occval, para_env%group)
+      CALL para_env%sum(hist)
+      CALL para_env%sum(occval)
       DO ispin = 1, nspins
          hist(:, ispin) = hist(:, ispin)/REAL(nmo(ispin), KIND=dp)
       END DO

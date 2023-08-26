@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: BSD-3-Clause                                                          !
 !--------------------------------------------------------------------------------------------------!
@@ -15,13 +15,9 @@ MODULE dbm_tests
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE machine,                         ONLY: m_flush
-   USE message_passing,                 ONLY: mp_cart_create,&
-                                              mp_comm_free,&
-                                              mp_dims_create,&
-                                              mp_environ,&
-                                              mp_max,&
-                                              mp_sum,&
-                                              mp_sync
+   USE message_passing,                 ONLY: mp_cart_type,&
+                                              mp_comm_type,&
+                                              mp_dims_create
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -56,7 +52,8 @@ CONTAINS
                             bs_m, bs_n, bs_k, sparsities, alpha, beta, &
                             n_loops, eps, retain_sparsity, always_checksum)
 
-      INTEGER, INTENT(IN)                                :: mp_group, io_unit
+      CLASS(mp_comm_type), INTENT(IN)                     :: mp_group
+      INTEGER, INTENT(IN)                                :: io_unit
       INTEGER, DIMENSION(:), INTENT(in)                  :: matrix_sizes
       LOGICAL, DIMENSION(2), INTENT(in)                  :: trs
       INTEGER, DIMENSION(:), POINTER                     :: bs_m, bs_n, bs_k
@@ -68,22 +65,22 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'dbm_run_tests'
 
-      INTEGER                                            :: bmax, bmin, cart_group, handle, mynode, &
-                                                            numnodes
+      INTEGER                                            :: bmax, bmin, handle
       INTEGER, CONTIGUOUS, DIMENSION(:), POINTER         :: col_dist_a, col_dist_b, col_dist_c, &
                                                             row_dist_a, row_dist_b, row_dist_c, &
                                                             sizes_k, sizes_m, sizes_n
-      INTEGER, DIMENSION(2)                              :: mycoord, npdims
+      INTEGER, DIMENSION(2)                              :: npdims
       TYPE(dbm_distribution_obj)                         :: dist_a, dist_b, dist_c
       TYPE(dbm_type), TARGET                             :: matrix_a, matrix_b, matrix_c
+      TYPE(mp_cart_type)                                 :: cart_group
 
       CALL timeset(routineN, handle)
 
       ! Create MPI processor grid.
-      CALL mp_environ(numnodes, mynode, mp_group)
       npdims(:) = 0
-      CALL mp_dims_create(numnodes, npdims)
-      CALL mp_cart_create(mp_group, 2, npdims, mycoord, cart_group)
+      CALL mp_dims_create(mp_group%num_pe, npdims)
+      CALL cart_group%create(mp_group, 2, npdims)
+      npdims = cart_group%num_pe_cart
 
       ! Initialize random number generator.
       randmat_counter = 12341313
@@ -178,7 +175,7 @@ CONTAINS
       CALL dbm_release(matrix_a)
       CALL dbm_release(matrix_b)
       CALL dbm_release(matrix_c)
-      CALL mp_comm_free(cart_group)
+      CALL cart_group%free()
 
       CALL timestop(handle)
    END SUBROUTINE dbm_run_tests
@@ -209,55 +206,57 @@ CONTAINS
       LOGICAL, INTENT(in)                                :: retain_sparsity
       INTEGER, INTENT(IN)                                :: n_loops
       REAL(kind=dp), INTENT(in)                          :: eps
-      INTEGER, INTENT(IN)                                :: group, io_unit
+
+      CLASS(mp_comm_type), INTENT(IN)                    :: group
+      INTEGER, INTENT(IN)                                :: io_unit
       LOGICAL, INTENT(in)                                :: always_checksum
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'run_multiply_test'
 
-      INTEGER                                            :: handle, loop_iter, mynode, numnodes
+      INTEGER                                            :: handle, loop_iter
       INTEGER(kind=int_8)                                :: flop
       REAL(kind=dp)                                      :: cs, duration, flops_all, time_start
       TYPE(dbm_type)                                     :: matrix_c_orig
 
       CALL timeset(routineN, handle)
 
-      CALL mp_environ(numnodes, mynode, group)
-
       CALL dbm_create_from_template(matrix_c_orig, "Original Matrix C", matrix_c)
       CALL dbm_copy(matrix_c_orig, matrix_c)
 
-      DO loop_iter = 1, n_loops
-         CALL mp_sync(group)
-         time_start = omp_get_wtime()
-         IF (eps < -0.0_dp) THEN
-            CALL dbm_multiply(transa, transb, alpha, matrix_a, matrix_b, beta, matrix_c, &
-                              retain_sparsity=retain_sparsity, flop=flop)
-         ELSE
-            CALL dbm_multiply(transa, transb, alpha, matrix_a, matrix_b, beta, matrix_c, &
-                              retain_sparsity=retain_sparsity, flop=flop, filter_eps=eps)
-         END IF
-         duration = omp_get_wtime() - time_start
-
-         CALL mp_max(duration, group)
-         CALL mp_sum(flop, group)
-         duration = MAX(duration, EPSILON(duration))  ! avoid division by zero
-         flops_all = REAL(flop, KIND=dp)/duration/numnodes/(1024*1024)
-         IF (io_unit .GT. 0) THEN
-            WRITE (io_unit, '(A,I5,A,I5,A,F12.3,A,I9,A)') &
-               " loop ", loop_iter, " with ", numnodes, " MPI ranks: using ", &
-               duration, "s ", INT(flops_all), " Mflops/rank"
-            CALL m_flush(io_unit)
-         END IF
-
-         IF (loop_iter .EQ. n_loops .OR. always_checksum) THEN
-            cs = dbm_checksum(matrix_c)
-            IF (io_unit > 0) THEN
-               WRITE (io_unit, *) "Final checksums", cs
+      ASSOCIATE (numnodes => group%num_pe)
+         DO loop_iter = 1, n_loops
+            CALL group%sync()
+            time_start = omp_get_wtime()
+            IF (eps < -0.0_dp) THEN
+               CALL dbm_multiply(transa, transb, alpha, matrix_a, matrix_b, beta, matrix_c, &
+                                 retain_sparsity=retain_sparsity, flop=flop)
+            ELSE
+               CALL dbm_multiply(transa, transb, alpha, matrix_a, matrix_b, beta, matrix_c, &
+                                 retain_sparsity=retain_sparsity, flop=flop, filter_eps=eps)
             END IF
-         END IF
+            duration = omp_get_wtime() - time_start
 
-         CALL dbm_copy(matrix_c, matrix_c_orig)
-      END DO
+            CALL group%max(duration)
+            CALL group%sum(flop)
+            duration = MAX(duration, EPSILON(duration))  ! avoid division by zero
+            flops_all = REAL(flop, KIND=dp)/duration/numnodes/(1024*1024)
+            IF (io_unit .GT. 0) THEN
+               WRITE (io_unit, '(A,I5,A,I5,A,F12.3,A,I9,A)') &
+                  " loop ", loop_iter, " with ", numnodes, " MPI ranks: using ", &
+                  duration, "s ", INT(flops_all), " Mflops/rank"
+               CALL m_flush(io_unit)
+            END IF
+
+            IF (loop_iter .EQ. n_loops .OR. always_checksum) THEN
+               cs = dbm_checksum(matrix_c)
+               IF (io_unit > 0) THEN
+                  WRITE (io_unit, *) "Final checksums", cs
+               END IF
+            END IF
+
+            CALL dbm_copy(matrix_c, matrix_c_orig)
+         END DO
+      END ASSOCIATE
 
       CALL dbm_release(matrix_c_orig)
       CALL timestop(handle)
@@ -272,12 +271,13 @@ CONTAINS
    SUBROUTINE fill_matrix(matrix, sparsity, group)
       TYPE(dbm_type), INTENT(inout)                      :: matrix
       REAL(kind=dp), INTENT(in)                          :: sparsity
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'fill_matrix'
 
-      INTEGER                                            :: block_node, col, handle, mynode, ncol, &
-                                                            nrow, numnodes, row
+      INTEGER                                            :: block_node, col, handle, ncol, &
+                                                            nrow, row
       INTEGER(KIND=int_8)                                :: counter, ele, increment, nmax
       INTEGER, DIMENSION(4)                              :: iseed, jseed
       INTEGER, DIMENSION(:), POINTER                     :: col_block_sizes, row_block_sizes
@@ -286,8 +286,6 @@ CONTAINS
       REAL(kind=dp), DIMENSION(1)                        :: value
 
       CALL timeset(routineN, handle)
-
-      CALL mp_environ(numnodes, mynode, group)
 
       ! Check that the counter was initialised (or has not overflowed)
       CPASSERT(randmat_counter .NE. 0)
@@ -309,32 +307,34 @@ CONTAINS
       counter = 0
       jseed = generate_larnv_seed(7, 42, 3, 42, randmat_counter)
 
-      DO
-         ! find the next block to add, this is given by a geometrically distributed variable
-         ! we number the blocks of the matrix and jump to the next one
-         CALL dlarnv(1, jseed, 1, value)
-         IF (my_sparsity > 0) THEN
-            increment = 1 + FLOOR(LOG(value(1))/LOG(my_sparsity), KIND=int_8)
-         ELSE
-            increment = 1
-         END IF
-         ele = ele + increment
-         IF (ele >= nmax) EXIT
-         counter = counter + 1
-         row = INT(ele/ncol) + 1
-         col = INT(MOD(ele, INT(ncol, KIND=KIND(ele)))) + 1
+      ASSOCIATE (mynode => group%mepos)
+         DO
+            ! find the next block to add, this is given by a geometrically distributed variable
+            ! we number the blocks of the matrix and jump to the next one
+            CALL dlarnv(1, jseed, 1, value)
+            IF (my_sparsity > 0) THEN
+               increment = 1 + FLOOR(LOG(value(1))/LOG(my_sparsity), KIND=int_8)
+            ELSE
+               increment = 1
+            END IF
+            ele = ele + increment
+            IF (ele >= nmax) EXIT
+            counter = counter + 1
+            row = INT(ele/ncol) + 1
+            col = INT(MOD(ele, INT(ncol, KIND=KIND(ele)))) + 1
 
-         ! Only deal with the local blocks.
-         CALL dbm_get_stored_coordinates(matrix, row, col, block_node)
-         IF (block_node == mynode) THEN
-            ! fill based on a block based seed, makes this the same values in parallel
-            iseed = generate_larnv_seed(row, nrow, col, ncol, randmat_counter)
-            ALLOCATE (block(row_block_sizes(row), col_block_sizes(col)))
-            CALL dlarnv(1, iseed, SIZE(block), block)
-            CALL dbm_put_block(matrix, row, col, block)
-            DEALLOCATE (block)
-         END IF
-      END DO
+            ! Only deal with the local blocks.
+            CALL dbm_get_stored_coordinates(matrix, row, col, block_node)
+            IF (block_node == mynode) THEN
+               ! fill based on a block based seed, makes this the same values in parallel
+               iseed = generate_larnv_seed(row, nrow, col, ncol, randmat_counter)
+               ALLOCATE (block(row_block_sizes(row), col_block_sizes(col)))
+               CALL dlarnv(1, iseed, SIZE(block), block)
+               CALL dbm_put_block(matrix, row, col, block)
+               DEALLOCATE (block)
+            END IF
+         END DO
+      END ASSOCIATE
 
       CALL timestop(handle)
    END SUBROUTINE fill_matrix

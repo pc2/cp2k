@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -21,7 +21,6 @@ MODULE cp_ddapc_types
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_printkey_is_on
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE ewald_spline_util,               ONLY: Setup_Ewald_Spline
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
@@ -29,6 +28,7 @@ MODULE cp_ddapc_types
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: pi
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_grids,                        ONLY: pw_grid_release
@@ -51,27 +51,27 @@ MODULE cp_ddapc_types
 !> \author Teodoro Laino
 ! **************************************************************************************************
    TYPE cp_ddapc_type
-      REAL(KIND=dp) :: c0
-      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: AmI
-      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Md ! decoupling
-      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Mr ! recoupling
-      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Mt ! decoupling+recoupling
-      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Ms ! solvation
-      REAL(KIND=dp), POINTER, DIMENSION(:, :)  :: gfunc
-      REAL(KIND=dp), POINTER, DIMENSION(:)    :: w
+      REAL(KIND=dp) :: c0 = 0.0_dp
+      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: AmI => NULL()
+      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Md => NULL() ! decoupling
+      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Mr => NULL() ! recoupling
+      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Mt => NULL() ! decoupling+recoupling
+      REAL(KIND=dp), DIMENSION(:, :), POINTER     :: Ms => NULL() ! solvation
+      REAL(KIND=dp), POINTER, DIMENSION(:, :)  :: gfunc => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:)    :: w => NULL()
    END TYPE cp_ddapc_type
 
 ! **************************************************************************************************
    TYPE cp_ddapc_ewald_type
-      LOGICAL                                    :: do_decoupling
-      LOGICAL                                    :: do_qmmm_periodic_decpl
-      LOGICAL                                    :: do_solvation
-      LOGICAL                                    :: do_property
-      LOGICAL                                    :: do_restraint
-      TYPE(section_vals_type), POINTER :: ewald_section
-      TYPE(pw_pool_type), POINTER :: pw_pool_qm, pw_pool_mm
-      TYPE(pw_grid_type), POINTER :: pw_grid_qm, pw_grid_mm
-      TYPE(pw_type), POINTER :: coeff_qm, coeff_mm
+      LOGICAL                                    :: do_decoupling = .FALSE.
+      LOGICAL                                    :: do_qmmm_periodic_decpl = .FALSE.
+      LOGICAL                                    :: do_solvation = .FALSE.
+      LOGICAL                                    :: do_property = .FALSE.
+      LOGICAL                                    :: do_restraint = .FALSE.
+      TYPE(section_vals_type), POINTER :: ewald_section => NULL()
+      TYPE(pw_pool_type), POINTER :: pw_pool_qm => NULL(), pw_pool_mm => NULL()
+      TYPE(pw_grid_type), POINTER :: pw_grid_qm => NULL(), pw_grid_mm => NULL()
+      TYPE(pw_type), POINTER :: coeff_qm => NULL(), coeff_mm => NULL()
    END TYPE cp_ddapc_ewald_type
 
 CONTAINS
@@ -96,7 +96,7 @@ CONTAINS
    SUBROUTINE cp_ddapc_create(cp_para_env, cp_ddapc_env, cp_ddapc_ewald, &
                               particle_set, radii, cell, super_cell, rho_tot_g, gcut, iw2, Vol, &
                               force_env_section)
-      TYPE(cp_para_env_type), POINTER                    :: cp_para_env
+      TYPE(mp_para_env_type), POINTER                    :: cp_para_env
       TYPE(cp_ddapc_type), INTENT(OUT)                   :: cp_ddapc_env
       TYPE(cp_ddapc_ewald_type), POINTER                 :: cp_ddapc_ewald
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -222,7 +222,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: qmmm_decoupl
       TYPE(cell_type), POINTER                           :: qm_cell
       TYPE(section_vals_type), POINTER                   :: force_env_section, subsys_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: my_val, npts(3), output_unit
       INTEGER, DIMENSION(:), POINTER                     :: ngrids

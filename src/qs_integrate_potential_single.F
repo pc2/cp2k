@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -38,7 +38,6 @@ MODULE qs_integrate_potential_single
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_get_block_p,&
                                               dbcsr_type
    USE external_potential_types,        ONLY: get_potential,&
@@ -49,7 +48,7 @@ MODULE qs_integrate_potential_single
    USE kinds,                           ONLY: dp
    USE lri_environment_types,           ONLY: lri_kind_type
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: coset,&
                                               ncoset
    USE particle_types,                  ONLY: particle_type
@@ -62,10 +61,9 @@ MODULE qs_integrate_potential_single
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
    USE realspace_grid_types,            ONLY: map_gaussian_here,&
-                                              pw2rs,&
                                               realspace_grid_type,&
                                               rs_grid_zero,&
-                                              rs_pw_transfer
+                                              transfer_pw2rs
    USE rs_pw_interface,                 ONLY: potential_pw2rs
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -128,7 +126,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env)
       CALL pw_env_get(pw_env=pw_env, auxbas_rs_grid=rs_v)
 
-      CALL rs_pw_transfer(rs_v, rho_rspace, pw2rs)
+      CALL transfer_pw2rs(rs_v, rho_rspace)
 
       CALL get_qs_env(qs_env=qs_env, &
                       atomic_kind_set=atomic_kind_set, &
@@ -314,7 +312,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env)
       CALL pw_env_get(pw_env=pw_env, auxbas_rs_grid=rs_v)
 
-      CALL rs_pw_transfer(rs_v, rho_rspace, pw2rs)
+      CALL transfer_pw2rs(rs_v, rho_rspace)
 
       CALL get_qs_env(qs_env=qs_env, &
                       atomic_kind_set=atomic_kind_set, &
@@ -478,10 +476,12 @@ CONTAINS
 !>      grid
 !> \param v_rspace ...
 !> \param qs_env ...
+!> \param atecc ...
 ! **************************************************************************************************
-   SUBROUTINE integrate_v_core_rspace(v_rspace, qs_env)
+   SUBROUTINE integrate_v_core_rspace(v_rspace, qs_env, atecc)
       TYPE(pw_type), INTENT(IN)                          :: v_rspace
       TYPE(qs_environment_type), POINTER                 :: qs_env
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc
 
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_v_core_rspace'
 
@@ -525,7 +525,7 @@ CONTAINS
          CALL get_qs_env(qs_env=qs_env, pw_env=pw_env)
          CALL pw_env_get(pw_env=pw_env, auxbas_rs_grid=rs_v)
 
-         CALL rs_pw_transfer(rs_v, v_rspace, pw2rs)
+         CALL transfer_pw2rs(rs_v, v_rspace)
 
          CALL get_qs_env(qs_env=qs_env, &
                          atomic_kind_set=atomic_kind_set, &
@@ -539,8 +539,8 @@ CONTAINS
                          atprop=atprop)
 
          ! atomic energy contributions
+         natom = SIZE(particle_set)
          IF (ASSOCIATED(atprop)) THEN
-            natom = SIZE(particle_set)
             CALL atprop_array_init(atprop%ateb, natom)
          END IF
 
@@ -615,6 +615,9 @@ CONTAINS
                END IF
                IF (ASSOCIATED(atprop)) THEN
                   atprop%ateb(atom_a) = atprop%ateb(atom_a) + 0.5_dp*hab(1, 1)*pab(1, 1)
+               END IF
+               IF (PRESENT(atecc)) THEN
+                  atecc(atom_a) = atecc(atom_a) + 0.5_dp*hab(1, 1)*pab(1, 1)
                END IF
 
             END DO
@@ -876,10 +879,10 @@ CONTAINS
                                                             rpgfa, sphi_a, work, zeta
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gridlevel_info_type), POINTER                 :: gridlevel_info
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
@@ -938,7 +941,7 @@ CONTAINS
                ELSE
                   pblk = 0.0_dp
                END IF
-               CALL mp_sum(pblk, para_env%group)
+               CALL para_env%sum(pblk)
                force_a(:) = 0._dp
                force_b(:) = 0._dp
                IF (use_virial) THEN
@@ -1034,7 +1037,7 @@ CONTAINS
             END DO
             DEALLOCATE (map_it2)
             ! update KS matrix
-            CALL mp_sum(hmat, para_env%group)
+            CALL para_env%sum(hmat)
             CALL dbcsr_get_block_p(matrix=ksmat, row=atom_a, col=atom_a, BLOCK=h_block, found=found)
             IF (found) THEN
                h_block(1:nsgfa, 1:nsgfa) = h_block(1:nsgfa, 1:nsgfa) + hmat(1:nsgfa, 1:nsgfa)

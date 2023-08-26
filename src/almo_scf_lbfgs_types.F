@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -39,11 +39,11 @@ MODULE almo_scf_lbfgs_types
              lbfgs_history_type
 
    TYPE lbfgs_history_type
-      INTEGER :: nstore
+      INTEGER :: nstore = 0
       ! istore counts the total number of action=2 pushes
       ! istore is designed to become more than nstore eventually
       ! there are two counters: the main variable and gradient
-      INTEGER, DIMENSION(2) :: istore
+      INTEGER, DIMENSION(2) :: istore = 0
       TYPE(dbcsr_type), DIMENSION(:, :, :), ALLOCATABLE :: matrix
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: rho
    END TYPE lbfgs_history_type
@@ -150,7 +150,7 @@ CONTAINS
       INTEGER                                            :: ispin, istore
 
       !logger => cp_get_default_logger()
-      !IF (logger%para_env%mepos == logger%para_env%source) THEN
+      !IF (logger%para_env%is_source()) THEN
       !   unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       !ELSE
       !   unit_nr = -1
@@ -191,7 +191,7 @@ CONTAINS
       INTEGER                                            :: ispin, istore
 
       !logger => cp_get_default_logger()
-      !IF (logger%para_env%mepos == logger%para_env%source) THEN
+      !IF (logger%para_env%is_source()) THEN
       !   unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       !ELSE
       !   unit_nr = -1
@@ -252,7 +252,7 @@ CONTAINS
       TYPE(dbcsr_type)                                   :: q
 
       !logger => cp_get_default_logger()
-      !IF (logger%para_env%mepos == logger%para_env%source) THEN
+      !IF (logger%para_env%is_source()) THEN
       !   unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       !ELSE
       !   unit_nr = -1

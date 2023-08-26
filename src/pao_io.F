@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,7 +23,6 @@ MODULE pao_io
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_convert_dbcsr_to_csr, dbcsr_copy, dbcsr_csr_create_from_dbcsr, &
         dbcsr_csr_dbcsr_blkrow_dist, dbcsr_csr_destroy, dbcsr_csr_type, dbcsr_csr_write, &
@@ -36,9 +35,7 @@ MODULE pao_io
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_max,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pao_input,                       ONLY: id2str
    USE pao_param,                       ONLY: pao_param_count
    USE pao_types,                       ONLY: pao_env_type
@@ -99,7 +96,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: hmat, positions
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_X, buffer
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pao_ioblock_type), ALLOCATABLE, DIMENSION(:)  :: xblocks
       TYPE(pao_iokind_type), ALLOCATABLE, DIMENSION(:)   :: kinds
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -114,7 +111,7 @@ CONTAINS
                       particle_set=particle_set)
 
       ! read and check restart file on first rank only
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          CALL pao_read_raw(pao%restart_file, param, hmat, kinds, atom2kind, positions, xblocks)
 
          ! check cell
@@ -155,12 +152,12 @@ CONTAINS
       CALL dbcsr_get_info(pao%matrix_X, row_blk_size=row_blk_sizes, col_blk_size=col_blk_sizes)
       DO iatom = 1, natoms
          ALLOCATE (buffer(row_blk_sizes(iatom), col_blk_sizes(iatom)))
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             CPASSERT(row_blk_sizes(iatom) == SIZE(xblocks(iatom)%p, 1))
             CPASSERT(col_blk_sizes(iatom) == SIZE(xblocks(iatom)%p, 2))
             buffer = xblocks(iatom)%p
          END IF
-         CALL mp_bcast(buffer, para_env%source, para_env%group)
+         CALL para_env%bcast(buffer)
          CALL dbcsr_get_block_p(matrix=pao%matrix_X, row=iatom, col=iatom, block=block_X, found=found)
          IF (ASSOCIATED(block_X)) &
             block_X = buffer
@@ -396,7 +393,7 @@ CONTAINS
 
       INTEGER                                            :: handle, unit_max, unit_nr
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: input
 
       CALL timeset(routineN, handle)
@@ -416,7 +413,7 @@ CONTAINS
 
       ! although just rank-0 writes the trajectory it requires collective MPI calls
       unit_max = unit_nr
-      CALL mp_max(unit_max, para_env%group)
+      CALL para_env%max(unit_max)
       IF (unit_max > 0) THEN
          IF (pao%iw > 0) WRITE (pao%iw, '(A,A)') " PAO| Writing restart file."
          IF (unit_nr > 0) &
@@ -441,7 +438,7 @@ CONTAINS
 !> \param unit_nr ...
 ! **************************************************************************************************
    SUBROUTINE pao_write_diagonal_blocks(para_env, matrix, label, unit_nr)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_type)                                   :: matrix
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(IN)                                :: unit_nr
@@ -467,7 +464,7 @@ CONTAINS
             mpi_buffer(:, :) = 0.0_dp
          END IF
 
-         CALL mp_sum(mpi_buffer, para_env%group)
+         CALL para_env%sum(mpi_buffer)
          IF (unit_nr > 0) THEN
             WRITE (unit_nr, fmt="(A,1X,I10,1X)", advance='no') label, iatom
             WRITE (unit_nr, *) mpi_buffer
@@ -512,7 +509,7 @@ CONTAINS
       WRITE (unit_nr, "(A,5X,I0)") "Version", file_format_version
       WRITE (unit_nr, "(A,5X,F20.10)") "Energy", energy
       WRITE (unit_nr, "(A,5X,I0)") "Step", pao%istep
-      WRITE (unit_nr, "(A,5X,A10)") "Parametrization", id2str(pao%parameterization)
+      WRITE (unit_nr, "(A,5X,A)") "Parametrization", id2str(pao%parameterization)
 
       ! write kinds
       WRITE (unit_nr, "(A,5X,I0)") "Nkinds", SIZE(atomic_kind_set)

@@ -20,7 +20,7 @@ HIPFLAGS := -fPIE -g -O3 --offload-arch=$(HIPARCH) -Wall -Wextra -Werror -I${ROC
 
 ifneq ($(LIBXSMMROOT),)
 LIBS += \
-        -L$(LIBXSMMROOT)/lib -lxsmm -lxsmmext \
+        $(LIBXSMMROOT)/lib/libxsmm.a $(LIBXSMMROOT)/lib/libxsmmext.a \
         -lpthread -lrt
 CFLAGS += -D__LIBXSMM -I$(LIBXSMMROOT)/include
 endif
@@ -56,7 +56,7 @@ ALL_OBJECTS := ../offload/offload_library.o \
 ifneq ($(NVCC),)
 LIBS += -lcudart -lcuda -lcublas -L${CUDA_PATH}/lib64
 CFLAGS += -I${CUDA_PATH}/include -D__OFFLOAD_CUDA
-ALL_OBJECTS += dbm_multiply_gpu.o
+ALL_OBJECTS += dbm_multiply_gpu.o dbm_multiply_gpu_kernel.o
 
 %.o: %.cu $(ALL_HEADERS)
 	cd $(dir $<); $(NVCC) -c $(NVFLAGS) $(notdir $<)

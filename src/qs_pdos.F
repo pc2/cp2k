@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -41,7 +41,6 @@ MODULE qs_pdos
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
@@ -50,7 +49,7 @@ MODULE qs_pdos
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: nso,&
                                               nsoset
    USE orbital_symbols,                 ONLY: l_sym,&
@@ -186,11 +185,11 @@ CONTAINS
       TYPE(cp_fm_type)                                   :: matrix_shalfc, matrix_work, mo_virt
       TYPE(cp_fm_type), POINTER                          :: matrix_shalf, mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: s_matrix
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
       TYPE(ldos_p_type), DIMENSION(:), POINTER           :: ldos_p
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_p_type), DIMENSION(:), POINTER        :: pw_pools
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -200,7 +199,7 @@ CONTAINS
 
       NULLIFY (logger)
       logger => cp_get_default_logger()
-      ionode = logger%para_env%ionode
+      ionode = logger%para_env%is_source()
       should_output = BTEST(cp_print_key_should_output(logger%iter_info, dft_section, &
                                                        "PRINT%PDOS"), cp_p_file)
       output_unit = cp_logger_get_default_io_unit(logger)
@@ -500,7 +499,7 @@ CONTAINS
             END DO
             CALL reallocate(r_ldos_p(ildos)%ldos%index_grid_local, 1, 3, 1, r_ldos_p(ildos)%ldos%npoints)
             npoints = r_ldos_p(ildos)%ldos%npoints
-            CALL mp_sum(npoints, para_env%group)
+            CALL para_env%sum(npoints)
             IF (output_unit > 0) WRITE (UNIT=output_unit, FMT='((T10,A,T18,I6,T25,A,T36,I10,A))') &
                " List ", ildos, " contains ", npoints, " grid points"
          END DO
@@ -826,9 +825,9 @@ CONTAINS
       DO ildos = 1, n_r_ldos
 
          npoints = r_ldos_p(ildos)%ldos%npoints
-         CALL mp_sum(npoints, para_env%group)
-         CALL mp_sum(np_tot, para_env%group)
-         CALL mp_sum(r_ldos_p(ildos)%ldos%pdos_array, para_env%group)
+         CALL para_env%sum(npoints)
+         CALL para_env%sum(np_tot)
+         CALL para_env%sum(r_ldos_p(ildos)%ldos%pdos_array)
          IF (PRESENT(ispin)) THEN
             IF (PRESENT(xas_mittle)) THEN
                my_mittle = TRIM(xas_mittle)//TRIM(spin(ispin))//"_r_list"//TRIM(r_ldos_index(ildos))
@@ -947,8 +946,8 @@ CONTAINS
       TYPE(cp_blacs_env_type), POINTER                   :: context
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_matrix, s_matrix
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(preconditioner_type), POINTER                 :: local_preconditioner
       TYPE(scf_control_type), POINTER                    :: scf_control
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -32,7 +32,6 @@ MODULE sirius_interface
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE external_potential_types,        ONLY: gth_potential_type
    USE input_constants,                 ONLY: do_gapw_log
    USE input_cp2k_pwdft,                ONLY: SIRIUS_FUNC_VDWDF,&
@@ -47,6 +46,7 @@ MODULE sirius_interface
                                               dp
    USE mathconstants,                   ONLY: fourpi,&
                                               gamma1
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: massunit
    USE pwdft_environment_types,         ONLY: pwdft_energy_type,&
@@ -152,7 +152,7 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
       TYPE(cell_type), POINTER                           :: my_cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(grid_atom_type), POINTER                      :: atom_grid
       TYPE(gth_potential_type), POINTER                  :: gth_potential
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -168,7 +168,7 @@ CONTAINS
 
       ! create context of simulation
       CALL pwdft_env_get(pwdft_env, para_env=para_env)
-      sirius_mpi_comm = para_env%group
+      sirius_mpi_comm = para_env%get_handle()
       CALL sirius_create_context(sirius_mpi_comm, sctx)
 
 !     the "fun" starts.
@@ -700,7 +700,7 @@ CONTAINS
 
          ALLOCATE (cforces(n2, n1))
          cforces = 0.0_C_DOUBLE
-         CALL sirius_get_forces(gs_handler, 'total', cforces(1, 1))
+         CALL sirius_get_forces(gs_handler, 'total', cforces)
          ! Sirius computes the forces but cp2k use the gradient everywhere
          ! so a minus sign is needed.
          ! note also that sirius and cp2k store the forces transpose to each other
@@ -712,7 +712,7 @@ CONTAINS
 
       IF (calculate_stress_tensor) THEN
          cstress = 0.0_C_DOUBLE
-         CALL sirius_get_stress_tensor(gs_handler, 'total', cstress(1, 1))
+         CALL sirius_get_stress_tensor(gs_handler, 'total', cstress)
          stress(1:3, 1:3) = cstress(1:3, 1:3)
          CALL pwdft_env_set(pwdft_env=pwdft_env, stress=stress)
       END IF
@@ -758,7 +758,7 @@ CONTAINS
 
       NULLIFY (logger)
       logger => cp_get_default_logger()
-      ionode = logger%para_env%ionode
+      ionode = logger%para_env%is_source()
       iounit = cp_logger_get_default_io_unit(logger)
 
       ! Density of States
@@ -790,9 +790,9 @@ CONTAINS
          END DO
          DO ik = 1, nkpts
             DO ispn = 1, nspins
-               CALL sirius_get_band_energies(ks_handler, ik, ispn, slist(1))
+               CALL sirius_get_band_energies(ks_handler, ik, ispn, slist)
                energies(1:nbands, ispn, ik) = slist(1:nbands)
-               CALL sirius_get_band_occupancies(ks_handler, ik, ispn, slist(1))
+               CALL sirius_get_band_occupancies(ks_handler, ik, ispn, slist)
                occupations(1:nbands, ispn, ik) = slist(1:nbands)
             END DO
          END DO
@@ -856,9 +856,7 @@ CONTAINS
 
          DEALLOCATE (energies, occupations, wkpt, slist)
          DEALLOCATE (hist, occval, ehist)
-
       END IF
-
    END SUBROUTINE cp_sirius_print_results
 
 END MODULE sirius_interface

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -53,10 +53,10 @@ MODULE almo_scf_diis_types
 
    TYPE almo_scf_diis_type
 
-      INTEGER :: diis_env_type
+      INTEGER :: diis_env_type = 0
 
-      INTEGER :: buffer_length
-      INTEGER :: max_buffer_length
+      INTEGER :: buffer_length = 0
+      INTEGER :: max_buffer_length = 0
       !INTEGER, DIMENSION(:), ALLOCATABLE :: history_index
 
       TYPE(dbcsr_type), DIMENSION(:), ALLOCATABLE :: m_var
@@ -70,12 +70,12 @@ MODULE almo_scf_diis_types
       TYPE(domain_submatrix_type), DIMENSION(:), ALLOCATABLE     :: m_b
 
       ! insertion point
-      INTEGER :: in_point
+      INTEGER :: in_point = 0
 
       ! in order to calculate the overlap between error vectors
       ! it is desirable to know tensorial properties of the error
       ! vector, e.g. convariant, contravariant, orthogonal
-      INTEGER :: error_type
+      INTEGER :: error_type = 0
 
    END TYPE almo_scf_diis_type
 
@@ -355,7 +355,7 @@ CONTAINS
 
       ! get a useful output_unit
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -24,7 +24,6 @@ MODULE almo_scf_methods
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_add_on_diag, dbcsr_copy, dbcsr_create, dbcsr_distribution_get, &
         dbcsr_distribution_type, dbcsr_filter, dbcsr_finalize, dbcsr_frobenius_norm, &
@@ -55,6 +54,8 @@ MODULE almo_scf_methods
                                               matrix_sqrt_Newton_Schulz
    USE kinds,                           ONLY: dp
    USE mathlib,                         ONLY: binomial
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE util,                            ONLY: sort
 #include "./base/base_uses.f90"
 
@@ -1193,7 +1194,7 @@ CONTAINS
 
       ! get a useful unit_nr
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -1636,7 +1637,7 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: sigma, sigma_inv
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_guess, smear
       INTEGER, INTENT(IN), OPTIONAL                      :: algorithm
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_lanczos
       INTEGER, INTENT(IN), OPTIONAL                      :: max_iter_lanczos, inverse_accelerator
@@ -1755,8 +1756,7 @@ CONTAINS
                                           para_env=para_env, &
                                           blacs_env=blacs_env, &
                                           upper_to_full=.TRUE.)
-            CALL dbcsr_filter(sigma_inv, &
-                              eps=eps_filter)
+            CALL dbcsr_filter(sigma_inv, eps_filter)
          CASE DEFAULT
             CPABORT("Illegal MO overalp inversion algorithm")
          END SELECT
@@ -2028,7 +2028,7 @@ CONTAINS
 
       ! get a useful output_unit
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -2695,7 +2695,7 @@ CONTAINS
 
       ! get a useful unit_nr
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -2820,7 +2820,7 @@ CONTAINS
 
       ! get a useful unit_nr
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -3054,7 +3054,7 @@ CONTAINS
 
       ! get a useful unit_nr
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -3238,11 +3238,13 @@ CONTAINS
       TYPE(dbcsr_type)                                   :: copy1
       TYPE(domain_submatrix_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: subm_nn, subm_no
+      TYPE(mp_comm_type)                                 :: group
 
       CALL timeset(routineN, handle)
 
       ndomains = dbcsr_nblkcols_total(dpattern)
       CALL dbcsr_get_info(dpattern, group=GroupID)
+      CALL group%set_handle(groupid)
 
       ALLOCATE (subm_no(ndomains), subm_nn(ndomains))
       CALL init_submatrices(subm_no)
@@ -3250,11 +3252,11 @@ CONTAINS
 
       !CALL dbcsr_print(matrix_nn)
       !CALL construct_submatrices(matrix_nn,subm_nn,dpattern,map,select_row_col)
-      !CALL print_submatrices(subm_nn,GroupID)
+      !CALL print_submatrices(subm_nn,Group)
 
       !CALL dbcsr_print(matrix_no)
       CALL construct_submatrices(matrix_no, subm_no, dpattern, map, node_of_domain, select_row)
-      CALL print_submatrices(subm_no, GroupID)
+      CALL print_submatrices(subm_no, group)
 
       CALL dbcsr_create(copy1, template=matrix_no)
       CALL dbcsr_copy(copy1, matrix_no)
@@ -3324,7 +3326,7 @@ CONTAINS
 
       ! get a useful output_unit
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1

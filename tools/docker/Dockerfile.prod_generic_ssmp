@@ -76,6 +76,9 @@ RUN /bin/bash -c " \
     make -j ARCH=local VERSION=ssmp && \
     ln -sf ./cp2k.ssmp ./exe/local/cp2k && \
     ln -sf ./cp2k_shell.ssmp ./exe/local/cp2k_shell && \
+    ln -sf ./graph.ssmp ./exe/local/graph && \
+    ln -sf ./dumpdcd.ssmp ./exe/local/dumpdcd && \
+    ln -sf ./xyz2dcd.ssmp ./exe/local/xyz2dcd && \
     rm -rf lib obj exe/local/libcp2k_unittest.ssmp"
 COPY ./data ./data
 COPY ./tests ./tests
@@ -85,7 +88,7 @@ COPY ./tools/regtesting ./tools/regtesting
 ARG TESTOPTS
 RUN /bin/bash -c " \
     source /opt/cp2k-toolchain/install/setup && \
-    ./tools/regtesting/do_regtest.py 'local' 'ssmp' "${TESTOPTS}" |& tee regtests.log && \
+    ./tools/regtesting/do_regtest.py 'local' 'ssmp' --skipdir=UNIT/libcp2k_unittest "${TESTOPTS}" |& tee regtests.log && \
     rm -rf regtesting"
 
 # Setup entry point for production.

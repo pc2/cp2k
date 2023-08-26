@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,12 +13,11 @@
 MODULE mulliken
    USE atomic_charges,                  ONLY: print_atomic_charges
    USE cp_control_types,                ONLY: mulliken_restraint_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_get_block_p, dbcsr_get_info, dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, &
         dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, dbcsr_type
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_kind_types,                   ONLY: qs_kind_type
 #include "./base/base_uses.f90"
@@ -32,7 +31,7 @@ MODULE mulliken
 ! *** Public subroutines ***
 
    PUBLIC :: mulliken_charges, ao_charges, mulliken_restraint, compute_bond_order
-   PUBLIC :: compute_charges
+   PUBLIC :: compute_charges, atom_trace
 
    INTERFACE mulliken_charges
       MODULE PROCEDURE mulliken_charges_a, mulliken_charges_b, mulliken_charges_c, &
@@ -72,7 +71,7 @@ CONTAINS
    SUBROUTINE mulliken_restraint(mulliken_restraint_control, para_env, &
                                  s_matrix, p_matrix, energy, order_p, ks_matrix, w_matrix)
       TYPE(mulliken_restraint_type), INTENT(IN)          :: mulliken_restraint_control
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_type), POINTER                          :: s_matrix
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p_matrix
       REAL(KIND=dp), OPTIONAL                            :: energy, order_p
@@ -217,7 +216,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p_matrix
       TYPE(dbcsr_type), POINTER                          :: s_matrix
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: charges
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: blk, iblock_col, iblock_row, ispin, nspin
       LOGICAL                                            :: found
@@ -253,7 +252,7 @@ CONTAINS
          END DO
          CALL dbcsr_iterator_stop(iter)
       END DO
-      CALL mp_sum(charges, para_env%group)
+      CALL para_env%sum(charges)
 
    END SUBROUTINE compute_charges
 
@@ -269,7 +268,7 @@ CONTAINS
    SUBROUTINE compute_charges_single(p_matrix, s_matrix, charges, para_env)
       TYPE(dbcsr_type)                                   :: p_matrix, s_matrix
       REAL(KIND=dp), DIMENSION(:)                        :: charges
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: blk, iblock_col, iblock_row
       LOGICAL                                            :: found
@@ -299,7 +298,7 @@ CONTAINS
       END DO
       CALL dbcsr_iterator_stop(iter)
 
-      CALL mp_sum(charges, para_env%group)
+      CALL para_env%sum(charges)
 
    END SUBROUTINE compute_charges_single
 
@@ -316,7 +315,7 @@ CONTAINS
    SUBROUTINE compute_dcharges(p_matrix, s_matrix, charges, dcharges, para_env)
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p_matrix, s_matrix
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: charges, dcharges
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: blk, iblock_col, iblock_row, ider, &
                                                             ispin, nspin
@@ -358,8 +357,8 @@ CONTAINS
          END DO
          CALL dbcsr_iterator_stop(iter)
       END DO
-      CALL mp_sum(charges, para_env%group)
-      CALL mp_sum(dcharges, para_env%group)
+      CALL para_env%sum(charges)
+      CALL para_env%sum(dcharges)
 
    END SUBROUTINE compute_dcharges
 
@@ -380,7 +379,7 @@ CONTAINS
 
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p_matrix
       TYPE(dbcsr_type), POINTER                          :: s_matrix
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       INTEGER                                            :: scr
@@ -421,7 +420,7 @@ CONTAINS
 
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p_matrix
       TYPE(dbcsr_type), POINTER                          :: s_matrix
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: mcharge
 
       CHARACTER(len=*), PARAMETER :: routineN = 'mulliken_charges_b'
@@ -449,7 +448,7 @@ CONTAINS
    SUBROUTINE mulliken_charges_c(p_matrix, s_matrix, para_env, mcharge, dmcharge)
 
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p_matrix, s_matrix
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: mcharge, dmcharge
 
       CHARACTER(len=*), PARAMETER :: routineN = 'mulliken_charges_c'
@@ -476,7 +475,7 @@ CONTAINS
    SUBROUTINE mulliken_charges_s(p_matrix, s_matrix, para_env, mcharge)
 
       TYPE(dbcsr_type)                                   :: p_matrix, s_matrix
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(KIND=dp), DIMENSION(:)                        :: mcharge
 
       CHARACTER(len=*), PARAMETER :: routineN = 'mulliken_charges_s'
@@ -507,7 +506,7 @@ CONTAINS
                                    qs_kind_set, scr, title)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: p_matrix_kp, s_matrix_kp
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       INTEGER                                            :: scr
@@ -557,7 +556,7 @@ CONTAINS
    SUBROUTINE mulliken_charges_bkp(p_matrix_kp, s_matrix_kp, para_env, mcharge)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: p_matrix_kp, s_matrix_kp
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: mcharge
 
       CHARACTER(len=*), PARAMETER :: routineN = 'mulliken_charges_bkp'
@@ -606,7 +605,7 @@ CONTAINS
                                    mcharge, dmcharge)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: p_matrix_kp, s_matrix_kp
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: mcharge, dmcharge
 
       CHARACTER(len=*), PARAMETER :: routineN = 'mulliken_charges_ckp'
@@ -695,7 +694,7 @@ CONTAINS
       TYPE(dbcsr_type), POINTER                          :: s_matrix
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: charges
       INTEGER, INTENT(IN)                                :: iatom
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ao_charges_1'
 
@@ -737,7 +736,7 @@ CONTAINS
          END DO
          CALL dbcsr_iterator_stop(iter)
       END DO
-      CALL mp_sum(charges, para_env%group)
+      CALL para_env%sum(charges)
 
       CALL timestop(handle)
 
@@ -758,7 +757,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p_matrix
       TYPE(dbcsr_type), POINTER                          :: s_matrix
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: charges
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ao_charges_2'
 
@@ -800,7 +799,7 @@ CONTAINS
          END DO
          CALL dbcsr_iterator_stop(iter)
       END DO
-      CALL mp_sum(charges, para_env%group)
+      CALL para_env%sum(charges)
 
       CALL timestop(handle)
 
@@ -819,7 +818,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: p_matrix_kp, s_matrix_kp
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: charges
       INTEGER, INTENT(IN)                                :: iatom
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ao_charges_kp'
 
@@ -865,7 +864,7 @@ CONTAINS
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: p_matrix_kp, s_matrix_kp
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: charges
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ao_charges_kp_2'
 
@@ -900,6 +899,54 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE ao_charges_kp_2
+
+! **************************************************************************************************
+!> \brief Compute partial trace of product of two matrices
+!> \param amat ...
+!> \param bmat ...
+!> \param factor ...
+!> \param atrace ...
+!> \par History
+!>      06.2004 created [Joost VandeVondele]
+!> \note
+!>      charges are computed per spin in the LSD case
+! **************************************************************************************************
+   SUBROUTINE atom_trace(amat, bmat, factor, atrace)
+      TYPE(dbcsr_type), POINTER                          :: amat, bmat
+      REAL(kind=dp), INTENT(IN)                          :: factor
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: atrace
+
+      INTEGER                                            :: blk, iblock_col, iblock_row, nblock
+      LOGICAL                                            :: found
+      REAL(kind=dp)                                      :: btr, mult
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: a_block, b_block
+      TYPE(dbcsr_iterator_type)                          :: iter
+
+      CALL dbcsr_get_info(bmat, nblkrows_total=nblock)
+      CPASSERT(nblock == SIZE(atrace))
+
+      CALL dbcsr_iterator_start(iter, bmat)
+      DO WHILE (dbcsr_iterator_blocks_left(iter))
+         CALL dbcsr_iterator_next_block(iter, iblock_row, iblock_col, b_block, blk)
+         CALL dbcsr_get_block_p(matrix=amat, &
+                                row=iblock_row, col=iblock_col, BLOCK=a_block, found=found)
+
+         ! we can cycle if a block is not present
+         IF (.NOT. (ASSOCIATED(b_block) .AND. ASSOCIATED(a_block))) CYCLE
+
+         IF (iblock_row .EQ. iblock_col) THEN
+            mult = 0.5_dp ! avoid double counting of diagonal blocks
+         ELSE
+            mult = 1.0_dp
+         END IF
+         btr = factor*mult*SUM(a_block*b_block)
+         atrace(iblock_row) = atrace(iblock_row) + btr
+         atrace(iblock_col) = atrace(iblock_col) + btr
+
+      END DO
+      CALL dbcsr_iterator_stop(iter)
+
+   END SUBROUTINE atom_trace
 
 ! **************************************************************************************************
 

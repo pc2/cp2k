@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -14,7 +14,6 @@ MODULE qs_dftb3_methods
                                               get_atomic_kind_set
    USE atprop_types,                    ONLY: atprop_type
    USE cell_types,                      ONLY: cell_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_get_block_p,&
                                               dbcsr_iterator_blocks_left,&
@@ -27,7 +26,7 @@ MODULE qs_dftb3_methods
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_type
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -87,8 +86,8 @@ CONTAINS
       INTEGER                                            :: atom_i, atom_j, blk, handle, i, ia, iac, &
                                                             iatom, ic, icol, ikind, irow, is, &
                                                             jatom, jkind, natom, nimg, nkind
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of
       INTEGER, DIMENSION(3)                              :: cellind
-      INTEGER, DIMENSION(:), POINTER                     :: atom_of_kind, kind_of
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: found, use_virial
       REAL(KIND=dp)                                      :: dr, eb3, eloc, fi, gmij, ua, ui, uj
@@ -98,11 +97,11 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atprop_type), POINTER                         :: atprop
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s
       TYPE(distribution_1d_type), POINTER                :: local_particles
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -118,6 +117,8 @@ CONTAINS
       ! Energy
       CALL get_qs_env(qs_env=qs_env, atomic_kind_set=atomic_kind_set, &
                       qs_kind_set=qs_kind_set, atprop=atprop)
+      CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
+                               kind_of=kind_of, atom_of_kind=atom_of_kind)
 
       eb3 = 0.0_dp
       CALL get_qs_env(qs_env=qs_env, local_particles=local_particles)
@@ -135,7 +136,7 @@ CONTAINS
          END DO
       END DO
       CALL get_qs_env(qs_env=qs_env, para_env=para_env)
-      CALL mp_sum(eb3, para_env%group)
+      CALL para_env%sum(eb3)
       energy%dftb3 = eb3
 
       ! Forces and Virial
@@ -144,10 +145,6 @@ CONTAINS
                          cell=cell, virial=virial, particle_set=particle_set)
          ! virial
          use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
-
-         ALLOCATE (atom_of_kind(natom), kind_of(natom))
-         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
-                                  kind_of=kind_of, atom_of_kind=atom_of_kind)
          CALL qs_rho_get(rho, rho_ao_kp=matrix_p)
          IF (SIZE(matrix_p, 1) == 2) THEN
             DO ic = 1, SIZE(matrix_p, 2)
@@ -298,7 +295,6 @@ CONTAINS
             !
          END IF
 
-         DEALLOCATE (atom_of_kind, kind_of)
          IF (SIZE(matrix_p, 1) == 2) THEN
             DO ic = 1, SIZE(matrix_p, 2)
                CALL dbcsr_add(matrix_p(1, ic)%matrix, matrix_p(2, ic)%matrix, &
@@ -310,8 +306,6 @@ CONTAINS
       ! KS matrix
       IF (.NOT. just_energy) THEN
          CALL get_qs_env(qs_env=qs_env, matrix_s_kp=matrix_s, natom=natom)
-         ALLOCATE (kind_of(natom))
-         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, kind_of=kind_of)
          !
          nimg = SIZE(ks_matrix, 2)
          NULLIFY (cell_to_index)
@@ -376,7 +370,6 @@ CONTAINS
             CALL neighbor_list_iterator_release(nl_iterator)
             !
          END IF
-         DEALLOCATE (kind_of)
       END IF
 
       CALL timestop(handle)

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -18,7 +18,6 @@ MODULE cp_ddapc_forces
                                               get_atomic_kind_set
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: ddapc_restraint_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_constants,                 ONLY: do_ddapc_constraint,&
                                               do_ddapc_restraint,&
                                               weight_type_mass,&
@@ -30,7 +29,7 @@ MODULE cp_ddapc_forces
                                               pi,&
                                               rootpi,&
                                               twopi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_spline_utils,                 ONLY: Eval_d_Interp_Spl3_pbc
    USE pw_types,                        ONLY: pw_type
@@ -98,7 +97,7 @@ CONTAINS
                                                             rcut, rcut2, t1, t2, tol, tol1
       REAL(KIND=dp), DIMENSION(3)                        :: drvec, fvec, gvec, ra, rvec
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: d_el, M
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (d_el, M, para_env)
       CALL timeset(routineN, handle)
@@ -219,7 +218,7 @@ CONTAINS
          END DO ! iparticle2
       END DO ! iparticle1
       !NB parallelization
-      CALL mp_sum(d_el, para_env%group)
+      CALL para_env%sum(d_el)
       M => qs_env%cp_ddapc_env%Md
       IF (apply_qmmm_periodic) M => qs_env%cp_ddapc_env%Mr
       CALL cp_decpl_ddapc_forces(qs_env, M, charges, dq, d_el, particle_set)
@@ -254,7 +253,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: uv
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: chf
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
 
       NULLIFY (para_env)
@@ -264,8 +263,6 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, &
                       para_env=para_env, &
                       force=force)
-      ALLOCATE (atom_of_kind(natom))
-      ALLOCATE (kind_of(natom))
       ALLOCATE (chf(3, natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                atom_of_kind=atom_of_kind, &
@@ -279,14 +276,12 @@ CONTAINS
          END DO
       END DO
       !NB now that get_ddapc returns dq that's spread over nodes, must reduce chf here
-      CALL mp_sum(chf, para_env%group)
+      CALL para_env%sum(chf)
       DO iatom = 1, natom
          ikind = kind_of(iatom)
          i = atom_of_kind(iatom)
          force(ikind)%ch_pulay(1:3, i) = force(ikind)%ch_pulay(1:3, i) + chf(1:3, iatom) + d_el(1:3, iatom)
       END DO
-      DEALLOCATE (atom_of_kind)
-      DEALLOCATE (kind_of)
       DEALLOCATE (chf)
       DEALLOCATE (uv)
       CALL timestop(handle)
@@ -408,7 +403,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: uv
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: chf
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
 
       NULLIFY (para_env)
@@ -418,8 +413,6 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, &
                       para_env=para_env, &
                       force=force)
-      ALLOCATE (atom_of_kind(natom))
-      ALLOCATE (kind_of(natom))
       ALLOCATE (chf(3, natom))
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                atom_of_kind=atom_of_kind, &
@@ -435,14 +428,12 @@ CONTAINS
          END DO
       END DO
       !NB now that get_ddapc returns dq that's spread over nodes, must reduce chf here
-      CALL mp_sum(chf, para_env%group)
+      CALL para_env%sum(chf)
       DO iatom = 1, natom
          ikind = kind_of(iatom)
          i = atom_of_kind(iatom)
          force(ikind)%ch_pulay(1:3, i) = force(ikind)%ch_pulay(1:3, i) + chf(1:3, iatom)
       END DO
-      DEALLOCATE (atom_of_kind)
-      DEALLOCATE (kind_of)
       DEALLOCATE (chf)
       DEALLOCATE (uv)
       CALL timestop(handle)

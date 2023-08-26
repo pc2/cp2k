@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,13 +20,12 @@ MODULE manybody_gal21
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE fist_neighbor_list_types,        ONLY: fist_neighbor_type,&
                                               neighbor_kind_pairs_type
    USE fist_nonbond_env_types,          ONLY: pos_type
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pair_potential_types,            ONLY: gal21_pot_type,&
                                               gal21_type,&
                                               pair_potential_pp_type,&
@@ -871,7 +870,7 @@ CONTAINS
                                   print_h3o, print_o)
       INTEGER, INTENT(INOUT)                             :: nr_ions
       TYPE(section_vals_type), POINTER                   :: mm_section
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       LOGICAL, INTENT(IN)                                :: print_oh, print_h3o, print_o
 
       INTEGER                                            :: iw
@@ -879,7 +878,7 @@ CONTAINS
 
       NULLIFY (logger)
 
-      CALL mp_sum(nr_ions, para_env%group)
+      CALL para_env%sum(nr_ions)
       logger => cp_get_default_logger()
 
       iw = cp_print_key_unit_nr(logger, mm_section, "PRINT%PROGRAM_RUN_INFO", &

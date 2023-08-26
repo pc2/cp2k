@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,7 +25,6 @@ MODULE qs_linres_nmr_shift
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
@@ -34,7 +33,7 @@ MODULE qs_linres_nmr_shift
    USE mathconstants,                   ONLY: gaussi,&
                                               twopi
    USE mathlib,                         ONLY: diamat_all
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
@@ -260,8 +259,8 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'nmr_shift_gapw'
 
-      INTEGER :: handle, ia, iat, iatom, idir2_1, idir3_1, ikind, ir, ira, ispin, j, jatom, mepos, &
-         n_nics, na, natom, natom_local, natom_tot, nkind, nnics_local, nr, nra, nspins, num_pe, &
+      INTEGER :: handle, ia, iat, iatom, idir2_1, idir3_1, ikind, ir, ira, ispin, j, jatom, &
+         n_nics, na, natom, natom_local, natom_tot, nkind, nnics_local, nr, nra, nspins, &
          output_unit
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: list_j, list_nics_j
       INTEGER, DIMENSION(2)                              :: bo
@@ -279,12 +278,12 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(jrho_atom_type), DIMENSION(:), POINTER        :: jrho1_atom_set
       TYPE(jrho_atom_type), POINTER                      :: jrho1_atom
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -365,9 +364,7 @@ CONTAINS
          IF (paw_atom) THEN
             !
             ! Distribute the atoms of this kind
-            num_pe = para_env%num_pe
-            mepos = para_env%mepos
-            bo = get_limit(natom, num_pe, mepos)
+            bo = get_limit(natom, para_env%num_pe, para_env%mepos)
             !
             DO iat = bo(1), bo(2)
                iatom = atom_list(iat)
@@ -466,20 +463,20 @@ CONTAINS
       END DO ! ikind
       !
       !
-      CALL mp_sum(itegrated_jrho, para_env%group)
+      CALL para_env%sum(itegrated_jrho)
       IF (output_unit > 0) THEN
          WRITE (output_unit, '(T2,A,E24.16)') 'Integrated local j_'&
               &//ACHAR(idir + 119)//ACHAR(iB + 119)//'(r)=', itegrated_jrho
       END IF
       !
-      CALL mp_sum(cs_loc_tmp, para_env%group)
+      CALL para_env%sum(cs_loc_tmp)
       chemical_shift_loc(:, iB, :) = chemical_shift_loc(:, iB, :) &
            & - nmr_env%shift_factor_gapw*cs_loc_tmp(:, :)/2.0_dp
       !
       DEALLOCATE (cs_loc_tmp, list_j, dist_ij)
       !
       IF (do_nics) THEN
-         CALL mp_sum(cs_nics_loc_tmp, para_env%group)
+         CALL para_env%sum(cs_nics_loc_tmp)
          chemical_shift_nics_loc(:, iB, :) = chemical_shift_nics_loc(:, iB, :) &
               & - nmr_env%shift_factor_gapw*cs_nics_loc_tmp(:, :)/2.0_dp
          !
@@ -682,7 +679,7 @@ CONTAINS
          cplx = cplx + pw%cc(ig)*EXP(rg)
       END DO
       IF (grid%have_g0) cplx = cplx + pw%cc(1)
-      CALL mp_sum(cplx, grid%para%group)
+      CALL grid%para%group%sum(cplx)
    END SUBROUTINE gsumr
 
 ! **************************************************************************************************

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,7 +15,6 @@ MODULE qs_vxc_atom
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_constants,                 ONLY: tddfpt_excitations,&
                                               tddfpt_triplet,&
                                               xc_none
@@ -24,11 +23,10 @@ MODULE qs_vxc_atom
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: indso,&
                                               nsoset
-   USE paw_proj_set_types,              ONLY: get_paw_proj_set,&
-                                              paw_proj_set_type
+   USE paw_basis_types,                 ONLY: get_paw_basis_info
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
@@ -101,8 +99,8 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_vxc_atom'
 
       INTEGER                                            :: bo(2), handle, ia, iat, iatom, idir, &
-                                                            ikind, ir, ispin, mepos, myfun, na, &
-                                                            natom, nr, nspins, num_pe
+                                                            ikind, ir, ispin, myfun, na, natom, &
+                                                            nr, nspins, num_pe
       INTEGER, DIMENSION(2, 3)                           :: bounds
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
       LOGICAL                                            :: donlcc, epr_xc, gradient_f, lsd, nlcc, &
@@ -116,11 +114,11 @@ CONTAINS
                                                             vtau_s, vxc_h, vxc_s
       REAL(dp), DIMENSION(:, :, :, :), POINTER           :: drho_h, drho_s, vxg_h, vxg_s
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: my_kind_set
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: dr_h, dr_s, int_hh, int_ss, r_h, r_s
       TYPE(rho_atom_coeff), DIMENSION(:, :), POINTER     :: r_h_d, r_s_d
@@ -144,6 +142,7 @@ CONTAINS
       NULLIFY (para_env)
       NULLIFY (rho_atom)
       NULLIFY (my_rho_atom_set)
+      NULLIFY (rho_nlcc)
 
       epr_xc = .FALSE.
       IF (PRESENT(gradient_atom_set)) THEN
@@ -219,8 +218,9 @@ CONTAINS
 
          DO ikind = 1, SIZE(atomic_kind_set)
             CALL get_atomic_kind(atomic_kind_set(ikind), atom_list=atom_list, natom=natom)
-            CALL get_qs_kind(my_kind_set(ikind), paw_atom=paw_atom, basis_set=orb_basis, &
+            CALL get_qs_kind(my_kind_set(ikind), paw_atom=paw_atom, &
                              harmonics=harmonics, grid_atom=grid_atom)
+            CALL get_qs_kind(my_kind_set(ikind), basis_set=basis_1c, basis_type="GAPW_1C")
 
             IF (.NOT. paw_atom) CYCLE
 
@@ -253,7 +253,7 @@ CONTAINS
             weight => grid_atom%weight
             CALL reallocate(vxc_h, 1, na, 1, nr, 1, nspins)
             CALL reallocate(vxc_s, 1, na, 1, nr, 1, nspins)
-
+            !
             IF (gradient_f) THEN
                CALL reallocate(drho_h, 1, 4, 1, na, 1, nr, 1, nspins)
                CALL reallocate(drho_s, 1, 4, 1, na, 1, nr, 1, nspins)
@@ -279,8 +279,7 @@ CONTAINS
             ! Distribute the atoms of this kind
 
             num_pe = para_env%num_pe
-            mepos = para_env%mepos
-            bo = get_limit(natom, num_pe, mepos)
+            bo = get_limit(natom, para_env%num_pe, para_env%mepos)
 
             DO iat = bo(1), bo(2)
                iatom = atom_list(iat)
@@ -381,14 +380,14 @@ CONTAINS
                   CALL get_rho_atom(rho_atom=rho_atom, ga_Vlocal_gb_h=int_hh, ga_Vlocal_gb_s=int_ss)
                   IF (gradient_f) THEN
                      CALL gaVxcgb_GC(vxc_h, vxc_s, vxg_h, vxg_s, int_hh, int_ss, &
-                                     grid_atom, orb_basis, harmonics, nspins)
+                                     grid_atom, basis_1c, harmonics, nspins)
                   ELSE
                      CALL gaVxcgb_noGC(vxc_h, vxc_s, int_hh, int_ss, &
-                                       grid_atom, orb_basis, harmonics, nspins)
+                                       grid_atom, basis_1c, harmonics, nspins)
                   END IF
                   IF (tau_f) THEN
                      CALL dgaVtaudgb(vtau_h, vtau_s, int_hh, int_ss, &
-                                     grid_atom, orb_basis, harmonics, nspins)
+                                     grid_atom, basis_1c, harmonics, nspins)
                   END IF
                END IF ! energy_only
                NULLIFY (r_h, r_s, dr_h, dr_s)
@@ -401,49 +400,25 @@ CONTAINS
 
          END DO ! ikind
 
-         CALL mp_sum(exc1, para_env%group)
+         CALL para_env%sum(exc1)
 
-         IF (ASSOCIATED(rho_h)) THEN
-            DEALLOCATE (rho_h)
-         END IF
-         IF (ASSOCIATED(rho_s)) THEN
-            DEALLOCATE (rho_s)
-         END IF
-         IF (ASSOCIATED(vxc_h)) THEN
-            DEALLOCATE (vxc_h)
-         END IF
-         IF (ASSOCIATED(vxc_s)) THEN
-            DEALLOCATE (vxc_s)
-         END IF
+         IF (ASSOCIATED(rho_h)) DEALLOCATE (rho_h)
+         IF (ASSOCIATED(rho_s)) DEALLOCATE (rho_s)
+         IF (ASSOCIATED(vxc_h)) DEALLOCATE (vxc_h)
+         IF (ASSOCIATED(vxc_s)) DEALLOCATE (vxc_s)
 
          IF (gradient_f) THEN
-            IF (ASSOCIATED(drho_h)) THEN
-               DEALLOCATE (drho_h)
-            END IF
-            IF (ASSOCIATED(drho_s)) THEN
-               DEALLOCATE (drho_s)
-            END IF
-            IF (ASSOCIATED(vxg_h)) THEN
-               DEALLOCATE (vxg_h)
-            END IF
-            IF (ASSOCIATED(vxg_s)) THEN
-               DEALLOCATE (vxg_s)
-            END IF
+            IF (ASSOCIATED(drho_h)) DEALLOCATE (drho_h)
+            IF (ASSOCIATED(drho_s)) DEALLOCATE (drho_s)
+            IF (ASSOCIATED(vxg_h)) DEALLOCATE (vxg_h)
+            IF (ASSOCIATED(vxg_s)) DEALLOCATE (vxg_s)
          END IF
 
          IF (tau_f) THEN
-            IF (ASSOCIATED(tau_h)) THEN
-               DEALLOCATE (tau_h)
-            END IF
-            IF (ASSOCIATED(tau_s)) THEN
-               DEALLOCATE (tau_s)
-            END IF
-            IF (ASSOCIATED(vtau_h)) THEN
-               DEALLOCATE (vtau_h)
-            END IF
-            IF (ASSOCIATED(vtau_s)) THEN
-               DEALLOCATE (vtau_s)
-            END IF
+            IF (ASSOCIATED(tau_h)) DEALLOCATE (tau_h)
+            IF (ASSOCIATED(tau_s)) DEALLOCATE (tau_s)
+            IF (ASSOCIATED(vtau_h)) DEALLOCATE (vtau_h)
+            IF (ASSOCIATED(vtau_s)) DEALLOCATE (vtau_s)
          END IF
 
       END IF !xc_none
@@ -471,7 +446,7 @@ CONTAINS
       TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom_set, rho1_atom_set
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: do_tddft, do_tddfpt2, do_triplet
       TYPE(qs_kind_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: kind_set_external
@@ -484,7 +459,7 @@ CONTAINS
       INTEGER, DIMENSION(2, 3)                           :: bounds
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
       LOGICAL                                            :: gradient_functional, lsd, lsd_singlets, &
-                                                            my_tddft, paw_atom, tau_f
+                                                            my_tddft, paw_atom, scale_rho, tau_f
       REAL(KIND=dp)                                      :: density_cut, gradient_cut, rtot, tau_cut
       REAL(KIND=dp), CONTIGUOUS, DIMENSION(:, :, :), &
          POINTER                                         :: vxc_h, vxc_s
@@ -497,7 +472,7 @@ CONTAINS
                                                             vxg_s
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: my_kind_set, qs_kind_set
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: dr1_h, dr1_s, dr_h, dr_s, int_hh, &
@@ -548,6 +523,7 @@ CONTAINS
          CALL section_vals_val_get(input, "DFT%TDDFPT%RES_ETYPE", &
                                    i_val=res_etype)
       END IF
+
       xc_fun_section => section_vals_get_subs_vals(xc_section, &
                                                    "XC_FUNCTIONAL")
       IF (lsd) THEN
@@ -555,6 +531,23 @@ CONTAINS
       ELSE
          nspins = 1
       END IF
+
+      scale_rho = .FALSE.
+      IF (my_tddft) THEN
+         IF (excitations == tddfpt_excitations) THEN
+            IF (nspins == 1 .AND. (lsd_singlets .OR. res_etype == tddfpt_triplet)) THEN
+               lsd = .TRUE.
+            END IF
+         END IF
+      ELSEIF (PRESENT(do_tddfpt2) .AND. PRESENT(do_triplet)) THEN
+         IF (nspins == 1 .AND. do_triplet) THEN
+            lsd = .TRUE.
+            scale_rho = .TRUE.
+         END IF
+      ELSEIF (PRESENT(do_triplet)) THEN
+         IF (nspins == 1 .AND. do_triplet) lsd = .TRUE.
+      END IF
+
       needs = xc_functionals_get_needs(xc_fun_section, lsd=lsd, &
                                        calc_potential=.TRUE.)
       gradient_functional = needs%drho .OR. needs%drho_spin
@@ -565,25 +558,14 @@ CONTAINS
          rtau = 0.0_dp
       END IF
 
-      IF (my_tddft) THEN
-         IF (excitations == tddfpt_excitations) THEN
-            IF (nspins == 1 .AND. (lsd_singlets .OR. res_etype == tddfpt_triplet)) THEN
-               lsd = .TRUE.
-            END IF
-         END IF
-      ELSEIF (PRESENT(do_tddfpt2) .AND. PRESENT(do_triplet)) THEN
-         IF (nspins == 1 .AND. do_triplet) lsd = .TRUE.
-      ELSEIF (PRESENT(do_triplet)) THEN
-         IF (nspins == 1 .AND. do_triplet) lsd = .TRUE.
-      END IF
-
       !  Here starts the loop over all the atoms
       DO ikind = 1, SIZE(atomic_kind_set)
 
          NULLIFY (atom_list, harmonics, grid_atom)
          CALL get_atomic_kind(atomic_kind_set(ikind), atom_list=atom_list, natom=natom)
-         CALL get_qs_kind(my_kind_set(ikind), paw_atom=paw_atom, basis_set=orb_basis, &
+         CALL get_qs_kind(my_kind_set(ikind), paw_atom=paw_atom, &
                           harmonics=harmonics, grid_atom=grid_atom)
+         CALL get_qs_kind(my_kind_set(ikind), basis_set=basis_1c, basis_type="GAPW_1C")
          IF (.NOT. paw_atom) CYCLE
 
          nr = grid_atom%nr
@@ -688,6 +670,14 @@ CONTAINS
                                      ir, r1_h, r1_s, rho1_h, rho1_s, dr1_h, dr1_s, r1_h_d, r1_s_d, &
                                      drho1_h, drho1_s)
             END DO
+            IF (scale_rho) THEN
+               rho_h = 2.0_dp*rho_h
+               rho_s = 2.0_dp*rho_s
+               IF (gradient_functional) THEN
+                  drho_h = 2.0_dp*drho_h
+                  drho_s = 2.0_dp*drho_s
+               END IF
+            END IF
 
             DO ir = 1, nr
                IF (tau_f) THEN
@@ -711,19 +701,19 @@ CONTAINS
             CALL xc_2nd_deriv_of_r(xc_section=xc_section, &
                                    rho_set=rho_set_h, rho1_set=rho1_set_h, &
                                    deriv_set=deriv_set, &
-                                   w=weight, vxc=vxc_h, vxg=vxg_h)
+                                   w=weight, vxc=vxc_h, vxg=vxg_h, do_triplet=do_triplet)
             CALL xc_2nd_deriv_of_r(xc_section=xc_section, &
                                    rho_set=rho_set_s, rho1_set=rho1_set_s, &
                                    deriv_set=deriv_set, &
-                                   w=weight, vxc=vxc_s, vxg=vxg_s)
+                                   w=weight, vxc=vxc_s, vxg=vxg_s, do_triplet=do_triplet)
 
             CALL get_rho_atom(rho_atom=rho1_atom, ga_Vlocal_gb_h=int_hh, ga_Vlocal_gb_s=int_ss)
             IF (gradient_functional) THEN
                CALL gaVxcgb_GC(vxc_h, vxc_s, vxg_h, vxg_s, int_hh, int_ss, &
-                               grid_atom, orb_basis, harmonics, nspins)
+                               grid_atom, basis_1c, harmonics, nspins)
             ELSE
                CALL gaVxcgb_noGC(vxc_h, vxc_s, int_hh, int_ss, &
-                                 grid_atom, orb_basis, harmonics, nspins)
+                                 grid_atom, basis_1c, harmonics, nspins)
             END IF
 
             NULLIFY (r_h, r_s, dr_h, dr_s)
@@ -774,8 +764,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: epsrho = 5.e-4_dp
 
       INTEGER                                            :: bo(2), handle, iat, iatom, ikind, ir, &
-                                                            istep, mepos, myfun, na, natom, nr, &
-                                                            ns, nspins, nstep, num_pe
+                                                            istep, mspins, myfun, na, natom, nf, &
+                                                            nr, ns, nspins, nstep, num_pe
       INTEGER, DIMENSION(2, 3)                           :: bounds
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
       LOGICAL                                            :: donlcc, gradient_f, lsd, nlcc, paw_atom, &
@@ -793,11 +783,11 @@ CONTAINS
                                                             drho_h, drho_s, vxg_h, vxg_s
       REAL(KIND=dp), DIMENSION(-4:4)                     :: ak, bl
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: dr_h, dr_s, fint_hh, fint_ss, int_hh, &
                                                             int_ss, r_h, r_s
       TYPE(rho_atom_coeff), DIMENSION(:, :), POINTER     :: r_h_d, r_s_d
@@ -848,19 +838,22 @@ CONTAINS
          nlcc = has_nlcc(kind_set)
          lsd = dft_control%lsd
          nspins = dft_control%nspins
+         mspins = nspins
+         IF (is_triplet) THEN
+            CPASSERT(nspins == 1)
+            lsd = .TRUE.
+            mspins = 2
+         END IF
          needs = xc_functionals_get_needs(xc_fun_section, lsd=lsd, calc_potential=.TRUE.)
          gradient_f = (needs%drho .OR. needs%drho_spin)
          tau_f = (needs%tau .OR. needs%tau_spin)
-         IF (is_triplet) THEN
-            CPASSERT(nspins == 1)
-            CPABORT("Missing Code")
-         END IF
 
          ! Here starts the loop over all the atoms
          DO ikind = 1, SIZE(atomic_kind_set)
             CALL get_atomic_kind(atomic_kind_set(ikind), atom_list=atom_list, natom=natom)
-            CALL get_qs_kind(kind_set(ikind), paw_atom=paw_atom, basis_set=orb_basis, &
+            CALL get_qs_kind(kind_set(ikind), paw_atom=paw_atom, &
                              harmonics=harmonics, grid_atom=grid_atom)
+            CALL get_qs_kind(kind_set(ikind), basis_set=basis_1c, basis_type="GAPW_1C")
 
             IF (.NOT. paw_atom) CYCLE
 
@@ -885,33 +878,27 @@ CONTAINS
                                    drho_cutoff=gradient_cut, tau_cutoff=tau_cut)
 
             ! allocate the required 3d arrays where to store rho and drho
-            CALL xc_rho_set_atom_update(rho_set_h, needs, nspins, bounds)
-            CALL xc_rho_set_atom_update(rho_set_s, needs, nspins, bounds)
+            CALL xc_rho_set_atom_update(rho_set_h, needs, mspins, bounds)
+            CALL xc_rho_set_atom_update(rho_set_s, needs, mspins, bounds)
 
             weight => grid_atom%weight
 
-            ALLOCATE (rho_h(na, nr, nspins), rho_s(na, nr, nspins), &
+            ALLOCATE (rho_h(na, nr, mspins), rho_s(na, nr, mspins), &
                       rho0_h(na, nr, nspins), rho0_s(na, nr, nspins), &
                       rho1_h(na, nr, nspins), rho1_s(na, nr, nspins))
-            ALLOCATE (vxc_h(na, nr, nspins), vxc_s(na, nr, nspins))
+            ALLOCATE (vxc_h(na, nr, mspins), vxc_s(na, nr, mspins))
             IF (gradient_f) THEN
-               ALLOCATE (drho_h(4, na, nr, nspins), drho_s(4, na, nr, nspins), &
-                         drho0_h(3, na, nr, nspins), drho0_s(3, na, nr, nspins), &
-                         drho1_h(3, na, nr, nspins), drho1_s(3, na, nr, nspins))
-               ALLOCATE (vxg_h(3, na, nr, nspins), vxg_s(3, na, nr, nspins))
+               ALLOCATE (drho_h(4, na, nr, mspins), drho_s(4, na, nr, mspins), &
+                         drho0_h(4, na, nr, nspins), drho0_s(4, na, nr, nspins), &
+                         drho1_h(4, na, nr, nspins), drho1_s(4, na, nr, nspins))
+               ALLOCATE (vxg_h(3, na, nr, mspins), vxg_s(3, na, nr, mspins))
             END IF
             IF (tau_f) THEN
-               ALLOCATE (tau_h(na, nr, nspins), tau_s(na, nr, nspins), &
+               ALLOCATE (tau_h(na, nr, mspins), tau_s(na, nr, mspins), &
                          tau0_h(na, nr, nspins), tau0_s(na, nr, nspins), &
                          tau1_h(na, nr, nspins), tau1_s(na, nr, nspins))
-               ALLOCATE (vtau_h(na, nr, nspins), vtau_s(na, nr, nspins))
+               ALLOCATE (vtau_h(na, nr, mspins), vtau_s(na, nr, mspins))
             END IF
-            !
-            ALLOCATE (fint_ss(nspins), fint_hh(nspins))
-            DO ns = 1, nspins
-               ALLOCATE (fint_ss(ns)%r_coef(na, nr))
-               ALLOCATE (fint_hh(ns)%r_coef(na, nr))
-            END DO
             !
             ! NLCC: prepare rho and drho of the core charge for this KIND
             donlcc = .FALSE.
@@ -923,11 +910,21 @@ CONTAINS
 
             ! Distribute the atoms of this kind
             num_pe = para_env%num_pe
-            mepos = para_env%mepos
-            bo = get_limit(natom, num_pe, mepos)
+            bo = get_limit(natom, num_pe, para_env%mepos)
 
             DO iat = bo(1), bo(2)
                iatom = atom_list(iat)
+               !
+               NULLIFY (int_hh, int_ss)
+               rho0_atom => rho0_atom_set(iatom)
+               CALL get_rho_atom(rho_atom=rho0_atom, ga_Vlocal_gb_h=int_hh, ga_Vlocal_gb_s=int_ss)
+               ALLOCATE (fint_ss(nspins), fint_hh(nspins))
+               DO ns = 1, nspins
+                  nf = SIZE(int_ss(ns)%r_coef, 1)
+                  ALLOCATE (fint_ss(ns)%r_coef(nf, nf))
+                  nf = SIZE(int_hh(ns)%r_coef, 1)
+                  ALLOCATE (fint_hh(ns)%r_coef(nf, nf))
+               END DO
 
                ! RHO0
                rho0_h = 0.0_dp
@@ -989,27 +986,64 @@ CONTAINS
 
                   beta = REAL(istep, KIND=dp)*epsrho
 
-                  rho_h = rho0_h + beta*rho1_h
-                  rho_s = rho0_s + beta*rho1_s
-                  IF (gradient_f) THEN
-                     drho_h = drho0_h + beta*drho1_h
-                     drho_s = drho0_s + beta*drho1_s
+                  IF (is_triplet) THEN
+                     rho_h(:, :, 1) = rho0_h(:, :, 1) + beta*rho1_h(:, :, 1)
+                     rho_h(:, :, 2) = rho0_h(:, :, 1)
+                     rho_h = 0.5_dp*rho_h
+                     rho_s(:, :, 1) = rho0_s(:, :, 1) + beta*rho1_s(:, :, 1)
+                     rho_s(:, :, 2) = rho0_s(:, :, 1)
+                     rho_s = 0.5_dp*rho_s
+                     IF (gradient_f) THEN
+                        drho_h(:, :, :, 1) = drho0_h(:, :, :, 1) + beta*drho1_h(:, :, :, 1)
+                        drho_h(:, :, :, 2) = drho0_h(:, :, :, 1)
+                        drho_h = 0.5_dp*drho_h
+                        drho_s(:, :, :, 1) = drho0_s(:, :, :, 1) + beta*drho1_s(:, :, :, 1)
+                        drho_s(:, :, :, 2) = drho0_s(:, :, :, 1)
+                        drho_s = 0.5_dp*drho_s
+                     END IF
+                     IF (tau_f) THEN
+                        tau_h(:, :, 1) = tau0_h(:, :, 1) + beta*tau1_h(:, :, 1)
+                        tau_h(:, :, 2) = tau0_h(:, :, 1)
+                        tau_h = 0.5_dp*tau0_h
+                        tau_s(:, :, 1) = tau0_s(:, :, 1) + beta*tau1_s(:, :, 1)
+                        tau_s(:, :, 2) = tau0_s(:, :, 1)
+                        tau_s = 0.5_dp*tau0_s
+                     END IF
+                  ELSE
+                     rho_h = rho0_h + beta*rho1_h
+                     rho_s = rho0_s + beta*rho1_s
+                     IF (gradient_f) THEN
+                        drho_h = drho0_h + beta*drho1_h
+                        drho_s = drho0_s + beta*drho1_s
+                     END IF
+                     IF (tau_f) THEN
+                        tau_h = tau0_h + beta*tau1_h
+                        tau_s = tau0_s + beta*tau1_s
+                     END IF
                   END IF
-                  IF (tau_f) THEN
-                     tau_h = tau0_h + beta*tau1_h
-                     tau_s = tau0_s + beta*tau1_s
+                  !
+                  IF (gradient_f) THEN
+                     drho_h(4, :, :, :) = SQRT( &
+                                          drho_h(1, :, :, :)*drho_h(1, :, :, :) + &
+                                          drho_h(2, :, :, :)*drho_h(2, :, :, :) + &
+                                          drho_h(3, :, :, :)*drho_h(3, :, :, :))
+
+                     drho_s(4, :, :, :) = SQRT( &
+                                          drho_s(1, :, :, :)*drho_s(1, :, :, :) + &
+                                          drho_s(2, :, :, :)*drho_s(2, :, :, :) + &
+                                          drho_s(3, :, :, :)*drho_s(3, :, :, :))
                   END IF
 
                   DO ir = 1, nr
                      IF (tau_f) THEN
-                        CALL fill_rho_set(rho_set_h, lsd, nspins, needs, rho_h, drho_h, tau_h, na, ir)
-                        CALL fill_rho_set(rho_set_s, lsd, nspins, needs, rho_s, drho_s, tau_s, na, ir)
+                        CALL fill_rho_set(rho_set_h, lsd, mspins, needs, rho_h, drho_h, tau_h, na, ir)
+                        CALL fill_rho_set(rho_set_s, lsd, mspins, needs, rho_s, drho_s, tau_s, na, ir)
                      ELSE IF (gradient_f) THEN
-                        CALL fill_rho_set(rho_set_h, lsd, nspins, needs, rho_h, drho_h, tau_d, na, ir)
-                        CALL fill_rho_set(rho_set_s, lsd, nspins, needs, rho_s, drho_s, tau_d, na, ir)
+                        CALL fill_rho_set(rho_set_h, lsd, mspins, needs, rho_h, drho_h, tau_d, na, ir)
+                        CALL fill_rho_set(rho_set_s, lsd, mspins, needs, rho_s, drho_s, tau_d, na, ir)
                      ELSE
-                        CALL fill_rho_set(rho_set_h, lsd, nspins, needs, rho_h, rho_d, tau_d, na, ir)
-                        CALL fill_rho_set(rho_set_s, lsd, nspins, needs, rho_s, rho_d, tau_d, na, ir)
+                        CALL fill_rho_set(rho_set_h, lsd, mspins, needs, rho_h, rho_d, tau_d, na, ir)
+                        CALL fill_rho_set(rho_set_s, lsd, mspins, needs, rho_s, rho_d, tau_d, na, ir)
                      END IF
                   END DO
 
@@ -1017,25 +1051,43 @@ CONTAINS
                   CALL xc_dset_zero_all(deriv_set)
                   CALL vxc_of_r_new(xc_fun_section, rho_set_h, deriv_set, 1, needs, weight, &
                                     lsd, na, nr, exc_h, vxc_h, vxg_h, vtau_h)
+                  IF (is_triplet) THEN
+                     vxc_h(:, :, 1) = vxc_h(:, :, 1) - vxc_h(:, :, 2)
+                     IF (gradient_f) THEN
+                        vxg_h(:, :, :, 1) = vxg_h(:, :, :, 1) - vxg_h(:, :, :, 2)
+                     END IF
+                     IF (tau_f) THEN
+                        vtau_h(:, :, 1) = vtau_h(:, :, 1) - vtau_h(:, :, 2)
+                     END IF
+                  END IF
                   ! soft atom density !
                   CALL xc_dset_zero_all(deriv_set)
                   CALL vxc_of_r_new(xc_fun_section, rho_set_s, deriv_set, 1, needs, weight, &
                                     lsd, na, nr, exc_s, vxc_s, vxg_s, vtau_s)
+                  IF (is_triplet) THEN
+                     vxc_s(:, :, 1) = vxc_s(:, :, 1) - vxc_s(:, :, 2)
+                     IF (gradient_f) THEN
+                        vxg_s(:, :, :, 1) = vxg_s(:, :, :, 1) - vxg_s(:, :, :, 2)
+                     END IF
+                     IF (tau_f) THEN
+                        vtau_s(:, :, 1) = vtau_s(:, :, 1) - vtau_s(:, :, 2)
+                     END IF
+                  END IF
                   ! potentials
                   DO ns = 1, nspins
-                     fint_ss(ns)%r_coef(:, :) = 0.0_dp
                      fint_hh(ns)%r_coef(:, :) = 0.0_dp
+                     fint_ss(ns)%r_coef(:, :) = 0.0_dp
                   END DO
                   IF (gradient_f) THEN
                      CALL gaVxcgb_GC(vxc_h, vxc_s, vxg_h, vxg_s, fint_hh, fint_ss, &
-                                     grid_atom, orb_basis, harmonics, nspins)
+                                     grid_atom, basis_1c, harmonics, nspins)
                   ELSE
                      CALL gaVxcgb_noGC(vxc_h, vxc_s, fint_hh, fint_ss, &
-                                       grid_atom, orb_basis, harmonics, nspins)
+                                       grid_atom, basis_1c, harmonics, nspins)
                   END IF
                   IF (tau_f) THEN
                      CALL dgaVtaudgb(vtau_h, vtau_s, fint_hh, fint_ss, &
-                                     grid_atom, orb_basis, harmonics, nspins)
+                                     grid_atom, basis_1c, harmonics, nspins)
                   END IF
                   ! first derivative fxc
                   NULLIFY (int_hh, int_ss)
@@ -1052,6 +1104,12 @@ CONTAINS
                      int_hh(ns)%r_coef(:, :) = int_hh(ns)%r_coef(:, :) + oeps2*bl(istep)*fint_hh(ns)%r_coef(:, :)
                   END DO
                END DO
+               !
+               DO ns = 1, nspins
+                  DEALLOCATE (fint_ss(ns)%r_coef)
+                  DEALLOCATE (fint_hh(ns)%r_coef)
+               END DO
+               DEALLOCATE (fint_ss, fint_hh)
 
             END DO ! iat
 
@@ -1070,11 +1128,6 @@ CONTAINS
                DEALLOCATE (tau_h, tau_s, tau0_h, tau0_s, tau1_h, tau1_s)
                DEALLOCATE (vtau_h, vtau_s)
             END IF
-            DO ns = 1, nspins
-               DEALLOCATE (fint_ss(ns)%r_coef)
-               DEALLOCATE (fint_hh(ns)%r_coef)
-            END DO
-            DEALLOCATE (fint_ss, fint_hh)
 
          END DO ! ikind
 
@@ -1237,18 +1290,17 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: slm, zet
       REAL(dp), DIMENSION(:, :, :), POINTER              :: dslm_dxyz
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
-      TYPE(paw_proj_set_type), POINTER                   :: paw_proj
 
-      NULLIFY (harmonics, grid_atom, orb_basis, lmax, lmin, npgf, zet, slm, dslm_dxyz, o2nindex, paw_proj)
+      NULLIFY (harmonics, grid_atom, basis_1c, lmax, lmin, npgf, zet, slm, dslm_dxyz, o2nindex)
 
       CALL timeset(routineN, handle)
 
       !We need to put 0.5* grad_g1 dot grad_gw on the grid
       !For this we need grid info, basis info, and projector info
-      CALL get_qs_kind(qs_kind, basis_set=orb_basis, grid_atom=grid_atom, &
-                       harmonics=harmonics, paw_proj_set=paw_proj)
+      CALL get_qs_kind(qs_kind, grid_atom=grid_atom, harmonics=harmonics)
+      CALL get_qs_kind(qs_kind, basis_set=basis_1c, basis_type="GAPW_1C")
 
       nr = grid_atom%nr
       na = grid_atom%ng_sphere
@@ -1256,13 +1308,13 @@ CONTAINS
       slm => harmonics%slm
       dslm_dxyz => harmonics%dslm_dxyz
 
-      CALL get_paw_proj_set(paw_proj_set=paw_proj, o2nindex=o2nindex)
+      CALL get_paw_basis_info(basis_1c, o2nindex=o2nindex)
 
       !zeroing tau, assuming it is already allocated
       tau_h = 0.0_dp
       tau_s = 0.0_dp
 
-      CALL get_gto_basis_set(gto_basis_set=orb_basis, lmax=lmax, lmin=lmin, npgf=npgf, &
+      CALL get_gto_basis_set(gto_basis_set=basis_1c, lmax=lmax, lmin=lmin, npgf=npgf, &
                              nset=nset, zet=zet, maxso=maxso)
 
       !Separate the functions into purely r and purely angular parts, precompute them all
@@ -1423,6 +1475,8 @@ CONTAINS
          END DO !jset
       END DO !iset
 
+      DEALLOCATE (o2nindex)
+
       CALL timestop(handle)
 
    END SUBROUTINE calc_tau_atom
@@ -1516,16 +1570,16 @@ CONTAINS
 !> \param int_hh ...
 !> \param int_ss ...
 !> \param grid_atom ...
-!> \param orb_basis ...
+!> \param basis_1c ...
 !> \param harmonics ...
 !> \param nspins ...
 ! **************************************************************************************************
-   SUBROUTINE gaVxcgb_noGC(vxc_h, vxc_s, int_hh, int_ss, grid_atom, orb_basis, harmonics, nspins)
+   SUBROUTINE gaVxcgb_noGC(vxc_h, vxc_s, int_hh, int_ss, grid_atom, basis_1c, harmonics, nspins)
 
       REAL(dp), DIMENSION(:, :, :), POINTER              :: vxc_h, vxc_s
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_hh, int_ss
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       INTEGER, INTENT(IN)                                :: nspins
 
@@ -1546,7 +1600,7 @@ CONTAINS
 
       NULLIFY (lmin, lmax, npgf, zet, my_CG)
 
-      CALL get_gto_basis_set(gto_basis_set=orb_basis, lmax=lmax, lmin=lmin, &
+      CALL get_gto_basis_set(gto_basis_set=basis_1c, lmax=lmax, lmin=lmin, &
                              maxso=maxso, maxl=maxl, npgf=npgf, &
                              nset=nset, zet=zet)
 
@@ -1679,18 +1733,18 @@ CONTAINS
 !> \param int_hh ...
 !> \param int_ss ...
 !> \param grid_atom ...
-!> \param orb_basis ...
+!> \param basis_1c ...
 !> \param harmonics ...
 !> \param nspins ...
 ! **************************************************************************************************
    SUBROUTINE gaVxcgb_GC(vxc_h, vxc_s, vxg_h, vxg_s, int_hh, int_ss, &
-                         grid_atom, orb_basis, harmonics, nspins)
+                         grid_atom, basis_1c, harmonics, nspins)
 
       REAL(dp), DIMENSION(:, :, :), POINTER              :: vxc_h, vxc_s
       REAL(dp), DIMENSION(:, :, :, :), POINTER           :: vxg_h, vxg_s
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_hh, int_ss
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       INTEGER, INTENT(IN)                                :: nspins
 
@@ -1716,7 +1770,7 @@ CONTAINS
 
       NULLIFY (lmin, lmax, npgf, zet, my_CG, my_CG_dxyz)
 
-      CALL get_gto_basis_set(gto_basis_set=orb_basis, lmax=lmax, lmin=lmin, &
+      CALL get_gto_basis_set(gto_basis_set=basis_1c, lmax=lmax, lmin=lmin, &
                              maxso=maxso, maxl=maxl, npgf=npgf, &
                              nset=nset, zet=zet)
 
@@ -1933,19 +1987,19 @@ CONTAINS
 !> \param int_hh ...
 !> \param int_ss ...
 !> \param grid_atom ...
-!> \param orb_basis ...
+!> \param basis_1c ...
 !> \param harmonics ...
 !> \param nspins ...
 !> \note This is a rewrite to correct meta-GGA GAPW bug. This is more brute force than the original
 !>       but makes sure that no corner is cut in terms of accuracy (A. Bussy)
 ! **************************************************************************************************
    SUBROUTINE dgaVtaudgb(vtau_h, vtau_s, int_hh, int_ss, &
-                         grid_atom, orb_basis, harmonics, nspins)
+                         grid_atom, basis_1c, harmonics, nspins)
 
       REAL(dp), DIMENSION(:, :, :), POINTER              :: vtau_h, vtau_s
       TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_hh, int_ss
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       INTEGER, INTENT(IN)                                :: nspins
 
@@ -1964,7 +2018,7 @@ CONTAINS
 
       NULLIFY (zet, slm, dslm_dxyz, lmax, lmin, npgf)
 
-      CALL get_gto_basis_set(gto_basis_set=orb_basis, lmax=lmax, lmin=lmin, &
+      CALL get_gto_basis_set(gto_basis_set=basis_1c, lmax=lmax, lmin=lmin, &
                              maxso=maxso, npgf=npgf, nset=nset, zet=zet)
 
       na = grid_atom%ng_sphere

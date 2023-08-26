@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -11,19 +11,18 @@
 !> \date   05.2009
 ! **************************************************************************************************
 MODULE topology_xtl
-   USE cell_methods,                    ONLY: write_cell
-   USE cell_types,                      ONLY: cell_create,&
-                                              cell_release,&
+   USE cell_methods,                    ONLY: cell_create,&
+                                              set_cell_param,&
+                                              write_cell
+   USE cell_types,                      ONLY: cell_release,&
                                               cell_type,&
                                               pbc,&
-                                              scaled_to_real,&
-                                              set_cell_param
+                                              scaled_to_real
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type,&
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_get_next_line,&
                                               parser_get_object,&
                                               parser_search_string
@@ -36,6 +35,7 @@ MODULE topology_xtl
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_para_env_type
    USE string_table,                    ONLY: id2str,&
                                               s2s,&
                                               str2id
@@ -72,7 +72,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE read_coordinate_xtl(topology, para_env, subsys_section)
       TYPE(topology_parameters_type)                     :: topology
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: subsys_section
 
       CHARACTER(len=*), PARAMETER :: routineN = 'read_coordinate_xtl'
@@ -169,10 +169,10 @@ CONTAINS
 
       ! Create cell
       NULLIFY (cell)
-      CALL cell_create(cell)
+      CALL cell_create(cell, tag="CELL_XTL")
       CALL set_cell_param(cell, cell_lengths, cell_angles, periodic=periodic, &
                           do_init_cell=.TRUE.)
-      CALL write_cell(cell, subsys_section, label="CELL_XTL|")
+      CALL write_cell(cell, subsys_section)
 
       ! Parse atoms info and fractional coordinates
       ! Check for   _atom_site_label

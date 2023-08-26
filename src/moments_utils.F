@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,7 +17,6 @@ MODULE moments_utils
                                               get_atomic_kind
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE fist_environment_types,          ONLY: fist_env_get,&
                                               fist_environment_type
@@ -26,7 +25,7 @@ MODULE moments_utils
                                               use_mom_ref_user,&
                                               use_mom_ref_zero
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
@@ -73,8 +72,8 @@ CONTAINS
       REAL(dp), DIMENSION(3)                             :: center, ria
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(distribution_1d_type), POINTER                :: local_particles
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -132,8 +131,8 @@ CONTAINS
                   mtot = mtot + mass
                END DO
             END DO
-            CALL mp_sum(rpoint, para_env%group)
-            CALL mp_sum(mtot, para_env%group)
+            CALL para_env%sum(rpoint)
+            CALL para_env%sum(mtot)
          END IF
          IF (ABS(mtot) > 0._dp) THEN
             rpoint(:) = rpoint(:)/mtot
@@ -178,8 +177,8 @@ CONTAINS
                   ztot = ztot + charge
                END DO
             END DO
-            CALL mp_sum(rpoint, para_env%group)
-            CALL mp_sum(ztot, para_env%group)
+            CALL para_env%sum(rpoint)
+            CALL para_env%sum(ztot)
          END IF
          IF (ABS(ztot) > 0._dp) THEN
             rpoint(:) = rpoint(:)/ztot

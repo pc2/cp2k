@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -37,11 +37,9 @@ MODULE qs_scf_post_gpw
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
                                               cp_fm_init_random,&
-                                              cp_fm_p_type,&
                                               cp_fm_release,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
-   USE cp_fm_vect,                      ONLY: cp_fm_vect_dealloc
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type,&
@@ -50,12 +48,12 @@ MODULE qs_scf_post_gpw
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_cube,          ONLY: cp_pw_to_cube
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_p_type,&
                                               dbcsr_type
    USE dct,                             ONLY: pw_shrink
+   USE ed_analysis,                     ONLY: edmf_analysis
    USE et_coupling_types,               ONLY: set_et_coupling_type
    USE hfx_ri,                          ONLY: print_ri_hfx
    USE hirshfeld_methods,               ONLY: comp_hirshfeld_charges,&
@@ -67,6 +65,9 @@ MODULE qs_scf_post_gpw
                                               hirshfeld_type,&
                                               release_hirshfeld_type,&
                                               set_hirshfeld_info
+   USE iao_analysis,                    ONLY: iao_wfn_analysis
+   USE iao_types,                       ONLY: iao_env_type,&
+                                              iao_read_input
    USE input_constants,                 ONLY: &
         do_loc_both, do_loc_homo, do_loc_lumo, do_loc_mixed, ot_precond_full_all, radius_covalent, &
         radius_user, ref_charge_atomic, ref_charge_mulliken
@@ -86,7 +87,7 @@ MODULE qs_scf_post_gpw
    USE mao_wfn_analysis,                ONLY: mao_analysis
    USE mathconstants,                   ONLY: pi
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE minbas_wfn_analysis,             ONLY: minbas_analysis
    USE molden_utils,                    ONLY: write_mos_molden
    USE molecule_types,                  ONLY: molecule_type
@@ -125,7 +126,6 @@ MODULE qs_scf_post_gpw
                                               REALSPACE,&
                                               RECIPROCALSPACE,&
                                               pw_type
-   USE qs_active_space_methods,         ONLY: active_space_main
    USE qs_chargemol,                    ONLY: write_wfx
    USE qs_collocate_density,            ONLY: calculate_wavefunction
    USE qs_commutators,                  ONLY: build_com_hr_matrix
@@ -210,8 +210,9 @@ MODULE qs_scf_post_gpw
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf_post_gpw'
    PUBLIC :: scf_post_calculation_gpw, &
              qs_scf_post_moments, &
-             write_available_results, &
+             write_mo_dependent_results, &
              write_mo_free_results
+
    PUBLIC :: make_lumo_gpw
 
 ! **************************************************************************************************
@@ -257,9 +258,12 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_1d_r_p_type), DIMENSION(:), POINTER        :: mixed_evals, occupied_evals, &
                                                             unoccupied_evals, unoccupied_evals_stm
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER :: homo_localized, lumo_localized, lumo_ptr, &
-         mixed_localized, mixed_orbs, mo_loc_history, occupied_orbs, unoccupied_orbs, &
-         unoccupied_orbs_stm
+      TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: mixed_orbs, occupied_orbs
+      TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:), &
+         TARGET                                          :: homo_localized, lumo_localized, &
+                                                            mixed_localized
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: lumo_ptr, mo_loc_history, &
+                                                            unoccupied_orbs, unoccupied_orbs_stm
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_rmpv, matrix_p_mp2, matrix_s, &
@@ -308,11 +312,11 @@ CONTAINS
       my_localized_wfn = .FALSE.
       NULLIFY (admm_env, dft_control, pw_env, auxbas_pw_pool, pw_pools, mos, rho, &
                mo_coeff, ks_rmpv, matrix_s, qs_loc_env_homo, qs_loc_env_lumo, scf_control, &
-               unoccupied_orbs, unoccupied_orbs_stm, mo_eigenvalues, unoccupied_evals, &
+               unoccupied_orbs, mo_eigenvalues, unoccupied_evals, &
                unoccupied_evals_stm, molecule_set, mo_derivs, &
                subsys, particles, input, print_key, kinetic_m, marked_states, &
-               mixed_orbs, mixed_evals, qs_loc_env_mixed)
-      NULLIFY (homo_localized, lumo_localized, lumo_ptr, rho_ao, mixed_localized)
+               mixed_evals, qs_loc_env_mixed)
+      NULLIFY (lumo_ptr, rho_ao)
 
       has_homo = .FALSE.
       has_lumo = .FALSE.
@@ -512,11 +516,10 @@ CONTAINS
             DO ispin = 1, dft_control%nspins
                CALL get_mo_set(mo_set=mos(ispin), mo_coeff=mo_coeff, &
                                eigenvalues=mo_eigenvalues)
-               occupied_orbs(ispin)%matrix => mo_coeff
+               occupied_orbs(ispin) = mo_coeff
                occupied_evals(ispin)%array => mo_eigenvalues
-               ALLOCATE (homo_localized(ispin)%matrix)
-               CALL cp_fm_create(homo_localized(ispin)%matrix, occupied_orbs(ispin)%matrix%matrix_struct)
-               CALL cp_fm_to_fm(occupied_orbs(ispin)%matrix, homo_localized(ispin)%matrix)
+               CALL cp_fm_create(homo_localized(ispin), occupied_orbs(ispin)%matrix_struct)
+               CALL cp_fm_to_fm(occupied_orbs(ispin), homo_localized(ispin))
             END DO
 
             CALL get_qs_env(qs_env, mo_loc_history=mo_loc_history)
@@ -539,7 +542,7 @@ CONTAINS
             !write restart for localization of occupied orbitals
             CALL loc_write_restart(qs_loc_env_homo, loc_print_section, mos, &
                                    homo_localized, do_homo)
-            CALL cp_fm_vect_dealloc(homo_localized)
+            CALL cp_fm_release(homo_localized)
             DEALLOCATE (occupied_orbs)
             DEALLOCATE (occupied_evals)
             ! Print Total Dipole if the localization has been performed
@@ -617,7 +620,7 @@ CONTAINS
                   IF (p_loc_lumo .AND. nlumo .NE. -1) nlumos = MIN(nlumo, nlumos)
                   ! Prints the cube files of UNOCCUPIED ORBITALS
                   CALL qs_scf_post_unocc_cubes(input, dft_section, dft_control, logger, qs_env, &
-                                               unoccupied_orbs(ispin)%matrix, wf_g, wf_r, particles, nlumos, homo, ispin)
+                                               unoccupied_orbs(ispin), wf_g, wf_r, particles, nlumos, homo, ispin)
                END IF
             END DO
 
@@ -634,9 +637,8 @@ CONTAINS
             IF (p_loc_lumo) THEN
                ALLOCATE (lumo_localized(dft_control%nspins))
                DO ispin = 1, dft_control%nspins
-                  ALLOCATE (lumo_localized(ispin)%matrix)
-                  CALL cp_fm_create(lumo_localized(ispin)%matrix, unoccupied_orbs(ispin)%matrix%matrix_struct)
-                  CALL cp_fm_to_fm(unoccupied_orbs(ispin)%matrix, lumo_localized(ispin)%matrix)
+                  CALL cp_fm_create(lumo_localized(ispin), unoccupied_orbs(ispin)%matrix_struct)
+                  CALL cp_fm_to_fm(unoccupied_orbs(ispin), lumo_localized(ispin))
                END DO
                CALL qs_loc_init(qs_env, qs_loc_env_lumo, localize_section, lumo_localized, do_homo, do_mo_cubes, &
                                 evals=unoccupied_evals)
@@ -677,11 +679,10 @@ CONTAINS
             DO ispin = 1, dft_control%nspins
                CALL get_mo_set(mo_set=mos(ispin), mo_coeff=mo_coeff, &
                                eigenvalues=mo_eigenvalues)
-               mixed_orbs(ispin)%matrix => mo_coeff
+               mixed_orbs(ispin) = mo_coeff
                mixed_evals(ispin)%array => mo_eigenvalues
-               ALLOCATE (mixed_localized(ispin)%matrix)
-               CALL cp_fm_create(mixed_localized(ispin)%matrix, mixed_orbs(ispin)%matrix%matrix_struct)
-               CALL cp_fm_to_fm(mixed_orbs(ispin)%matrix, mixed_localized(ispin)%matrix)
+               CALL cp_fm_create(mixed_localized(ispin), mixed_orbs(ispin)%matrix_struct)
+               CALL cp_fm_to_fm(mixed_orbs(ispin), mixed_localized(ispin))
             END DO
 
             CALL get_qs_env(qs_env, mo_loc_history=mo_loc_history)
@@ -696,7 +697,7 @@ CONTAINS
                              do_mixed=do_mixed)
 
             DO ispin = 1, dft_control%nspins
-               CALL cp_fm_get_info(mixed_localized(ispin)%matrix, ncol_global=nchk_nmoloc)
+               CALL cp_fm_get_info(mixed_localized(ispin), ncol_global=nchk_nmoloc)
             END DO
 
             CALL get_localization_info(qs_env, qs_loc_env_mixed, localize_section, mixed_localized, &
@@ -711,7 +712,7 @@ CONTAINS
             !write restart for localization of occupied orbitals
             CALL loc_write_restart(qs_loc_env_mixed, loc_print_section, mos, &
                                    mixed_localized, do_homo, do_mixed=do_mixed)
-            CALL cp_fm_vect_dealloc(mixed_localized)
+            CALL cp_fm_release(mixed_localized)
             DEALLOCATE (mixed_orbs)
             DEALLOCATE (mixed_evals)
             ! Print Total Dipole if the localization has been performed
@@ -751,7 +752,7 @@ CONTAINS
          CALL get_qs_env(qs_env, matrix_s=matrix_s)
          CALL wfn_mix(mos, particle_set, dft_section, qs_kind_set, &
                       lumo_ptr, scf_env, matrix_s, output_unit, marked_states)
-         IF (p_loc_lumo) CALL cp_fm_vect_dealloc(lumo_localized)
+         IF (p_loc_lumo) CALL cp_fm_release(lumo_localized)
       END IF
       IF (ASSOCIATED(marked_states)) THEN
          DEALLOCATE (marked_states)
@@ -763,8 +764,7 @@ CONTAINS
             DO ispin = 1, dft_control%nspins
                DEALLOCATE (unoccupied_evals(ispin)%array)
                IF (.NOT. dft_control%do_tddfpt_calculation) THEN
-                  CALL cp_fm_release(unoccupied_orbs(ispin)%matrix)
-                  DEALLOCATE (unoccupied_orbs(ispin)%matrix)
+                  CALL cp_fm_release(unoccupied_orbs(ispin))
                END IF
             END DO
             DEALLOCATE (unoccupied_evals)
@@ -779,6 +779,7 @@ CONTAINS
          IF (do_kpoints) THEN
             CPWARN("STM not implemented for k-point calculations!")
          ELSE
+            NULLIFY (unoccupied_orbs_stm, unoccupied_evals_stm)
             IF (nlumo_stm > 0) THEN
                ALLOCATE (unoccupied_orbs_stm(dft_control%nspins))
                ALLOCATE (unoccupied_evals_stm(dft_control%nspins))
@@ -792,11 +793,9 @@ CONTAINS
             IF (nlumo_stm > 0) THEN
                DO ispin = 1, dft_control%nspins
                   DEALLOCATE (unoccupied_evals_stm(ispin)%array)
-                  CALL cp_fm_release(unoccupied_orbs_stm(ispin)%matrix)
-                  DEALLOCATE (unoccupied_orbs_stm(ispin)%matrix)
                END DO
                DEALLOCATE (unoccupied_evals_stm)
-               DEALLOCATE (unoccupied_orbs_stm)
+               CALL cp_fm_release(unoccupied_orbs_stm)
             END IF
          END IF
       END IF
@@ -821,9 +820,6 @@ CONTAINS
 
       ! Use Wannier90 interface
       CALL wannier90_interface(input, logger, qs_env)
-
-      ! Do active space calculation
-      CALL active_space_main(input, logger, qs_env)
 
       IF (my_do_mp2) THEN
          ! Get everything back
@@ -851,7 +847,7 @@ CONTAINS
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: unoccupied_orbs
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: unoccupied_orbs
       TYPE(cp_1d_r_p_type), DIMENSION(:), POINTER        :: unoccupied_evals
       INTEGER, INTENT(IN)                                :: nlumo
       INTEGER, INTENT(OUT)                               :: nlumos
@@ -865,10 +861,10 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_rmpv, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(preconditioner_type), POINTER                 :: local_preconditioner
       TYPE(scf_control_type), POINTER                    :: scf_control
 
@@ -889,7 +885,6 @@ CONTAINS
       output_unit = cp_logger_get_default_io_unit(logger)
 
       DO ispin = 1, dft_control%nspins
-         NULLIFY (unoccupied_orbs(ispin)%matrix)
          NULLIFY (unoccupied_evals(ispin)%array)
          ! Always write eigenvalues
          IF (output_unit > 0) WRITE (output_unit, *) " "
@@ -902,10 +897,9 @@ CONTAINS
          ALLOCATE (unoccupied_evals(ispin)%array(nlumos))
          CALL cp_fm_struct_create(fm_struct_tmp, para_env=para_env, context=blacs_env, &
                                   nrow_global=n, ncol_global=nlumos)
-         ALLOCATE (unoccupied_orbs(ispin)%matrix)
-         CALL cp_fm_create(unoccupied_orbs(ispin)%matrix, fm_struct_tmp, name="lumos")
+         CALL cp_fm_create(unoccupied_orbs(ispin), fm_struct_tmp, name="lumos")
          CALL cp_fm_struct_release(fm_struct_tmp)
-         CALL cp_fm_init_random(unoccupied_orbs(ispin)%matrix, nlumos)
+         CALL cp_fm_init_random(unoccupied_orbs(ispin), nlumos)
 
          ! the full_all preconditioner makes not much sense for lumos search
          NULLIFY (local_preconditioner)
@@ -923,14 +917,14 @@ CONTAINS
          END IF
 
          CALL ot_eigensolver(matrix_h=ks_rmpv(ispin)%matrix, matrix_s=matrix_s(1)%matrix, &
-                             matrix_c_fm=unoccupied_orbs(ispin)%matrix, &
+                             matrix_c_fm=unoccupied_orbs(ispin), &
                              matrix_orthogonal_space_fm=mo_coeff, &
                              eps_gradient=scf_control%eps_lumos, &
                              preconditioner=local_preconditioner, &
                              iter_max=scf_control%max_iter_lumos, &
                              size_ortho_space=nmo)
 
-         CALL calculate_subspace_eigenvalues(unoccupied_orbs(ispin)%matrix, ks_rmpv(ispin)%matrix, &
+         CALL calculate_subspace_eigenvalues(unoccupied_orbs(ispin), ks_rmpv(ispin)%matrix, &
                                              unoccupied_evals(ispin)%array, scr=output_unit, &
                                              ionode=output_unit > 0)
 
@@ -1023,8 +1017,7 @@ CONTAINS
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(cp_fm_type), INTENT(IN)                       :: mo_coeff
-      TYPE(pw_type), INTENT(IN)                          :: wf_g
-      TYPE(pw_type), INTENT(INOUT)                       :: wf_r
+      TYPE(pw_type), INTENT(INOUT)                       :: wf_g, wf_r
       TYPE(particle_list_type), POINTER                  :: particles
       INTEGER, INTENT(IN)                                :: homo, ispin
 
@@ -1122,13 +1115,13 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_scf_post_unocc_cubes(input, dft_section, dft_control, logger, qs_env, &
                                       unoccupied_orbs, wf_g, wf_r, particles, nlumos, homo, ispin, lumo)
+
       TYPE(section_vals_type), POINTER                   :: input, dft_section
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(cp_fm_type), INTENT(IN)                       :: unoccupied_orbs
-      TYPE(pw_type), INTENT(IN)                          :: wf_g
-      TYPE(pw_type), INTENT(INOUT)                       :: wf_r
+      TYPE(pw_type), INTENT(INOUT)                       :: wf_g, wf_r
       TYPE(particle_list_type), POINTER                  :: particles
       INTEGER, INTENT(IN)                                :: nlumos, homo, ispin
       INTEGER, INTENT(IN), OPTIONAL                      :: lumo
@@ -1407,7 +1400,7 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin
       LOGICAL                                            :: do_et
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: my_mos
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: my_mos
       TYPE(section_vals_type), POINTER                   :: et_section
 
       CALL timeset(routineN, handle)
@@ -1421,12 +1414,11 @@ CONTAINS
             ALLOCATE (my_mos(dft_control%nspins))
             ALLOCATE (qs_env%et_coupling%et_mo_coeff(dft_control%nspins))
             DO ispin = 1, dft_control%nspins
-               ALLOCATE (my_mos(ispin)%matrix)
-               CALL cp_fm_create(matrix=my_mos(ispin)%matrix, &
+               CALL cp_fm_create(matrix=my_mos(ispin), &
                                  matrix_struct=qs_env%mos(ispin)%mo_coeff%matrix_struct, &
                                  name="FIRST_RUN_COEFF"//TRIM(ADJUSTL(cp_to_string(ispin)))//"MATRIX")
                CALL cp_fm_to_fm(qs_env%mos(ispin)%mo_coeff, &
-                                my_mos(ispin)%matrix)
+                                my_mos(ispin))
             END DO
             CALL set_et_coupling_type(qs_env%et_coupling, et_mo_coeff=my_mos)
             DEALLOCATE (my_mos)
@@ -1908,11 +1900,12 @@ CONTAINS
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hr
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ks_rmpv, matrix_vxc, rho_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
+      TYPE(iao_env_type)                                 :: iao_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
@@ -2083,8 +2076,8 @@ CONTAINS
                      nr = 0
                      niso = 0
                   END IF
-                  CALL mp_sum(nr, para_env%group)
-                  CALL mp_sum(niso, para_env%group)
+                  CALL para_env%sum(nr)
+                  CALL para_env%sum(niso)
 
                   ALLOCATE (bfun(nr, niso))
                   bfun = 0._dp
@@ -2093,7 +2086,7 @@ CONTAINS
                         bfun(:, :) = bfun + rho_atom%rho_rad_h(ispin)%r_coef - rho_atom%rho_rad_s(ispin)%r_coef
                      END IF
                   END DO
-                  CALL mp_sum(bfun, para_env%group)
+                  CALL para_env%sum(bfun)
                   ccdens(:, 1, ikind) = ppdens(:, 1, ikind)
                   ccdens(:, 2, ikind) = 0._dp
                   IF (unit_nr > 0) THEN
@@ -2659,6 +2652,26 @@ CONTAINS
          CALL cp_print_key_finished_output(unit_nr, logger, input, "DFT%PRINT%MINBAS_ANALYSIS")
       END IF
 
+      ! IAO analysis
+      print_key => section_vals_get_subs_vals(input, "DFT%PRINT%IAO_ANALYSIS")
+      IF (BTEST(cp_print_key_should_output(logger%iter_info, print_key), cp_p_file)) THEN
+         unit_nr = cp_print_key_unit_nr(logger, input, "DFT%PRINT%IAO_ANALYSIS", extension=".iao", log_filename=.FALSE.)
+         CALL iao_read_input(iao_env, print_key, cell)
+         IF (iao_env%do_iao) THEN
+            CALL iao_wfn_analysis(qs_env, iao_env, unit_nr)
+         END IF
+         CALL cp_print_key_finished_output(unit_nr, logger, input, "DFT%PRINT%IAO_ANALYSIS")
+      END IF
+
+      ! Energy Decomposition Analysis
+      print_key => section_vals_get_subs_vals(input, "DFT%PRINT%ENERGY_DECOMPOSITION_ANALYSIS")
+      IF (BTEST(cp_print_key_should_output(logger%iter_info, print_key), cp_p_file)) THEN
+         unit_nr = cp_print_key_unit_nr(logger, input, "DFT%PRINT%ENERGY_DECOMPOSITION_ANALYSIS", &
+                                        extension=".mao", log_filename=.FALSE.)
+         CALL edmf_analysis(qs_env, print_key, unit_nr)
+         CALL cp_print_key_finished_output(unit_nr, logger, input, "DFT%PRINT%ENERGY_DECOMPOSITION_ANALYSIS")
+      END IF
+
       ! Print the density in the RI-HFX basis
       hfx_section => section_vals_get_subs_vals(input, "DFT%XC%HF")
       CALL section_vals_get(hfx_section, explicit=do_hfx)
@@ -2693,10 +2706,10 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: charges
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(hirshfeld_type), POINTER                      :: hirshfeld_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(mpole_rho_atom), DIMENSION(:), POINTER        :: mp_rho
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -3243,9 +3256,9 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: interact_adjm
       LOGICAL                                            :: do_adjm_write, do_symmetric
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_list_a, basis_set_list_b
       TYPE(gto_basis_set_type), POINTER                  :: basis_set_a, basis_set_b
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -3317,7 +3330,7 @@ CONTAINS
             interact_adjm((ind - 1)*4 + 4) = jkind
          END DO
 
-         CALL mp_sum(interact_adjm, para_env%group)
+         CALL para_env%sum(interact_adjm)
 
          unit_nr = cp_print_key_unit_nr(logger, dft_section, "PRINT%ADJMAT_WRITE", &
                                         extension=".adjmat", file_form="FORMATTED", &

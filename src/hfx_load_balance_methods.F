@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,7 +15,7 @@ MODULE hfx_load_balance_methods
    USE cell_types, ONLY: cell_type
    USE cp_files, ONLY: close_file, &
                        open_file
-   USE cp_para_types, ONLY: cp_para_env_type
+   USE message_passing, ONLY: mp_para_env_type
    USE hfx_pair_list_methods, ONLY: build_atomic_pair_list, &
                                     build_pair_list
    USE hfx_types, ONLY: &
@@ -26,13 +26,7 @@ MODULE hfx_load_balance_methods
                               hfx_do_eval_forces
    USE kinds, ONLY: dp, &
                     int_8
-   USE message_passing, ONLY: mp_allgather, &
-                              mp_gatherv, &
-                              mp_isendrecv, &
-                              mp_max, &
-                              mp_sum, &
-                              mp_sync, &
-                              mp_waitall
+   USE message_passing, ONLY: mp_waitall, mp_request_type
    USE parallel_rng_types, ONLY: UNIFORM, &
                                  rng_stream_type
    USE particle_types, ONLY: particle_type
@@ -137,7 +131,7 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: eps_schwarz
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       INTEGER, INTENT(IN)                                :: max_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(hfx_screen_coeff_type), &
          DIMENSION(:, :, :, :), POINTER                  :: coeffs_set
       TYPE(hfx_screen_coeff_type), DIMENSION(:, :), &
@@ -165,7 +159,8 @@ CONTAINS
                  jatom_end, jatom_start, katom_block, katom_end, katom_start, latom_block, latom_end, &
                  latom_start, mepos, my_process_id, n_processes, natom, nbins, nblocks, ncpu, &
                  new_iatom_end, new_iatom_start, new_jatom_end, new_jatom_start, non_empty_blocks, &
-                 objective_block_size, objective_nblocks, req(2), source, total_blocks
+                 objective_block_size, objective_nblocks, source, total_blocks
+      TYPE(mp_request_type), DIMENSION(2) :: req
       INTEGER(int_8) :: atom_block, cost_per_bin, cost_per_core, current_cost, &
                         distribution_counter_end, distribution_counter_start, global_quartet_counter, &
                         local_quartet_counter, self_cost_per_block, tmp_block, total_block_self_cost
@@ -248,7 +243,7 @@ CONTAINS
          END DO
          print*,"total_block_self_cost before opt",total_block_self_cost
 
-         CALL mp_sum(total_block_self_cost, para_env%group)
+         CALL para_env%sum(total_block_self_cost)
 
          objective_block_size = load_balance_parameter%block_size
          objective_nblocks = MAX((natom + objective_block_size - 1)/objective_block_size, 1)
@@ -330,7 +325,7 @@ CONTAINS
          ALLOCATE (rcount(ncpu))
          rcount = 0
          rcount(para_env%mepos + 1) = non_empty_blocks
-         CALL mp_sum(rcount, para_env%group)
+         CALL para_env%sum(rcount)
 
          ! ** sum all non_empty_blocks
          total_blocks = 0
@@ -367,7 +362,7 @@ CONTAINS
          ALLOCATE (buffer_out(3*nblocks))
 
          ! ** Gather all three arrays
-         CALL mp_allgather(buffer_in, buffer_out, rcount, rdispl, para_env%group)
+         CALL para_env%allgatherv(buffer_in, buffer_out, rcount, rdispl)
 
          total_block_self_cost = 0
          DO i = 1, nblocks
@@ -681,9 +676,9 @@ CONTAINS
 
 !$OMP BARRIER
 !$OMP MASTER
-         CALL mp_sum(shm_local_quartet_counter, para_env%group)
-         CALL mp_sum(shm_global_quartet_counter, para_env%group)
-         IF (para_env%ionode) THEN
+         CALL para_env%sum(shm_local_quartet_counter)
+         CALL para_env%sum(shm_global_quartet_counter)
+         IF (para_env%is_source()) THEN
             IF (shm_local_quartet_counter /= shm_global_quartet_counter) THEN
                WRITE (error_msg, '(A,I0,A,I0,A)') "HFX Sanity check for parallel distribution failed. "// &
                   "Number of local quartets (", shm_local_quartet_counter, &
@@ -709,7 +704,7 @@ CONTAINS
 
 !$OMP MASTER
          ! sync before/after ring of isendrecv
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
 
          ALLOCATE (sendbuffer(nbins*n_threads))
          ALLOCATE (recbuffer(nbins*n_threads))
@@ -720,8 +715,8 @@ CONTAINS
          source = MODULO(mepos - 1, ncpu)
          DO icpu = 0, ncpu - 1
             IF (icpu .NE. ncpu - 1) THEN
-               CALL mp_isendrecv(sendbuffer, dest, recbuffer, source, &
-                                 para_env%group, req(1), req(2), 13)
+               CALL para_env%isendrecv(sendbuffer, dest, recbuffer, source, &
+                                       req(1), req(2), 13)
             END IF
             data_from = MODULO(mepos - icpu, ncpu)
             cost_matrix(data_from*nbins*n_threads + 1:data_from*nbins*n_threads + nbins*n_threads) = sendbuffer
@@ -783,13 +778,13 @@ CONTAINS
          END DO
 
          ! sync before/after ring of isendrecv
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
          dest = MODULO(mepos + 1, ncpu)
          source = MODULO(mepos - 1, ncpu)
          DO icpu = 0, ncpu - 1
             IF (icpu .NE. ncpu - 1) THEN
-               CALL mp_isendrecv(sendbuffer, dest, recbuffer, source, &
-                                 para_env%group, req(1), req(2), 13)
+               CALL para_env%isendrecv(sendbuffer, dest, recbuffer, source, &
+                                       req(1), req(2), 13)
             END IF
             data_from = MODULO(mepos - icpu, ncpu)
             DO j = 1, n_threads
@@ -810,7 +805,7 @@ CONTAINS
          DEALLOCATE (recbuffer, sendbuffer)
 
          ! sync before/after ring of isendrecv
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
 !$OMP END MASTER
 !$OMP BARRIER
          !! reorder the distribution according to the distribution vector
@@ -945,7 +940,7 @@ print*,"end hfx_load_balance"
       REAL(dp)                                           :: pmax_blocks
       TYPE(cell_type), INTENT(IN), POINTER               :: cell
       TYPE(hfx_type), INTENT(IN), POINTER                :: x_data
-      TYPE(cp_para_env_type), INTENT(IN), POINTER        :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)        :: para_env
       REAL(dp), DIMENSION(:, :), INTENT(IN), POINTER     :: pmax_block
       LOGICAL, INTENT(IN)                                :: do_p_screening
       INTEGER, DIMENSION(:), INTENT(IN), POINTER         :: map_atom_to_kind_atom
@@ -1085,7 +1080,7 @@ print*,"end hfx_load_balance"
       ALLOCATE (local_cost_vector(n_processes))
       local_cost_vector = 0
       local_cost_vector(my_process_id + 1) = local_cost
-      CALL mp_sum(local_cost_vector, para_env%group)
+      CALL para_env%sum(local_cost_vector)
 
       mean = SUM(local_cost_vector)/n_processes
       maximum = MAXVAL(local_cost_vector)
@@ -1255,7 +1250,7 @@ print*,"end hfx_load_balance"
       REAL(dp)                                           :: pmax_blocks
       TYPE(cell_type), POINTER                           :: cell
       TYPE(hfx_type), POINTER                            :: x_data
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       REAL(dp), DIMENSION(:, :), POINTER                 :: pmax_block
       LOGICAL, INTENT(IN)                                :: do_p_screening
       INTEGER, DIMENSION(:), POINTER                     :: map_atom_to_kind_atom
@@ -1364,7 +1359,7 @@ print*,"end hfx_load_balance"
       END DO ! atom_block
 
 !   sum costvector over all processes
-      CALL mp_sum(cost_vector, para_env%group)
+      CALL para_env%sum(cost_vector)
 
 !   calculate next prime factor of nProc
       nBins = 2
@@ -1502,14 +1497,15 @@ print*,"end hfx_load_balance"
                                       i_thread, n_threads, eval_type)
 
       TYPE(hfx_type), POINTER                            :: x_data
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       TYPE(hfx_load_balance_type)                        :: load_balance_parameter
       INTEGER, INTENT(IN)                                :: i_thread, n_threads, eval_type
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_update_load_balance'
 
       INTEGER :: data_from, dest, end_idx, handle, i, ibin, icpu, iprocess, j, mepos, my_bin_size, &
-                 my_global_start_idx, my_process_id, n_processes, nbins, ncpu, req(2), source, start_idx
+                 my_global_start_idx, my_process_id, n_processes, nbins, ncpu, source, start_idx
+      TYPE(mp_request_type), DIMENSION(2) :: req
       INTEGER(int_8), DIMENSION(:), POINTER              :: local_cost_matrix, recbuffer, &
                                                             sendbuffer, swapbuffer
       INTEGER(int_8), DIMENSION(:), POINTER, SAVE        :: cost_matrix
@@ -1561,14 +1557,14 @@ print*,"end hfx_load_balance"
          bin_histogram(my_process_id + 1, 1) = my_bin_size
 !$OMP BARRIER
 !$OMP MASTER
-         CALL mp_sum(bin_histogram(:, 1), para_env%group)
+         CALL para_env%sum(bin_histogram(:, 1))
          bin_histogram(1, 2) = bin_histogram(1, 1)
          DO iprocess = 2, n_processes
             bin_histogram(iprocess, 2) = bin_histogram(iprocess - 1, 2) + bin_histogram(iprocess, 1)
          END DO
 
          max_bin_size = MAXVAL(bin_histogram(para_env%mepos*n_threads + 1:para_env%mepos*n_threads + n_threads, 1))
-         CALL mp_max(max_bin_size, para_env%group)
+         CALL para_env%max(max_bin_size)
 !$OMP END MASTER
 !$OMP BARRIER
          ALLOCATE (binned_dist(my_bin_size))
@@ -1626,11 +1622,11 @@ print*,"end hfx_load_balance"
          dest = MODULO(mepos + 1, ncpu)
          source = MODULO(mepos - 1, ncpu)
          ! sync before/after ring of isendrecv
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
          DO icpu = 0, ncpu - 1
             IF (icpu .NE. ncpu - 1) THEN
-               CALL mp_isendrecv(sendbuffer, dest, recbuffer, source, &
-                                 para_env%group, req(1), req(2), 13)
+               CALL para_env%isendrecv(sendbuffer, dest, recbuffer, source, &
+                                       req(1), req(2), 13)
             END IF
             data_from = MODULO(mepos - icpu, ncpu)
             start_idx = SUM(bins_per_rank(1:data_from + 1)) - bins_per_rank(data_from + 1) + 1
@@ -1646,7 +1642,7 @@ print*,"end hfx_load_balance"
          END DO
          DEALLOCATE (recbuffer, sendbuffer)
          ! sync before/after ring of isendrecv
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
 !$OMP END MASTER
 !$OMP BARRIER
          ALLOCATE (local_cost_matrix(SIZE(cost_matrix, 1)))
@@ -1684,11 +1680,11 @@ print*,"end hfx_load_balance"
          dest = MODULO(mepos + 1, ncpu)
          source = MODULO(mepos - 1, ncpu)
          ! sync before/after ring of isendrecv
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
          DO icpu = 0, ncpu - 1
             IF (icpu .NE. ncpu - 1) THEN
-               CALL mp_isendrecv(sendbuffer, dest, recbuffer, source, &
-                                 para_env%group, req(1), req(2), 13)
+               CALL para_env%isendrecv(sendbuffer, dest, recbuffer, source, &
+                                       req(1), req(2), 13)
             END IF
             data_from = MODULO(mepos - icpu, ncpu)
             DO j = 1, n_threads
@@ -1708,7 +1704,7 @@ print*,"end hfx_load_balance"
          END DO
          ! sync before/after ring of isendrecv
          DEALLOCATE (recbuffer, sendbuffer)
-         CALL mp_sync(para_env%group)
+         CALL para_env%sync()
 !$OMP END MASTER
 !$OMP BARRIER
          !! reorder the distribution according to the distribution vector
@@ -2272,7 +2268,7 @@ print*,"end hfx_load_balance"
                           atomic_pair_list)
 
       INTEGER, INTENT(IN)                                :: nkind
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER                                            :: natom, block_size, nblock
       TYPE(hfx_block_range_type), DIMENSION(1:nblock)    :: blocks
       TYPE(pair_list_type)                               :: list_ij, list_kl
@@ -2347,7 +2343,7 @@ print*,"end hfx_load_balance"
    SUBROUTINE collect_load_balance_info(para_env, x_data, iw, n_threads, i_thread, &
                                         eval_type)
 
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       TYPE(hfx_type), POINTER                            :: x_data
       INTEGER, INTENT(IN)                                :: iw, n_threads, i_thread, eval_type
 
@@ -2389,7 +2385,7 @@ print*,"end hfx_load_balance"
 
       bins_per_rank(my_rank + 1) = nbins
 
-      CALL mp_sum(bins_per_rank, para_env%group)
+      CALL para_env%sum(bins_per_rank)
 
       total_bins = 0
       DO i = 1, nranks
@@ -2438,7 +2434,7 @@ print*,"end hfx_load_balance"
          buffer_in(2*i) = shm_cost_vector(2*i)
       END DO
 
-      CALL mp_gatherv(buffer_in, buffer_out, bins_per_rank, rdispl, para_env%source, para_env%group)
+      CALL para_env%gatherv(buffer_in, buffer_out, bins_per_rank, rdispl)
 
       IF (iw > 0) THEN
 
@@ -2520,7 +2516,7 @@ print*,"end hfx_load_balance"
 
       DEALLOCATE (buffer_in, buffer_out, rdispl)
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
 
       DEALLOCATE (shm_bins_per_rank, shm_displ, shm_cost_vector)
 !$OMP END MASTER

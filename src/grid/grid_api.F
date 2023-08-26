@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: BSD-3-Clause                                                          !
 !--------------------------------------------------------------------------------------------------!
@@ -14,7 +14,7 @@ MODULE grid_api
         C_ASSOCIATED, C_BOOL, C_CHAR, C_DOUBLE, C_FUNLOC, C_FUNPTR, C_INT, C_LOC, C_LONG, &
         C_NULL_PTR, C_PTR
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type
    USE offload_api,                     ONLY: offload_buffer_type
    USE realspace_grid_types,            ONLY: realspace_grid_type
    USE string_utilities,                ONLY: strlcpy_c2f
@@ -66,8 +66,9 @@ MODULE grid_api
    INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_AUTO = 10
    INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_REF = 11
    INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_CPU = 12
-   INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_GPU = 13
-   INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_HIP = 14
+   INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_DGEMM = 13
+   INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_GPU = 14
+   INTEGER, PARAMETER, PUBLIC :: GRID_BACKEND_HIP = 15
 
    PUBLIC :: grid_library_init, grid_library_finalize
    PUBLIC :: grid_library_set_config, grid_library_print_stats
@@ -137,14 +138,14 @@ CONTAINS
       LOGICAL(KIND=C_BOOL)                               :: orthorhombic
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: grid
       INTERFACE
-         SUBROUTINE grid_ref_collocate_pgf_product_c(orthorhombic, &
+         SUBROUTINE grid_cpu_collocate_pgf_product_c(orthorhombic, &
                                                      border_mask, func, &
                                                      la_max, la_min, lb_max, lb_min, &
                                                      zeta, zetb, rscale, dh, dh_inv, ra, rab, &
                                                      npts_global, npts_local, shift_local, border_width, &
                                                      radius, o1, o2, n1, n2, pab, &
                                                      grid) &
-            BIND(C, name="grid_ref_collocate_pgf_product")
+            BIND(C, name="grid_cpu_collocate_pgf_product")
             IMPORT :: C_PTR, C_INT, C_DOUBLE, C_BOOL
             LOGICAL(KIND=C_BOOL), VALUE               :: orthorhombic
             INTEGER(KIND=C_INT), VALUE                :: border_mask
@@ -171,7 +172,7 @@ CONTAINS
             INTEGER(KIND=C_INT), VALUE                :: n2
             TYPE(C_PTR), VALUE                        :: pab
             TYPE(C_PTR), VALUE                        :: grid
-         END SUBROUTINE grid_ref_collocate_pgf_product_c
+         END SUBROUTINE grid_cpu_collocate_pgf_product_c
       END INTERFACE
 
       border_mask = 0
@@ -207,9 +208,9 @@ CONTAINS
       CPASSERT(IS_CONTIGUOUS(grid))
 #endif
 
-      ! For collocating single pgf products there is only the reference implementation.
+      ! For collocating a single pgf product we use the optimized cpu backend.
 
-      CALL grid_ref_collocate_pgf_product_c(orthorhombic=orthorhombic, &
+      CALL grid_cpu_collocate_pgf_product_c(orthorhombic=orthorhombic, &
                                             border_mask=border_mask, &
                                             func=ga_gb_function, &
                                             la_max=la_max, &
@@ -310,14 +311,14 @@ CONTAINS
       TYPE(C_PTR)                                        :: a_hdab_cptr, forces_cptr, hadb_cptr, &
                                                             hdab_cptr, pab_cptr, virials_cptr
       INTERFACE
-         SUBROUTINE grid_ref_integrate_pgf_product_c(orthorhombic, compute_tau, &
+         SUBROUTINE grid_cpu_integrate_pgf_product_c(orthorhombic, compute_tau, &
                                                      border_mask, &
                                                      la_max, la_min, lb_max, lb_min, &
                                                      zeta, zetb, dh, dh_inv, ra, rab, &
                                                      npts_global, npts_local, shift_local, border_width, &
                                                      radius, o1, o2, n1, n2, grid, hab, pab, &
                                                      forces, virials, hdab, hadb, a_hdab) &
-            BIND(C, name="grid_ref_integrate_pgf_product")
+            BIND(C, name="grid_cpu_integrate_pgf_product")
             IMPORT :: C_PTR, C_INT, C_DOUBLE, C_BOOL
             LOGICAL(KIND=C_BOOL), VALUE               :: orthorhombic
             LOGICAL(KIND=C_BOOL), VALUE               :: compute_tau
@@ -349,7 +350,7 @@ CONTAINS
             TYPE(C_PTR), VALUE                        :: hdab
             TYPE(C_PTR), VALUE                        :: hadb
             TYPE(C_PTR), VALUE                        :: a_hdab
-         END SUBROUTINE grid_ref_integrate_pgf_product_c
+         END SUBROUTINE grid_cpu_integrate_pgf_product_c
       END INTERFACE
 
       IF (radius == 0.0_dp) THEN
@@ -445,7 +446,7 @@ CONTAINS
       END IF
 #endif
 
-      CALL grid_ref_integrate_pgf_product_c(orthorhombic=orthorhombic, &
+      CALL grid_cpu_integrate_pgf_product_c(orthorhombic=orthorhombic, &
                                             compute_tau=my_compute_tau, &
                                             border_mask=border_mask, &
                                             la_max=la_max, &
@@ -1188,7 +1189,8 @@ CONTAINS
 !> \author Ole Schuett
 ! **************************************************************************************************
    SUBROUTINE grid_library_print_stats(mpi_comm, output_unit)
-      INTEGER, INTENT(IN)                                :: mpi_comm, output_unit
+      TYPE(mp_comm_type)                                 :: mpi_comm
+      INTEGER, INTENT(IN)                                :: output_unit
 
       INTERFACE
          SUBROUTINE grid_library_print_stats_c(mpi_sum_func, mpi_comm, print_func, output_unit) &
@@ -1203,7 +1205,7 @@ CONTAINS
 
       ! Since Fortran units and mpi groups can't be used from C, we pass function pointers instead.
       CALL grid_library_print_stats_c(mpi_sum_func=C_FUNLOC(mpi_sum_func), &
-                                      mpi_comm=mpi_comm, &
+                                      mpi_comm=mpi_comm%get_handle(), &
                                       print_func=C_FUNLOC(print_func), &
                                       output_unit=output_unit)
 
@@ -1219,7 +1221,12 @@ CONTAINS
       INTEGER(KIND=C_LONG), INTENT(INOUT)                :: number
       INTEGER(KIND=C_INT), INTENT(IN), VALUE             :: mpi_comm
 
-      CALL mp_sum(number, mpi_comm)
+      TYPE(mp_comm_type)                                 :: my_mpi_comm
+
+      ! Convert the handle to the default integer kind and convert it to the communicator type
+      CALL my_mpi_comm%set_handle(INT(mpi_comm))
+
+      CALL my_mpi_comm%sum(number)
    END SUBROUTINE mpi_sum_func
 
 ! **************************************************************************************************

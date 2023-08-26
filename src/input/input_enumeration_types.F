@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -41,11 +41,11 @@ MODULE input_enumeration_types
    END TYPE char_array
 
    TYPE enumeration_type
-      INTEGER :: ref_count
-      CHARACTER(len=default_string_length), DIMENSION(:), POINTER :: c_vals
+      INTEGER :: ref_count = 0
+      CHARACTER(len=default_string_length), DIMENSION(:), POINTER :: c_vals => NULL()
       TYPE(char_array), DIMENSION(:), POINTER :: desc => Null()
-      INTEGER, DIMENSION(:), POINTER :: i_vals
-      LOGICAL :: strict
+      INTEGER, DIMENSION(:), POINTER :: i_vals => NULL()
+      LOGICAL :: strict = .FALSE.
    END TYPE enumeration_type
 
 CONTAINS

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,10 +13,10 @@
 MODULE topology
    USE atomic_kind_types,               ONLY: atomic_kind_type
    USE atoms_input,                     ONLY: read_atoms_input
-   USE cell_methods,                    ONLY: read_cell,&
+   USE cell_methods,                    ONLY: cell_create,&
+                                              read_cell,&
                                               write_cell
-   USE cell_types,                      ONLY: cell_create,&
-                                              cell_retain,&
+   USE cell_types,                      ONLY: cell_retain,&
                                               cell_type
    USE colvar_types,                    ONLY: colvar_p_type
    USE colvar_utils,                    ONLY: post_process_colvar
@@ -24,7 +24,6 @@ MODULE topology
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE exclusion_types,                 ONLY: exclusion_type
    USE input_constants,                 ONLY: &
         do_conn_amb7, do_conn_g87, do_conn_g96, do_conn_generate, do_conn_mol_set, do_conn_off, &
@@ -39,6 +38,7 @@ MODULE topology
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mm_mapping_library,              ONLY: create_ff_map,&
                                               destroy_ff_map
    USE molecule_kind_types,             ONLY: molecule_kind_type
@@ -130,7 +130,7 @@ CONTAINS
       TYPE(colvar_p_type), DIMENSION(:), POINTER         :: colvar_p
       TYPE(global_constraint_type), POINTER              :: gci
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: qmmm
       TYPE(qmmm_env_mm_type), OPTIONAL, POINTER          :: qmmm_env
       TYPE(section_vals_type), POINTER                   :: force_env_section, subsys_section
@@ -181,7 +181,7 @@ CONTAINS
       ! 2. Get the cell info
       CALL read_cell(topology%cell, topology%cell_ref, cell_section=cell_section, &
                      para_env=para_env)
-      CALL write_cell(topology%cell, subsys_section, label="CELL_TOP|")
+      CALL write_cell(topology%cell, subsys_section, tag="CELL_TOP")
       CALL setup_cell_muc(topology%cell_muc, topology%cell, subsys_section)
 
       ! 3. Read in the topology section in the input file if any
@@ -284,7 +284,7 @@ CONTAINS
                                    force_env_section)
 
       TYPE(topology_parameters_type), INTENT(INOUT)      :: topology
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(in), OPTIONAL                      :: qmmm
       TYPE(qmmm_env_mm_type), OPTIONAL, POINTER          :: qmmm_env
       TYPE(section_vals_type), POINTER                   :: subsys_section, force_env_section
@@ -450,7 +450,7 @@ CONTAINS
       TYPE(topology_parameters_type), INTENT(INOUT)      :: topology
       INTEGER, INTENT(IN)                                :: conn_type
       CHARACTER(LEN=default_path_length), INTENT(IN)     :: conn_file_name
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: subsys_section
 
       CHARACTER(len=default_path_length)                 :: filename
@@ -516,7 +516,7 @@ CONTAINS
 
       TYPE(topology_parameters_type), INTENT(INOUT)      :: topology
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: subsys_section
 
       CHARACTER(len=*), PARAMETER :: routineN = 'coordinate_control'
@@ -644,10 +644,9 @@ CONTAINS
          hmat_ref(:, 1) = cell%hmat(:, 1)/multiple_unit_cell(1)
          hmat_ref(:, 2) = cell%hmat(:, 2)/multiple_unit_cell(2)
          hmat_ref(:, 3) = cell%hmat(:, 3)/multiple_unit_cell(3)
-
          ! Create the MUC cell
-         CALL cell_create(cell_muc, hmat=hmat_ref, periodic=cell%perd)
-         CALL write_cell(cell_muc, subsys_section, label="CELL_UC|")
+         CALL cell_create(cell_muc, hmat=hmat_ref, periodic=cell%perd, tag="CELL_UC")
+         CALL write_cell(cell_muc, subsys_section)
       ELSE
          ! If a multiple_unit_cell was not requested just point to the original cell
          CALL cell_retain(cell)
@@ -657,4 +656,3 @@ CONTAINS
    END SUBROUTINE setup_cell_muc
 
 END MODULE topology
-

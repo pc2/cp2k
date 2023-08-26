@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -9,10 +9,9 @@
 MODULE qs_gspace_mixing
 
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE kinds,                           ONLY: dp
    USE mathlib,                         ONLY: invert_matrix
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
    USE pw_methods,                      ONLY: pw_axpy,&
@@ -71,7 +70,7 @@ CONTAINS
       INTEGER                                            :: mixing_method
       TYPE(mixing_storage_type), POINTER                 :: mixing_store
       TYPE(qs_rho_type), POINTER                         :: rho
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iter_count
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'gspace_mixing'
@@ -101,7 +100,7 @@ CONTAINS
          nspin = SIZE(rho_g, 1)
          nimg = dft_control%nimages
          ng = SIZE(rho_g(1)%pw_grid%gsq)
-         CPASSERT((ng == SIZE(mixing_store%rhoin(1)%cc)))
+         CPASSERT(ng == SIZE(mixing_store%rhoin(1)%cc))
 
          alpha = mixing_store%alpha
          gapw = dft_control%qs_control%gapw
@@ -290,7 +289,7 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mixing_storage_type), POINTER                 :: mixing_store
       TYPE(qs_rho_type), POINTER                         :: rho
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'pulay_mixing'
 
@@ -332,8 +331,8 @@ CONTAINS
       ALLOCATE (cc_mix(ng))
 
       IF (nspin == 2) THEN
+         CALL pw_axpy(rho_g(1), rho_g(2), 1.0_dp, -1.0_dp)
          DO ig = 1, ng
-            rho_g(2)%cc(ig) = rho_g(1)%cc(ig) - rho_g(2)%cc(ig)
             mixing_store%rhoin(2)%cc(ig) = mixing_store%rhoin(1)%cc(ig) - mixing_store%rhoin(2)%cc(ig)
          END DO
          IF (gapw .AND. mixing_store%gmix_p) THEN
@@ -370,7 +369,7 @@ CONTAINS
                        AIMAG(mixing_store%res_buffer(ib, ispin)%cc(ig))*AIMAG(mixing_store%res_buffer(ib, ispin)%cc(ig))
          END DO
 
-         CALL mp_sum(res_norm, para_env%group)
+         CALL para_env%sum(res_norm)
          res_norm = SQRT(res_norm)
 
          IF (res_norm < 1.E-14_dp) THEN
@@ -403,7 +402,7 @@ CONTAINS
                                                                  AIMAG(mixing_store%res_buffer(jb, ispin)%cc(ig))* &
                                                                  AIMAG(mixing_store%res_buffer(ib, ispin)%cc(ig)))
             END DO
-            CALL mp_sum(mixing_store%pulay_matrix(jb, ib, ispin), para_env%group)
+            CALL para_env%sum(mixing_store%pulay_matrix(jb, ib, ispin))
             mixing_store%pulay_matrix(jb, ib, ispin) = mixing_store%pulay_matrix(jb, ib, ispin)*vol*vol
             mixing_store%pulay_matrix(ib, jb, ispin) = mixing_store%pulay_matrix(jb, ib, ispin)
          END DO
@@ -528,8 +527,8 @@ CONTAINS
       DEALLOCATE (cc_mix)
 
       IF (nspin == 2) THEN
+         CALL pw_axpy(rho_g(1), rho_g(2), 1.0_dp, -1.0_dp)
          DO ig = 1, ng
-            rho_g(2)%cc(ig) = rho_g(1)%cc(ig) - rho_g(2)%cc(ig)
             mixing_store%rhoin(2)%cc(ig) = mixing_store%rhoin(1)%cc(ig) - mixing_store%rhoin(2)%cc(ig)
          END DO
          IF (gapw .AND. mixing_store%gmix_p) THEN
@@ -568,7 +567,7 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mixing_storage_type), POINTER                 :: mixing_store
       TYPE(qs_rho_type), POINTER                         :: rho
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'broyden_mixing'
 
@@ -624,8 +623,8 @@ CONTAINS
       END IF
 
       IF (nspin == 2) THEN
+         CALL pw_axpy(rho_g(1), rho_g(2), 1.0_dp, -1.0_dp)
          DO ig = 1, ng
-            rho_g(2)%cc(ig) = rho_g(1)%cc(ig) - rho_g(2)%cc(ig)
             mixing_store%rhoin(2)%cc(ig) = mixing_store%rhoin(1)%cc(ig) - mixing_store%rhoin(2)%cc(ig)
          END DO
          IF (gapw .AND. mixing_store%gmix_p) THEN
@@ -713,11 +712,11 @@ CONTAINS
                   mixing_store%rhoin(ispin)%cc(ig) - &
                   mixing_store%rhoin_old(ispin)%cc(ig)
             END DO
-            CALL mp_sum(delta_norm, para_env%group)
+            CALL para_env%sum(delta_norm)
             delta_norm = SQRT(delta_norm)
-            CALL mp_sum(res_norm, para_env%group)
+            CALL para_env%sum(res_norm)
             res_norm = SQRT(res_norm)
-            CALL mp_sum(rho_norm, para_env%group)
+            CALL para_env%sum(rho_norm)
             rho_norm = SQRT(rho_norm)
 
             IF (res_norm > 1.E-14_dp) THEN
@@ -780,7 +779,7 @@ CONTAINS
                      a(jb, kb) = a(kb, jb)
                   END DO
                END DO
-               CALL mp_sum(a, para_env%group)
+               CALL para_env%sum(a)
 
                C = 0.0_dp
                DO jb = 1, nb
@@ -791,7 +790,7 @@ CONTAINS
                              AIMAG(mixing_store%res_buffer(jb, ispin)%cc(ig))*AIMAG(res_rho(ig)))
                   END DO
                END DO
-               CALL mp_sum(c, para_env%group)
+               CALL para_env%sum(c)
                CALL invert_matrix(a, b, inv_err)
 
                CALL dgemv('T', nb, nb, 1.0_dp, B, nb, C, 1, 0.0_dp, G, 1)
@@ -851,8 +850,8 @@ CONTAINS
 
       END DO ! ispin
       IF (nspin == 2) THEN
+         CALL pw_axpy(rho_g(1), rho_g(2), 1.0_dp, -1.0_dp)
          DO ig = 1, ng
-            rho_g(2)%cc(ig) = rho_g(1)%cc(ig) - rho_g(2)%cc(ig)
             mixing_store%rhoin(2)%cc(ig) = mixing_store%rhoin(1)%cc(ig) - mixing_store%rhoin(2)%cc(ig)
          END DO
          IF (gapw .AND. mixing_store%gmix_p) THEN
@@ -886,7 +885,7 @@ CONTAINS
 
       TYPE(mixing_storage_type), POINTER                 :: mixing_store
       TYPE(qs_rho_type), POINTER                         :: rho
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'broyden_mixing_new'
 
@@ -978,9 +977,9 @@ CONTAINS
             delta = delta + norm_ig
             delta_p = delta_p + norm_ig*p_metric(ig) !*p_metric(ig)
          END DO
-         CALL mp_sum(delta, para_env%group)
+         CALL para_env%sum(delta)
          delta = SQRT(delta)
-         CALL mp_sum(delta_p, para_env%group)
+         CALL para_env%sum(delta_p)
          delta_p = SQRT(delta_p)
          delta_rhog = delta_rhog + delta
          delta_rhog_p = delta_rhog_p + delta_p
@@ -1009,12 +1008,12 @@ CONTAINS
                          AIMAG(delta_res(ib, ispin)%cc(ig))*AIMAG(delta_res_p(ig))
                norm = norm + norm_ig
             END DO
-            CALL mp_sum(norm, para_env%group)
+            CALL para_env%sum(norm)
             norm = 1._dp/SQRT(norm)
             delta_res(ib, ispin)%cc(:) = delta_res(ib, ispin)%cc(:)*norm
             delta_res_p(:) = delta_res_p(:)*norm
 
-            IF (para_env%ionode) WRITE (*, *) 'norm ', norm
+            IF (para_env%is_source()) WRITE (*, *) 'norm ', norm
             ! Vector U_{i-1}(G) =  Drho_{i-1} + k(G)  * DR_{i-1}(G)
             DO ig = 1, ng
                tmp(ig) = (mixing_store%rhoin(ispin)%cc(ig) - &
@@ -1036,7 +1035,7 @@ CONTAINS
                END DO
 
             END DO
-            CALL mp_sum(fmat(1:nb, ib), para_env%group)
+            CALL para_env%sum(fmat(1:nb, ib))
 
             fmat(ib, ib) = 1.0_dp
 
@@ -1147,7 +1146,7 @@ CONTAINS
                   imp = AIMAG(res_rho_p(ig))
                   norm = norm + rep_j*rep + imp_j*imp
                END DO
-               CALL mp_sum(norm, para_env%group)
+               CALL para_env%sum(norm)
                ! Subtract |Z_jb)><DR_jb|P|R_{iter}>
                DO ig = 1, ng
                   rho_g(ispin)%cc(ig) = rho_g(ispin)%cc(ig) - norm*z_vec(jb, ispin)%cc(ig)*sqt_vol
@@ -1195,7 +1194,7 @@ CONTAINS
 
       TYPE(mixing_storage_type), POINTER                 :: mixing_store
       TYPE(qs_rho_type), POINTER                         :: rho
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'multisecant_mixing'
       COMPLEX(KIND=dp), PARAMETER                        :: cmone = (-1.0_dp, 0.0_dp), &
@@ -1263,7 +1262,7 @@ CONTAINS
             gn_norm = gn_norm + &
                       REAL(gn(ig), dp)*REAL(gn(ig), dp) + AIMAG(gn(ig))*AIMAG(gn(ig))
          END DO
-         CALL mp_sum(gn_norm, para_env%group)
+         CALL para_env%sum(gn_norm)
          gn_norm = SQRT(gn_norm)
          mixing_store%norm_res_buffer(ib, ispin) = gn_norm
       END DO
@@ -1319,7 +1318,7 @@ CONTAINS
             ig_global = mixing_store%ig_global_index(ig)
             gn_global(ig_global) = gn(ig)
          END DO
-         CALL mp_sum(gn_global, para_env%group)
+         CALL para_env%sum(gn_global)
 
          ! compute steps (matrix S) and residual differences (matrix Y)
          ! with respect to the present
@@ -1363,9 +1362,9 @@ CONTAINS
          END DO !jb
 
          ! normalize each column of S and Y => Snorm Ynorm
-         CALL mp_sum(norm_res, para_env%group)
-         CALL mp_sum(norm_res_up, para_env%group)
-         CALL mp_sum(norm_res_low, para_env%group)
+         CALL para_env%sum(norm_res)
+         CALL para_env%sum(norm_res_up)
+         CALL para_env%sum(norm_res_low)
          norm_res(1:nb) = 1.0_dp/SQRT(norm_res(1:nb))
          n_low = 0.0_dp
          n_up = 0.0_dp
@@ -1397,7 +1396,7 @@ CONTAINS
             END DO
          END DO
 
-         CALL mp_sum(b_matrix, para_env%group)
+         CALL para_env%sum(b_matrix)
          DO jb = 1, nb
             b_matrix(jb, jb) = b_matrix(jb, jb) + reg_par
          END DO
@@ -1412,7 +1411,7 @@ CONTAINS
                ig_global = mixing_store%ig_global_index(ig)
                res_matrix_global(ig_global) = res_matrix(ig, kb)
             END DO
-            CALL mp_sum(res_matrix_global, para_env%group)
+            CALL para_env%sum(res_matrix_global)
 
             DO jb = 1, nb
                DO ig = 1, ng
@@ -1422,7 +1421,7 @@ CONTAINS
                END DO
             END DO
          END DO
-         CALL mp_sum(a_matrix, para_env%group)
+         CALL para_env%sum(a_matrix)
 
          ! compute the two components of gn that will be used to update rho
          gn => mixing_store%res_buffer(ib, ispin)%cc
@@ -1448,7 +1447,7 @@ CONTAINS
                pgn_norm = pgn_norm + REAL(pgn(ig), dp)*REAL(pgn(ig), dp) + &
                           AIMAG(pgn(ig))*AIMAG(pgn(ig))
             END DO
-            CALL mp_sum(pgn_norm, para_env%group)
+            CALL para_env%sum(pgn_norm)
          ELSEIF (use_zgemm_rev) THEN
 
             CALL zgemv("N", nb, ng_global, cone, a_matrix(1, 1), &
@@ -1465,7 +1464,7 @@ CONTAINS
                           AIMAG(pgn(ig))*AIMAG(pgn(ig))
                ugn(ig) = ugn(ig) + gn(ig)
             END DO
-            CALL mp_sum(pgn_norm, para_env%group)
+            CALL para_env%sum(pgn_norm)
 
          ELSE
             DO ig = 1, ng
@@ -1490,7 +1489,7 @@ CONTAINS
                pgn_norm = pgn_norm + REAL(pgn(ig), dp)*REAL(pgn(ig), dp) + &
                           AIMAG(pgn(ig))*AIMAG(pgn(ig))
             END DO
-            CALL mp_sum(pgn_norm, para_env%group)
+            CALL para_env%sum(pgn_norm)
          END IF
 
          gn_norm = mixing_store%norm_res_buffer(ib, ispin)

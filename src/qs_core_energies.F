@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,7 +17,6 @@ MODULE qs_core_energies
                                               get_atomic_kind_set
    USE atprop_types,                    ONLY: atprop_array_init,&
                                               atprop_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_dot,&
                                               dbcsr_p_type,&
                                               dbcsr_type
@@ -25,7 +24,8 @@ MODULE qs_core_energies
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: oorootpi,&
                                               twopi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -182,6 +182,7 @@ CONTAINS
 !> \param calculate_forces ...
 !> \param molecular ...
 !> \param E_overlap_core ...
+!> \param atecc ...
 !> \date    30.04.2001
 !> \par History
 !>       - Force calculation added (03.06.2002,MK)
@@ -192,17 +193,18 @@ CONTAINS
 !> \version 1.0
 ! **************************************************************************************************
    SUBROUTINE calculate_ecore_overlap(qs_env, para_env, calculate_forces, molecular, &
-                                      E_overlap_core)
+                                      E_overlap_core, atecc)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN)                                :: calculate_forces
       LOGICAL, INTENT(IN), OPTIONAL                      :: molecular
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: E_overlap_core
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc
 
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_ecore_overlap'
 
-      INTEGER                                            :: atom_a, atom_b, group, handle, iatom, &
-                                                            ikind, jatom, jkind, natom, nkind
+      INTEGER                                            :: atom_a, atom_b, handle, iatom, ikind, &
+                                                            jatom, jkind, natom, nkind
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind
       LOGICAL                                            :: atenergy, only_molecule, use_virial
       REAL(KIND=dp)                                      :: aab, dab, eab, ecore_overlap, f, fab, &
@@ -212,6 +214,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3, 3)                     :: pv_loc
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atprop_type), POINTER                         :: atprop
+      TYPE(mp_comm_type)                                 :: group
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -231,7 +234,7 @@ CONTAINS
       NULLIFY (force)
       NULLIFY (particle_set)
 
-      group = para_env%group
+      group = para_env
 
       only_molecule = .FALSE.
       IF (PRESENT(molecular)) only_molecule = molecular
@@ -258,7 +261,6 @@ CONTAINS
       zeff(:) = 0.0_dp
 
       IF (calculate_forces) THEN
-         ALLOCATE (atom_of_kind(natom))
          CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind)
       END IF
 
@@ -301,6 +303,10 @@ CONTAINS
                atprop%atecc(iatom) = atprop%atecc(iatom) + 0.5_dp*f*eab
                atprop%atecc(jatom) = atprop%atecc(jatom) + 0.5_dp*f*eab
             END IF
+            IF (PRESENT(atecc)) THEN
+               atecc(iatom) = atecc(iatom) + 0.5_dp*f*eab
+               atecc(jatom) = atecc(jatom) + 0.5_dp*f*eab
+            END IF
             IF (calculate_forces) THEN
                deab(:) = rab(:)*f*(eab + fab*EXP(-aab*rab2))/rab2
                atom_a = atom_of_kind(iatom)
@@ -324,7 +330,7 @@ CONTAINS
          virial%pv_virial = virial%pv_virial + pv_loc
       END IF
 
-      CALL mp_sum(ecore_overlap, group)
+      CALL group%sum(ecore_overlap)
 
       energy%core_overlap = ecore_overlap
 
@@ -340,13 +346,15 @@ CONTAINS
 !> \brief   Calculate the self energy of the core charge distribution.
 !> \param qs_env ...
 !> \param E_self_core ...
+!> \param atecc ...
 !> \date    27.04.2001
 !> \author  MK
 !> \version 1.0
 ! **************************************************************************************************
-   SUBROUTINE calculate_ecore_self(qs_env, E_self_core)
+   SUBROUTINE calculate_ecore_self(qs_env, E_self_core, atecc)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: E_self_core
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL              :: atecc
 
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_ecore_self'
 
@@ -399,6 +407,21 @@ CONTAINS
                END DO
             END DO
          END IF
+      END IF
+      IF (PRESENT(atecc)) THEN
+         ! atomic energy
+         CALL get_qs_env(qs_env=qs_env, particle_set=particle_set, &
+                         local_particles=local_particles)
+         natom = SIZE(particle_set)
+         DO ikind = 1, SIZE(atomic_kind_set)
+            nparticle_local = local_particles%n_el(ikind)
+            CALL get_qs_kind(qs_kind_set(ikind), zeff=zeff, alpha_core_charge=alpha_core_charge)
+            es = zeff**2*SQRT(alpha_core_charge)/SQRT(twopi)
+            DO iparticle_local = 1, nparticle_local
+               iatom = local_particles%list(ikind)%array(iparticle_local)
+               atecc(iatom) = atecc(iatom) - es
+            END DO
+         END DO
       END IF
 
       CALL timestop(handle)

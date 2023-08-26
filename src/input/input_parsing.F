@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -657,7 +657,7 @@ CONTAINS
             CALL parser_get_object(parser, c_val)
             IF (c_val(1:1) /= "[" .OR. c_val(LEN_TRIM(c_val):LEN_TRIM(c_val)) /= "]") THEN
                CALL cp_abort(__LOCATION__, &
-                             "Invalid unit specifier found when parsing a number: "// &
+                             "Invalid unit specifier or function found when parsing a number: "// &
                              c_val)
             END IF
             ALLOCATE (my_unit)

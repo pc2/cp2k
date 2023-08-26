@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -50,10 +50,9 @@ MODULE cp_output_handling
                                               default_string_length
    USE machine,                         ONLY: m_mov
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_file_close,&
-                                              mp_file_delete,&
+   USE message_passing,                 ONLY: mp_file_delete,&
                                               mp_file_get_amode,&
-                                              mp_file_open
+                                              mp_file_type
    USE string_utilities,                ONLY: compress,&
                                               s2a
 #include "../base/base_uses.f90"
@@ -139,13 +138,13 @@ MODULE cp_output_handling
 !> \author fawzi
 ! **************************************************************************************************
    TYPE cp_out_flags_type
-      INTEGER :: ref_count, n_flags
-      CHARACTER(default_string_length), DIMENSION(:), POINTER :: names
-      INTEGER, DIMENSION(:), POINTER :: control_val
-      TYPE(section_vals_type), POINTER :: input
-      TYPE(cp_logger_type), POINTER :: logger
-      LOGICAL :: strict
-      INTEGER :: default_val
+      INTEGER :: ref_count = 0, n_flags = 0
+      CHARACTER(default_string_length), DIMENSION(:), POINTER :: names => NULL()
+      INTEGER, DIMENSION(:), POINTER :: control_val => NULL()
+      TYPE(section_vals_type), POINTER :: input => NULL()
+      TYPE(cp_logger_type), POINTER :: logger => NULL()
+      LOGICAL :: strict = .FALSE.
+      INTEGER :: default_val = 0
    END TYPE cp_out_flags_type
 
 CONTAINS
@@ -821,13 +820,14 @@ CONTAINS
       CHARACTER(len=default_string_length)               :: my_file_action, my_file_form, &
                                                             my_file_position, my_file_status, &
                                                             outPath
-      INTEGER                                            :: c_i_level, f_backup_level, i, iounit, &
-                                                            mpi_amode, my_backup_level, my_nbak, &
-                                                            nbak, s_backup_level, unit_nr
+      INTEGER                                            :: c_i_level, f_backup_level, i, mpi_amode, &
+                                                            my_backup_level, my_nbak, nbak, &
+                                                            s_backup_level, unit_nr
       LOGICAL                                            :: do_log, found, my_do_backup, my_local, &
                                                             my_mpi_io, my_on_file, &
                                                             my_should_output, replace
       TYPE(cp_iteration_info_type), POINTER              :: iteration_info
+      TYPE(mp_file_type)                                 :: mp_unit
       TYPE(section_vals_type), POINTER                   :: print_key
 
       my_local = .FALSE.
@@ -860,7 +860,7 @@ CONTAINS
          IF (my_mpi_io) THEN
             CALL mp_file_get_amode(mpi_io, replace, mpi_amode, TRIM(my_file_form), &
                                    TRIM(my_file_action), TRIM(my_file_status), TRIM(my_file_position))
-            replace = replace .AND. logger%para_env%ionode
+            replace = replace .AND. logger%para_env%is_source()
          END IF
 #else
          my_mpi_io = .FALSE.
@@ -877,7 +877,7 @@ CONTAINS
       IF (PRESENT(ignore_should_output)) my_should_output = my_should_output .OR. ignore_should_output
       IF (.NOT. my_should_output) RETURN
       IF (my_local .OR. &
-          logger%para_env%ionode .OR. &
+          logger%para_env%is_source() .OR. &
           my_mpi_io) THEN
 
          CALL section_vals_val_get(print_key, "FILENAME", c_val=outPath)
@@ -967,10 +967,10 @@ CONTAINS
                               file_position=my_file_position, unit_number=res)
             ELSE
                IF (replace) CALL mp_file_delete(filename)
-               CALL mp_file_open(groupid=logger%para_env%group, &
-                                 fh=iounit, filepath=filename, amode_status=mpi_amode)
+               CALL mp_unit%open(groupid=logger%para_env, &
+                                 filepath=filename, amode_status=mpi_amode)
                IF (PRESENT(fout)) fout = filename
-               res = iounit
+               res = mp_unit%get_handle()
             END IF
             IF (do_log) THEN
                unit_nr = cp_logger_get_unit_nr(logger, local=my_local)
@@ -1020,6 +1020,7 @@ CONTAINS
       CHARACTER(len=default_string_length)               :: outPath
       LOGICAL                                            :: my_local, my_mpi_io, my_on_file, &
                                                             my_should_output
+      TYPE(mp_file_type)                                 :: mp_unit
       TYPE(section_vals_type), POINTER                   :: print_key
 
       my_local = .FALSE.
@@ -1036,7 +1037,7 @@ CONTAINS
                                                           print_key_path, used_print_key=print_key), cp_p_file)
       IF (PRESENT(ignore_should_output)) my_should_output = my_should_output .OR. ignore_should_output
       IF (my_should_output .AND. (my_local .OR. &
-                                  logger%para_env%ionode .OR. &
+                                  logger%para_env%is_source() .OR. &
                                   my_mpi_io)) THEN
          CALL section_vals_val_get(print_key, "FILENAME", c_val=outPath)
          IF (my_on_file .OR. outPath .NE. '__STD_OUT__') THEN
@@ -1044,7 +1045,8 @@ CONTAINS
             IF (.NOT. my_mpi_io) THEN
                CALL close_file(unit_nr, "KEEP")
             ELSE
-               CALL mp_file_close(unit_nr)
+               CALL mp_unit%set_handle(unit_nr)
+               CALL mp_unit%close()
             END IF
             unit_nr = -1
          ELSE

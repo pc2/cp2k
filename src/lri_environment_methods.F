@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -27,7 +27,6 @@ MODULE lri_environment_methods
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_create,&
                                               dbcsr_dot,&
                                               dbcsr_get_block_diag,&
@@ -58,8 +57,7 @@ MODULE lri_environment_methods
    USE mathlib,                         ONLY: get_pseudo_inverse_diag,&
                                               get_pseudo_inverse_svd,&
                                               invmat_symm
-   USE message_passing,                 ONLY: mp_max,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_types,                        ONLY: pw_type
    USE qs_collocate_density,            ONLY: calculate_lri_rho_elec
@@ -349,9 +347,9 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin, nspins
       REAL(KIND=dp), DIMENSION(:), POINTER               :: tot_rho_r
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_type)                                   :: pmat_diag
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_type), DIMENSION(:), POINTER               :: rho_g, rho_r
 
       CALL timeset(routineN, handle)
@@ -399,9 +397,9 @@ CONTAINS
                                                             nspin
       LOGICAL                                            :: use_virial
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(lri_density_type), POINTER                    :: lri_density
       TYPE(lri_kind_type), DIMENSION(:), POINTER         :: lri_ppl_coef
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sac_lri
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -455,7 +453,7 @@ CONTAINS
       !
       IF (.NOT. calculate_forces) THEN
          DO ikind = 1, nkind
-            CALL mp_sum(lri_ppl_coef(ikind)%v_int, para_env%group)
+            CALL para_env%sum(lri_ppl_coef(ikind)%v_int)
             lri_env%lri_ppl_ints%lri_ppl(ikind)%v_int = lri_ppl_coef(ikind)%v_int
          END DO
       END IF
@@ -574,7 +572,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       TYPE(qs_rho_type), INTENT(INOUT)                   :: lri_rho_struct
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN)                                :: response_density
 
       CALL calculate_avec_lri(lri_env, lri_density, pmatrix, cell_to_index, response_density)
@@ -824,16 +822,16 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_rho_type), INTENT(INOUT)                   :: lri_rho_struct
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN)                                :: response_density
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'distribute_lri_density_on_the_grid'
 
       INTEGER                                            :: atom_a, atom_b, handle, iac, iatom, &
                                                             ikind, ilist, ispin, jatom, jkind, &
-                                                            jneighbor, nat, natom, nfa, nfb, &
-                                                            nkind, nspin
-      INTEGER, DIMENSION(:), POINTER                     :: atom_of_kind
+                                                            jneighbor, natom, nfa, nfb, nkind, &
+                                                            nspin
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind
       REAL(KIND=dp)                                      :: dab, fw, rab(3), str
       REAL(KIND=dp), DIMENSION(:), POINTER               :: aci, acj, tot_rho_r
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
@@ -851,7 +849,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
 
       CALL timeset(routineN, handle)
-      NULLIFY (aci, acj, atomic_kind, atom_of_kind, lri_coef, lri_rho, &
+      NULLIFY (aci, acj, atomic_kind, lri_coef, lri_rho, &
                nl_iterator, soo_list, rho_r, rho_g, tot_rho_r)
 
       IF (ASSOCIATED(lri_env%soo_list)) THEN
@@ -865,8 +863,6 @@ CONTAINS
          nspin = lri_density%nspin
          nkind = lri_env%lri_ints%nkind
 
-         CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, natom=nat)
-         ALLOCATE (atom_of_kind(nat))
          CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                   atom_of_kind=atom_of_kind)
 
@@ -935,7 +931,7 @@ CONTAINS
                CALL get_atomic_kind(atomic_kind=atomic_kind, natom=natom)
                DO iatom = 1, natom
                   aci => lri_coef(ikind)%acoef(iatom, :)
-                  CALL mp_sum(aci, para_env%group)
+                  CALL para_env%sum(aci)
                END DO
             END DO
 
@@ -972,8 +968,6 @@ CONTAINS
             !
             IF (lri_env%exact_1c_terms) CALL dbcsr_release(pmat_diag)
          END DO
-
-         DEALLOCATE (atom_of_kind)
 
       END IF
 
@@ -1109,10 +1103,10 @@ CONTAINS
       REAL(KIND=dp)                                      :: dmax_aabb, dmax_ab, dmax_aba, dmax_abb, &
                                                             dmax_oo
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(lri_int_rho_type), POINTER                    :: lriir
       TYPE(lri_int_type), POINTER                        :: lrii
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(section_vals_type), POINTER                   :: input
@@ -1149,11 +1143,11 @@ CONTAINS
       END DO
 
       CALL neighbor_list_iterator_release(nl_iterator)
-      CALL mp_max(dmax_ab, para_env%group)
-      CALL mp_max(dmax_oo, para_env%group)
-      CALL mp_max(dmax_aba, para_env%group)
-      CALL mp_max(dmax_abb, para_env%group)
-      CALL mp_max(dmax_aabb, para_env%group)
+      CALL para_env%max(dmax_ab)
+      CALL para_env%max(dmax_oo)
+      CALL para_env%max(dmax_aba)
+      CALL para_env%max(dmax_abb)
+      CALL para_env%max(dmax_aabb)
 
       logger => cp_get_default_logger()
       iunit = cp_print_key_unit_nr(logger, input, "PRINT%PROGRAM_RUN_INFO", &
@@ -1258,8 +1252,8 @@ CONTAINS
       REAL(KIND=dp) :: abai_mem, coef_mem, oint_mem, overlap_error, pairs_ff, pairs_sr, pairs_tt, &
          ppli_mem, ppx, rho_1c, rho_ff, rho_sr, rho_tt, rhos_mem
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(lri_environment_type), POINTER                :: lri_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(section_vals_type), POINTER                   :: input
 
       my_ltddfpt = .FALSE.
@@ -1277,18 +1271,18 @@ CONTAINS
          logger => cp_get_default_logger()
          iunit = cp_print_key_unit_nr(logger, input, "PRINT%PROGRAM_RUN_INFO", extension=".Log")
          pairs_tt = lri_env%stat%pairs_tt
-         CALL mp_sum(pairs_tt, para_env%group)
+         CALL para_env%sum(pairs_tt)
          pairs_sr = lri_env%stat%pairs_sr
-         CALL mp_sum(pairs_sr, para_env%group)
+         CALL para_env%sum(pairs_sr)
          pairs_ff = lri_env%stat%pairs_ff
-         CALL mp_sum(pairs_ff, para_env%group)
+         CALL para_env%sum(pairs_ff)
          overlap_error = lri_env%stat%overlap_error
-         CALL mp_sum(overlap_error, para_env%group)
+         CALL para_env%sum(overlap_error)
          rho_tt = -lri_env%stat%rho_tt
          rho_sr = lri_env%stat%rho_sr
-         CALL mp_sum(rho_sr, para_env%group)
+         CALL para_env%sum(rho_sr)
          rho_ff = lri_env%stat%rho_ff
-         CALL mp_sum(rho_ff, para_env%group)
+         CALL para_env%sum(rho_ff)
          IF (lri_env%exact_1c_terms) THEN
             rho_1c = lri_env%stat%rho_1c
          ELSE
@@ -1296,16 +1290,16 @@ CONTAINS
          END IF
          ppx = 8.e-6_dp
          coef_mem = lri_env%stat%coef_mem*ppx
-         CALL mp_sum(coef_mem, para_env%group)
+         CALL para_env%sum(coef_mem)
          oint_mem = lri_env%stat%oint_mem*ppx
-         CALL mp_sum(oint_mem, para_env%group)
+         CALL para_env%sum(oint_mem)
          rhos_mem = lri_env%stat%rhos_mem*ppx
-         CALL mp_sum(rhos_mem, para_env%group)
+         CALL para_env%sum(rhos_mem)
          abai_mem = lri_env%stat%abai_mem*ppx
-         CALL mp_sum(abai_mem, para_env%group)
+         CALL para_env%sum(abai_mem)
          IF (lri_env%ppl_ri) THEN
             ppli_mem = lri_env%stat%ppli_mem*ppx
-            CALL mp_sum(ppli_mem, para_env%group)
+            CALL para_env%sum(ppli_mem)
          ELSE
             ppli_mem = 0.0_dp
          END IF

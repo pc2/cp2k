@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -28,8 +28,8 @@ MODULE pexsi_types
                                               dbcsr_scale,&
                                               dbcsr_type
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_dims_create,&
-                                              mp_environ
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_dims_create
    USE pexsi_interface,                 ONLY: cp_pexsi_get_options,&
                                               cp_pexsi_options,&
                                               cp_pexsi_plan_finalize,&
@@ -94,8 +94,8 @@ MODULE pexsi_types
       TYPE(dbcsr_p_type), DIMENSION(:), &
          POINTER                               :: matrix_w => NULL()
       INTEGER(KIND=C_INTPTR_T)                 :: plan
-      INTEGER                                  :: nspin, num_ranks_per_pole, mp_group
-
+      INTEGER                                  :: nspin, num_ranks_per_pole
+      TYPE(mp_comm_type) :: mp_group
       TYPE(dbcsr_type), DIMENSION(:), &
          POINTER                               :: max_ev_vector
       TYPE(dbcsr_type)                         :: csr_sparsity
@@ -119,16 +119,18 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE lib_pexsi_init(pexsi_env, mp_group, nspin)
       TYPE(lib_pexsi_env), INTENT(INOUT)                 :: pexsi_env
-      INTEGER, INTENT(IN)                                :: mp_group, nspin
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: mp_group
+      INTEGER, INTENT(IN)                                :: nspin
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'lib_pexsi_init'
 
-      INTEGER                                            :: handle, ispin, mynode, npSymbFact, &
-                                                            numnodes, unit_nr
+      INTEGER                                            :: handle, ispin, npSymbFact, &
+                                                            unit_nr
       TYPE(cp_logger_type), POINTER                      :: logger
 
       logger => cp_get_default_logger()
-      IF (logger%para_env%ionode) THEN
+      IF (logger%para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger, local=.TRUE.)
       ELSE
          unit_nr = -1
@@ -140,45 +142,46 @@ CONTAINS
       CALL cite_reference(Lin2013)
 
       pexsi_env%mp_group = mp_group
-      CALL mp_environ(numnodes, mynode, pexsi_env%mp_group)
+      ASSOCIATE (numnodes => pexsi_env%mp_group%num_pe, mynode => pexsi_env%mp_group%mepos)
 
-      ! Use all nodes available per pole by default or if the user tries to use
-      ! more nodes than MPI size
-      IF ((pexsi_env%num_ranks_per_pole .GT. numnodes) &
-          .OR. (pexsi_env%num_ranks_per_pole .EQ. 0)) THEN
-         pexsi_env%num_ranks_per_pole = numnodes
-      END IF
+         ! Use all nodes available per pole by default or if the user tries to use
+         ! more nodes than MPI size
+         IF ((pexsi_env%num_ranks_per_pole .GT. numnodes) &
+             .OR. (pexsi_env%num_ranks_per_pole .EQ. 0)) THEN
+            pexsi_env%num_ranks_per_pole = numnodes
+         END IF
 
-      ! Find num_ranks_per_pole from user input MIN_RANKS_PER_POLE s.t. num_ranks_per_pole
-      ! is the smallest number greater or equal to min_ranks_per_pole that divides
-      ! MPI size without remainder.
-      DO WHILE (MOD(numnodes, pexsi_env%num_ranks_per_pole) .NE. 0)
-         pexsi_env%num_ranks_per_pole = pexsi_env%num_ranks_per_pole + 1
-      END DO
+         ! Find num_ranks_per_pole from user input MIN_RANKS_PER_POLE s.t. num_ranks_per_pole
+         ! is the smallest number greater or equal to min_ranks_per_pole that divides
+         ! MPI size without remainder.
+         DO WHILE (MOD(numnodes, pexsi_env%num_ranks_per_pole) .NE. 0)
+            pexsi_env%num_ranks_per_pole = pexsi_env%num_ranks_per_pole + 1
+         END DO
 
-      CALL cp_pexsi_get_options(pexsi_env%options, npSymbFact=npSymbFact)
-      IF ((npSymbFact .GT. pexsi_env%num_ranks_per_pole) .OR. (npSymbFact .EQ. 0)) THEN
-         ! Use maximum possible number of ranks for symbolic factorization
-         CALL cp_pexsi_set_options(pexsi_env%options, npSymbFact=pexsi_env%num_ranks_per_pole)
-      END IF
+         CALL cp_pexsi_get_options(pexsi_env%options, npSymbFact=npSymbFact)
+         IF ((npSymbFact .GT. pexsi_env%num_ranks_per_pole) .OR. (npSymbFact .EQ. 0)) THEN
+            ! Use maximum possible number of ranks for symbolic factorization
+            CALL cp_pexsi_set_options(pexsi_env%options, npSymbFact=pexsi_env%num_ranks_per_pole)
+         END IF
 
-      ! Create dimensions for MPI cartesian grid for PEXSI
-      pexsi_env%mp_dims = 0
-      CALL mp_dims_create(pexsi_env%num_ranks_per_pole, pexsi_env%mp_dims)
+         ! Create dimensions for MPI cartesian grid for PEXSI
+         pexsi_env%mp_dims = 0
+         CALL mp_dims_create(pexsi_env%num_ranks_per_pole, pexsi_env%mp_dims)
 
-      ! allocations with nspin
-      pexsi_env%nspin = nspin
-      ALLOCATE (pexsi_env%kTS(nspin))
-      pexsi_env%kTS(:) = 0.0_dp
-      ALLOCATE (pexsi_env%max_ev_vector(nspin))
-      ALLOCATE (pexsi_env%matrix_w(nspin))
-      DO ispin = 1, pexsi_env%nspin
-         ALLOCATE (pexsi_env%matrix_w(ispin)%matrix)
-      END DO
+         ! allocations with nspin
+         pexsi_env%nspin = nspin
+         ALLOCATE (pexsi_env%kTS(nspin))
+         pexsi_env%kTS(:) = 0.0_dp
+         ALLOCATE (pexsi_env%max_ev_vector(nspin))
+         ALLOCATE (pexsi_env%matrix_w(nspin))
+         DO ispin = 1, pexsi_env%nspin
+            ALLOCATE (pexsi_env%matrix_w(ispin)%matrix)
+         END DO
 
-      ! Initialize PEXSI
-      pexsi_env%plan = cp_pexsi_plan_initialize(pexsi_env%mp_group, pexsi_env%mp_dims(1), &
-                                                pexsi_env%mp_dims(2), mynode)
+         ! Initialize PEXSI
+         pexsi_env%plan = cp_pexsi_plan_initialize(pexsi_env%mp_group, pexsi_env%mp_dims(1), &
+                                                   pexsi_env%mp_dims(2), mynode)
+      END ASSOCIATE
 
       pexsi_env%do_adaptive_tol_nel = .FALSE.
 
@@ -264,13 +267,13 @@ CONTAINS
       TYPE(lib_pexsi_env), INTENT(IN)                    :: pexsi_env
       INTEGER, INTENT(IN)                                :: unit_nr
 
-      INTEGER                                            :: mynode, npSymbFact, numnodes, numPole, &
-                                                            ordering, rowOrdering
+      INTEGER                                            :: npSymbFact, numnodes, numPole, ordering, &
+                                                            rowOrdering
       REAL(KIND=dp)                                      :: gap, muInertiaExpansion, &
                                                             muInertiaTolerance, muMax0, muMin0, &
                                                             muPEXSISafeGuard, temperature
 
-      CALL mp_environ(numnodes, mynode, pexsi_env%mp_group)
+      numnodes = pexsi_env%mp_group%num_pe
 
       CALL cp_pexsi_get_options(pexsi_env%options, temperature=temperature, gap=gap, &
                                 numPole=numPole, muMin0=muMin0, muMax0=muMax0, muInertiaTolerance= &

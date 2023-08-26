@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,16 +15,12 @@
 MODULE kpoint_types
    USE cp_blacs_env,                    ONLY: cp_blacs_env_release,&
                                               cp_blacs_env_type
-   USE cp_fm_types,                     ONLY: cp_fm_p_type,&
-                                              cp_fm_release
+   USE cp_fm_types,                     ONLY: cp_fm_release,&
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_env,                     ONLY: cp_cart_release,&
-                                              cp_para_env_release
-   USE cp_para_types,                   ONLY: cp_para_cart_type,&
-                                              cp_para_env_type
    USE input_cp2k_kpoints,              ONLY: use_complex_wfn,&
                                               use_real_wfn
    USE input_section_types,             ONLY: section_vals_get,&
@@ -33,7 +29,11 @@ MODULE kpoint_types
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: twopi
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
    USE physcon,                         ONLY: angstrom
+   USE qs_diis_types,                   ONLY: qs_diis_b_release_kp,&
+                                              qs_diis_buffer_type_kp
    USE qs_matrix_pools,                 ONLY: mpools_release,&
                                               qs_matrix_pools_type
    USE qs_mo_types,                     ONLY: deallocate_mo_set,&
@@ -73,8 +73,8 @@ MODULE kpoint_types
       REAL(KIND=dp), DIMENSION(3)                       :: xkp
       LOGICAL                                           :: is_local
       TYPE(mo_set_type), DIMENSION(:, :), POINTER     :: mos
-      TYPE(cp_fm_p_type), DIMENSION(:, :), POINTER      :: pmat
-      TYPE(cp_fm_p_type), DIMENSION(:, :), POINTER      :: wmat
+      TYPE(cp_fm_type), DIMENSION(:, :), POINTER      :: pmat
+      TYPE(cp_fm_type), DIMENSION(:, :), POINTER      :: wmat
    END TYPE kpoint_env_type
 
    TYPE kpoint_env_p_type
@@ -119,10 +119,6 @@ MODULE kpoint_types
 !> \param xkp     kpoint coordinates
 !> \param wkp     kpoint weights
 !> \param para_env 'global' parallel environment
-!> \param cart 2d distribution of the processors for the kpoints,
-!>        a column work together on the same kpoint
-!> \param para_env_full the global para env that contains all the kpoints,
-!>        this is just the cart as para_env
 !> \param para_env_kp parallel environment of the kpoint calculation
 !> \param para_env_inter_kp parallel environment between kpoints
 !> \param iogrp  this kpoint group has the IO processor
@@ -149,11 +145,9 @@ MODULE kpoint_types
       REAL(KIND=dp), DIMENSION(:, :), POINTER :: xkp => Null()
       REAL(KIND=dp), DIMENSION(:), POINTER    :: wkp => Null()
       ! parallel environment
-      TYPE(cp_para_env_type), POINTER         :: para_env => Null()
+      TYPE(mp_para_env_type), POINTER         :: para_env => Null()
       TYPE(cp_blacs_env_type), POINTER        :: blacs_env_all => Null()
-      TYPE(cp_para_cart_type), POINTER        :: cart => Null()
-      TYPE(cp_para_env_type), POINTER         :: para_env_full => Null(), &
-                                                 para_env_kp => Null(), &
+      TYPE(mp_para_env_type), POINTER         :: para_env_kp => Null(), &
                                                  para_env_inter_kp => Null()
       LOGICAL                                 :: iogrp
       INTEGER                                 :: nkp_groups
@@ -170,6 +164,7 @@ MODULE kpoint_types
       TYPE(kpoint_sym_p_type), DIMENSION(:), &
          POINTER                              :: kp_sym => Null()
       TYPE(qs_matrix_pools_type), POINTER     :: mpools => Null()
+      TYPE(qs_diis_buffer_type_kp), POINTER   :: scf_diis_buffer => Null()
    END TYPE kpoint_type
 
 ! **************************************************************************************************
@@ -205,8 +200,7 @@ CONTAINS
 
       NULLIFY (kpoint%para_env)
       NULLIFY (kpoint%blacs_env_all)
-      NULLIFY (kpoint%cart)
-      NULLIFY (kpoint%para_env_full, kpoint%para_env_kp, kpoint%para_env_inter_kp)
+      NULLIFY (kpoint%para_env_kp, kpoint%para_env_inter_kp)
       NULLIFY (kpoint%blacs_env)
       kpoint%nkp_groups = 0
       kpoint%iogrp = .FALSE.
@@ -249,11 +243,9 @@ CONTAINS
          CALL cp_blacs_env_release(kpoint%blacs_env)
          CALL cp_blacs_env_release(kpoint%blacs_env_all)
 
-         CALL cp_cart_release(kpoint%cart)
-         CALL cp_para_env_release(kpoint%para_env)
-         CALL cp_para_env_release(kpoint%para_env_full)
-         CALL cp_para_env_release(kpoint%para_env_kp)
-         CALL cp_para_env_release(kpoint%para_env_inter_kp)
+         CALL mp_para_env_release(kpoint%para_env)
+         CALL mp_para_env_release(kpoint%para_env_kp)
+         CALL mp_para_env_release(kpoint%para_env_inter_kp)
 
          IF (ASSOCIATED(kpoint%cell_to_index)) DEALLOCATE (kpoint%cell_to_index)
          IF (ASSOCIATED(kpoint%index_to_cell)) DEALLOCATE (kpoint%index_to_cell)
@@ -270,6 +262,11 @@ CONTAINS
                CALL kpoint_sym_release(kpoint%kp_sym(ik)%kpoint_sym)
             END DO
             DEALLOCATE (kpoint%kp_sym)
+         END IF
+
+         IF (ASSOCIATED(kpoint%scf_diis_buffer)) THEN
+            CALL qs_diis_b_release_kp(kpoint%scf_diis_buffer)
+            DEALLOCATE (kpoint%scf_diis_buffer)
          END IF
 
          DEALLOCATE (kpoint)
@@ -296,10 +293,6 @@ CONTAINS
 !> \param wkp           kpoint weights
 !> \param para_env      'global' parallel environment
 !> \param blacs_env_all BLACS env for the total environment
-!> \param cart          2d distribution of the processors for the kpoints,
-!>        a column work together on the same kpoint
-!> \param para_env_full the global para env that contains all the kpoints,
-!>        this is just the cart as para_env
 !> \param para_env_kp   parallel environment of the kpoint calculation
 !> \param para_env_inter_kp   parallel environment between kpoints
 !> \param blacs_env     BLACS env for the kpoint group
@@ -314,7 +307,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE get_kpoint_info(kpoint, kp_scheme, nkp_grid, kp_shift, symmetry, verbose, &
                               full_grid, use_real_wfn, eps_geo, parallel_group_size, kp_range, nkp, xkp, wkp, &
-                              para_env, blacs_env_all, cart, para_env_full, para_env_kp, para_env_inter_kp, blacs_env, &
+                              para_env, blacs_env_all, para_env_kp, para_env_inter_kp, blacs_env, &
                               kp_env, mpools, iogrp, nkp_groups, kp_dist, cell_to_index, sab_nl)
       TYPE(kpoint_type), INTENT(IN)                      :: kpoint
       CHARACTER(LEN=*), OPTIONAL                         :: kp_scheme
@@ -328,11 +321,9 @@ CONTAINS
       INTEGER, OPTIONAL                                  :: nkp
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: xkp
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: wkp
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env_all
-      TYPE(cp_para_cart_type), OPTIONAL, POINTER         :: cart
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env_full, para_env_kp, &
-                                                            para_env_inter_kp
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_kp, para_env_inter_kp
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env
       TYPE(kpoint_env_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: kp_env
@@ -359,8 +350,6 @@ CONTAINS
       IF (PRESENT(xkp)) xkp => kpoint%xkp
 
       IF (PRESENT(para_env)) para_env => kpoint%para_env
-      IF (PRESENT(cart)) cart => kpoint%cart
-      IF (PRESENT(para_env_full)) para_env_full => kpoint%para_env_full
       IF (PRESENT(para_env_kp)) para_env_kp => kpoint%para_env_kp
       IF (PRESENT(para_env_inter_kp)) para_env_inter_kp => kpoint%para_env_inter_kp
       IF (PRESENT(blacs_env_all)) blacs_env_all => kpoint%blacs_env_all
@@ -397,10 +386,6 @@ CONTAINS
 !> \param wkp           kpoint weights
 !> \param para_env      'global' parallel environment
 !> \param blacs_env_all BLACS env for the total environment
-!> \param cart          2d distribution of the processors for the kpoints,
-!>        a column work together on the same kpoint
-!> \param para_env_full the global para env that contains all the kpoints,
-!>        this is just the cart as para_env
 !> \param para_env_kp   parallel environment of the kpoint calculation
 !> \param para_env_inter_kp   parallel environment between kpoints
 !> \param blacs_env     BLACS env for the kpoint group
@@ -415,7 +400,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE set_kpoint_info(kpoint, kp_scheme, nkp_grid, kp_shift, symmetry, verbose, &
                               full_grid, use_real_wfn, eps_geo, parallel_group_size, kp_range, nkp, xkp, wkp, &
-                              para_env, blacs_env_all, cart, para_env_full, para_env_kp, para_env_inter_kp, blacs_env, &
+                              para_env, blacs_env_all, para_env_kp, para_env_inter_kp, blacs_env, &
                               kp_env, mpools, iogrp, nkp_groups, kp_dist, cell_to_index, sab_nl)
       TYPE(kpoint_type), INTENT(INOUT)                   :: kpoint
       CHARACTER(LEN=*), OPTIONAL                         :: kp_scheme
@@ -429,11 +414,9 @@ CONTAINS
       INTEGER, OPTIONAL                                  :: nkp
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: xkp
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: wkp
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env_all
-      TYPE(cp_para_cart_type), OPTIONAL, POINTER         :: cart
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env_full, para_env_kp, &
-                                                            para_env_inter_kp
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_kp, para_env_inter_kp
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env
       TYPE(kpoint_env_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: kp_env
@@ -460,8 +443,6 @@ CONTAINS
       IF (PRESENT(xkp)) kpoint%xkp => xkp
 
       IF (PRESENT(para_env)) kpoint%para_env => para_env
-      IF (PRESENT(cart)) kpoint%cart => cart
-      IF (PRESENT(para_env_full)) kpoint%para_env_full => para_env_full
       IF (PRESENT(para_env_kp)) kpoint%para_env_kp => para_env_kp
       IF (PRESENT(para_env_inter_kp)) kpoint%para_env_inter_kp => para_env_inter_kp
       IF (PRESENT(blacs_env_all)) kpoint%blacs_env_all => blacs_env_all
@@ -702,25 +683,8 @@ CONTAINS
             DEALLOCATE (kp_env%mos)
          END IF
 
-         IF (ASSOCIATED(kp_env%pmat)) THEN
-            DO is = 1, SIZE(kp_env%pmat, 2)
-               DO ic = 1, SIZE(kp_env%pmat, 1)
-                  CALL cp_fm_release(kp_env%pmat(ic, is)%matrix)
-                  DEALLOCATE (kp_env%pmat(ic, is)%matrix)
-               END DO
-            END DO
-            DEALLOCATE (kp_env%pmat)
-         END IF
-
-         IF (ASSOCIATED(kp_env%wmat)) THEN
-            DO is = 1, SIZE(kp_env%wmat, 2)
-               DO ic = 1, SIZE(kp_env%wmat, 1)
-                  CALL cp_fm_release(kp_env%wmat(ic, is)%matrix)
-                  DEALLOCATE (kp_env%wmat(ic, is)%matrix)
-               END DO
-            END DO
-            DEALLOCATE (kp_env%wmat)
-         END IF
+         CALL cp_fm_release(kp_env%pmat)
+         CALL cp_fm_release(kp_env%wmat)
 
          DEALLOCATE (kp_env)
 

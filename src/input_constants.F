@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -225,6 +225,12 @@ MODULE input_constants
    INTEGER, PARAMETER, PUBLIC               :: do_gapw_gcs = 1, &
                                                do_gapw_gct = 2, &
                                                do_gapw_log = 3
+
+   INTEGER, PARAMETER, PUBLIC               :: gapw_1c_orb = 1000, &
+                                               gapw_1c_small = 1002, &
+                                               gapw_1c_medium = 1003, &
+                                               gapw_1c_large = 1004, &
+                                               gapw_1c_very_large = 1005
 
    INTEGER, PARAMETER, PUBLIC               :: do_pwgrid_spherical = 1, &
                                                do_pwgrid_ns_fullspace = 2, &
@@ -555,6 +561,10 @@ MODULE input_constants
                                                xc_funct_b3lyp = 10, &
                                                xc_funct_pbe0 = 11, &
                                                xc_funct_beefvdw = 12
+   INTEGER, PARAMETER, PUBLIC               :: fxc_none = 0, &
+                                               fxc_funct_pade = 1, &
+                                               fxc_funct_lda = 2, &
+                                               fxc_funct_gga = 3
    INTEGER, PARAMETER, PUBLIC               :: sic_none = 0, &
                                                sic_mauri_us = 1, &
                                                sic_mauri_spz = 2, &
@@ -640,6 +650,14 @@ MODULE input_constants
    INTEGER, PARAMETER, PUBLIC               :: mao_basis_orb = 2000, &
                                                mao_basis_prim = 2001, &
                                                mao_basis_ext = 2002
+
+   ! IAO
+   INTEGER, PARAMETER, PUBLIC               :: do_iaoloc_pm2 = 100, &
+                                               do_iaoloc_pm4 = 200, &
+                                               do_iaoloc_l1 = 300, &
+                                               do_iaoloc_enone = 1000, &
+                                               do_iaoloc_energy = 1001, &
+                                               do_iaoloc_occ = 1002
 
    ! X-Ray spectra Calculation
    INTEGER, PARAMETER, PUBLIC               :: xas_none = 0, &
@@ -877,9 +895,6 @@ MODULE input_constants
                                                broy_mix_new = 5, &
                                                multisec_mix = 6
 
-   ! Diagonalization library
-   INTEGER, PARAMETER, PUBLIC               :: do_diag_elpa = 1, &
-                                               do_diag_scalapack = 2
    ! FFT library
    ! these might need sync with fft_lib.F
    INTEGER, PARAMETER, PUBLIC               :: do_fft_sg = 1, &
@@ -910,6 +925,9 @@ MODULE input_constants
                                                gaussian_env = 2, &
                                                ramp_env = 3, &
                                                custom_env = 4
+
+   INTEGER, PARAMETER, PUBLIC               :: proj_mo_ref_scf = 1, &
+                                               proj_mo_ref_xas_tdp = 2
 
    ! how to solve polarizable force fields
    INTEGER, PARAMETER, PUBLIC               :: do_fist_pol_none = 1, &
@@ -1047,7 +1065,10 @@ MODULE input_constants
                                                kp_weights_W_uniform = 12, &
                                                kp_weights_W_tailored = 13, &
                                                gw_gf_mic = 14, &
-                                               gw_gf_gamma = 15
+                                               gw_gf_gamma = 15, &
+                                               soc_none = 16, &
+                                               soc_lda = 17, &
+                                               soc_pbe = 18
 
    ! periodic RESP parameters
    INTEGER, PARAMETER, PUBLIC               :: do_resp_x_dir = 0, &
@@ -1076,10 +1097,14 @@ MODULE input_constants
                                                do_lri_opt_coeff = 1, &
                                                do_lri_opt_exps = 2
 
-   ! Active smape model parameters
+   ! Active space model parameters
    INTEGER, PARAMETER, PUBLIC               :: hf_model = 100, &
                                                rsdft_model = 101, &
                                                dmft_model = 102
+
+   ! Active space external solvers
+   INTEGER, PARAMETER, PUBLIC               :: no_solver = 200, &
+                                               qiskit_solver = 201
 
    ! callgraph parameters
    INTEGER, PARAMETER, PUBLIC               :: callgraph_none = 0, &

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -19,6 +19,7 @@ MODULE dg_rho0_types
                                               do_ewald_pme,&
                                               do_ewald_spme
    USE pw_types,                        ONLY: REALDATA3D,&
+                                              REALSPACE,&
                                               pw_create,&
                                               pw_release,&
                                               pw_type
@@ -40,13 +41,13 @@ MODULE dg_rho0_types
 !>              zet = Gaussian exponent
 ! **************************************************************************************************
    TYPE dg_rho0_type
-      INTEGER :: TYPE
-      INTEGER :: grid
-      INTEGER :: kind
-      REAL(KIND=dp) :: cutoff_radius
-      REAL(KIND=dp), DIMENSION(:), POINTER :: gcc
-      REAL(KIND=dp), DIMENSION(:), POINTER :: zet
-      TYPE(pw_type), POINTER :: density
+      INTEGER :: TYPE = do_ewald_none
+      INTEGER :: grid = 0
+      INTEGER :: kind = 0
+      REAL(KIND=dp) :: cutoff_radius = 0.0_dp
+      REAL(KIND=dp), DIMENSION(:), POINTER :: gcc => NULL()
+      REAL(KIND=dp), DIMENSION(:), POINTER :: zet => NULL()
+      TYPE(pw_type), POINTER :: density => NULL()
    END TYPE dg_rho0_type
 
 CONTAINS
@@ -121,13 +122,6 @@ CONTAINS
       TYPE(dg_rho0_type), POINTER                        :: dg_rho0
 
       ALLOCATE (dg_rho0)
-      NULLIFY (dg_rho0%gcc)
-      NULLIFY (dg_rho0%zet)
-      dg_rho0%cutoff_radius = 0.0_dp
-      dg_rho0%grid = 0
-      dg_rho0%kind = 0
-      dg_rho0%type = do_ewald_none
-      NULLIFY (dg_rho0%density)
 
    END SUBROUTINE dg_rho0_create
 
@@ -177,10 +171,10 @@ CONTAINS
       END IF
       SELECT CASE (dg_rho0%type)
       CASE (do_ewald_ewald)
-         CALL pw_create(dg_rho0%density, pw_grid, REALDATA3D)
+         CALL pw_create(dg_rho0%density, pw_grid, REALDATA3D, REALSPACE)
          CALL dg_rho0_pme_gauss(dg_rho0%density, dg_rho0%zet(1))
       CASE (do_ewald_pme)
-         CALL pw_create(dg_rho0%density, pw_grid, REALDATA3D)
+         CALL pw_create(dg_rho0%density, pw_grid, REALDATA3D, REALSPACE)
          CALL dg_rho0_pme_gauss(dg_rho0%density, dg_rho0%zet(1))
       CASE (do_ewald_spme)
          CPABORT('SPME type not implemented')
@@ -201,7 +195,6 @@ CONTAINS
       INTEGER, PARAMETER                                 :: IMPOSSIBLE = 10000
 
       INTEGER                                            :: gpt, l0, ln, lp, m0, mn, mp, n0, nn, np
-      INTEGER, DIMENSION(:), POINTER                     :: ghat
       INTEGER, DIMENSION(:, :), POINTER                  :: bds
       REAL(KIND=dp)                                      :: const, e_gsq
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: rho0
@@ -235,32 +228,32 @@ CONTAINS
       rho0 => dg_rho0%cr3d
 
       DO gpt = 1, pw_grid%ngpts_cut_local
-         ghat => pw_grid%g_hat(:, gpt)
+         ASSOCIATE (ghat => pw_grid%g_hat(:, gpt))
 
-         lp = pw_grid%mapl%pos(ghat(1))
-         ln = pw_grid%mapl%neg(ghat(1))
-         mp = pw_grid%mapm%pos(ghat(2))
-         mn = pw_grid%mapm%neg(ghat(2))
-         np = pw_grid%mapn%pos(ghat(3))
-         nn = pw_grid%mapn%neg(ghat(3))
+            lp = pw_grid%mapl%pos(ghat(1))
+            ln = pw_grid%mapl%neg(ghat(1))
+            mp = pw_grid%mapm%pos(ghat(2))
+            mn = pw_grid%mapm%neg(ghat(2))
+            np = pw_grid%mapn%pos(ghat(3))
+            nn = pw_grid%mapn%neg(ghat(3))
 
-         e_gsq = EXP(-const*pw_grid%gsq(gpt))/pw_grid%vol
+            e_gsq = EXP(-const*pw_grid%gsq(gpt))/pw_grid%vol
 
-         !*apsi
-         lp = lp + bds(1, 1)
-         mp = mp + bds(1, 2)
-         np = np + bds(1, 3)
-         ln = ln + bds(1, 1)
-         mn = mn + bds(1, 2)
-         nn = nn + bds(1, 3)
+            lp = lp + bds(1, 1)
+            mp = mp + bds(1, 2)
+            np = np + bds(1, 3)
+            ln = ln + bds(1, 1)
+            mn = mn + bds(1, 2)
+            nn = nn + bds(1, 3)
 
-         rho0(lp, mp, np) = e_gsq
-         rho0(ln, mn, nn) = e_gsq
+            rho0(lp, mp, np) = e_gsq
+            rho0(ln, mn, nn) = e_gsq
 
-         IF (ghat(1) == l0 .OR. ghat(2) == m0 .OR. ghat(3) == n0) THEN
-            rho0(lp, mp, np) = 0.0_dp
-            rho0(ln, mn, nn) = 0.0_dp
-         END IF
+            IF (ghat(1) == l0 .OR. ghat(2) == m0 .OR. ghat(3) == n0) THEN
+               rho0(lp, mp, np) = 0.0_dp
+               rho0(ln, mn, nn) = 0.0_dp
+            END IF
+         END ASSOCIATE
 
       END DO
 

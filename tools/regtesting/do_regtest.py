@@ -20,7 +20,9 @@ import time
 try:
     from typing import Literal  # not available before Python 3.8
 
-    TestStatus = Literal["OK", "WRONG RESULT", "RUNTIME FAIL", "TIMED OUT"]
+    TestStatus = Literal[
+        "OK", "WRONG RESULT", "RUNTIME FAIL", "TIMED OUT", "HUGE OUTPUT"
+    ]
 except ImportError:
     TestStatus = str  # type: ignore
 
@@ -39,6 +41,7 @@ KEEPALIVE_SKIP_DIRS = [
     "QS/regtest-mp2-grad-2",
 ]
 
+
 # ======================================================================================
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Runs CP2K regression test suite.")
@@ -49,7 +52,14 @@ async def main() -> None:
     parser.add_argument("--timeout", type=int, default=400)
     parser.add_argument("--maxerrors", type=int, default=50)
     parser.add_argument("--mpiexec", default="mpiexec")
-    parser.add_argument("--keepalive", dest="keepalive", action="store_true")
+    help = "Runs only the first test of each directory."
+    parser.add_argument("--smoketest", dest="smoketest", action="store_true", help=help)
+    help = "Runs tests under Valgrind memcheck. Best used together with --keepalive."
+    parser.add_argument("--valgrind", action="store_true", help=help)
+    help = "Use a persistent cp2k-shell process to reduce startup time."
+    parser.add_argument("--keepalive", dest="keepalive", action="store_true", help=help)
+    help = "Flag slow tests in the final summary and status report."
+    parser.add_argument("--flagslow", dest="flagslow", action="store_true", help=help)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--restrictdir", action="append")
     parser.add_argument("--skipdir", action="append")
@@ -79,7 +89,10 @@ async def main() -> None:
     print(f"Timeout [s]:    {cfg.timeout}")
     print(f"Work base dir:  {cfg.work_base_dir}")
     print(f"MPI exec:       {cfg.mpiexec}")
+    print(f"Smoke test:     {cfg.smoketest}")
+    print(f"Valgrind:       {cfg.valgrind}")
     print(f"Keepalive:      {cfg.keepalive}")
+    print(f"Flag slow:      {cfg.flag_slow}")
     print(f"Debug:          {cfg.debug}")
     print(f"ARCH:           {cfg.arch}")
     print(f"VERSION:        {cfg.version}")
@@ -91,12 +104,17 @@ async def main() -> None:
     shutil.copytree(cfg.cp2k_root / "tests", cfg.work_base_dir)
     print(" done")
 
-    # Discover unit tests.
-    unittest_batch = Batch("UNIT", cfg)
-    unittest_batch.workdir.mkdir()
-    unittest_glob = (cfg.cp2k_root / "exe" / cfg.arch).glob(f"*_unittest.{cfg.version}")
-    for exe in unittest_glob:
-        unittest_batch.unittests.append(Unittest(exe.stem, unittest_batch.workdir))
+    batches: List[Batch] = []
+
+    # Read UNIT_TESTS.
+    unit_tests_fn = cfg.cp2k_root / "tests" / "UNIT_TESTS"
+    for line in unit_tests_fn.read_text(encoding="utf8").split("\n"):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            batch = Batch(f"UNIT/{line}", cfg)
+            batch.workdir.mkdir(parents=True)
+            batch.unittests.append(Unittest(line.split()[0], batch.workdir))
+            batches.append(batch)
 
     # Read TEST_TYPES.
     test_types_fn = cfg.cp2k_root / "tests" / "TEST_TYPES"
@@ -105,7 +123,6 @@ async def main() -> None:
     test_types += [TestType(l) for l in lines[1 : int(lines[0]) + 1]]
 
     # Read TEST_DIRS.
-    batches: List[Batch] = [unittest_batch]
     test_dirs_fn = cfg.cp2k_root / "tests" / "TEST_DIRS"
     for line in test_dirs_fn.read_text(encoding="utf8").split("\n"):
         line = line.split("#", 1)[0].strip()
@@ -120,6 +137,8 @@ async def main() -> None:
             if not line:
                 continue
             batch.regtests.append(Regtest(line, test_types, batch.workdir))
+            if cfg.smoketest:
+                break  # run only one test per directory
         batches.append(batch)
 
     # Create async tasks.
@@ -133,6 +152,8 @@ async def main() -> None:
         elif any(re.fullmatch(p, batch.name) for p in cfg.skipdirs):
             num_skipdirs += 1
         else:
+            # Need to keep a reference of the task to protect it from garbage collection.
+            # asyncio.create_task not available before Python 3.7
             tasks.append(asyncio.get_event_loop().create_task(run_batch(batch, cfg)))
 
     if num_restrictdirs:
@@ -173,12 +194,26 @@ async def main() -> None:
         print(f'PlotPoint: name="{p}th_percentile", plot="timings", ', end="")
         print(f'label="{p}th %ile", y={v:.2f}, yerr=0.0')
 
+    print("\n----------------------------- Slow Tests -------------------------------")
+    slow_test_threshold = 2 * percentile(timings, 0.95)
+    print(f"Duration threshold (2x 95th %ile): {slow_test_threshold:.2f} sec")
+    slow_tests_all = [r for r in all_results if r.duration > slow_test_threshold]
+    slow_tests = [r for r in slow_tests_all if r.fullname not in cfg.slow_suppressions]
+    num_slow_suppressed = len(slow_tests_all) - len(slow_tests)
+    print(f"Found {len(slow_tests)} slow tests ({num_slow_suppressed} suppressed):")
+    for r in slow_tests:
+        print(f"    {r.fullname :<80s} ( {r.duration:6.2f} sec)")
+    if not cfg.flag_slow:
+        slow_tests = []
+
     print("\n------------------------------- Summary --------------------------------")
     total_duration = time.perf_counter() - start_time
     num_tests = len(all_results)
-    num_failed = sum(r.status in ("TIMED OUT", "RUNTIME FAIL") for r in all_results)
+    failure_modes = ["RUNTIME FAIL", "TIMED OUT", "HUGE OUTPUT"]
+    num_failed = sum(r.status in failure_modes for r in all_results)
     num_wrong = sum(r.status == "WRONG RESULT" for r in all_results)
     num_ok = sum(r.status == "OK" for r in all_results)
+    status_ok = (num_ok == num_tests) and (not slow_tests)
     print(f"Number of FAILED  tests {num_failed}")
     print(f"Number of WRONG   tests {num_wrong}")
     print(f"Number of CORRECT tests {num_ok}")
@@ -186,12 +221,13 @@ async def main() -> None:
     summary = f"\nSummary: correct: {num_ok} / {num_tests}"
     summary += f"; wrong: {num_wrong}" if num_wrong > 0 else ""
     summary += f"; failed: {num_failed}" if num_failed > 0 else ""
+    summary += f"; slow: {len(slow_tests)}" if slow_tests else ""
     summary += f"; {total_duration/60.0:.0f}min"
     print(summary)
-    print("Status: " + ("OK" if num_ok == num_tests else "FAILED") + "\n")
+    print("Status: " + ("OK" if status_ok else "FAILED") + "\n")
 
     print("*************************** Testing ended ******************************")
-    sys.exit(num_tests - num_ok)
+    sys.exit(0 if status_ok else 1)
 
 
 # ======================================================================================
@@ -206,7 +242,10 @@ class Config:
         self.workers = Semaphore(self.num_workers)
         self.cp2k_root = Path(__file__).resolve().parent.parent.parent
         self.mpiexec = args.mpiexec.split()
+        self.smoketest = args.smoketest
+        self.valgrind = args.valgrind
         self.keepalive = args.keepalive
+        self.flag_slow = args.flagslow
         self.arch = args.arch
         self.version = args.version
         self.debug = args.debug
@@ -218,9 +257,15 @@ class Config:
         self.work_base_dir = (
             args.workbasedir / leaf_dir
             if args.workbasedir
-            else self.cp2k_root / "regtesting" / leaf_dir
+            else self.cp2k_root / "regtesting" / args.arch / args.version / leaf_dir
         )
         self.error_summary = self.work_base_dir / "error_summary"
+
+        # Parse suppression files.
+        slow_supps_fn = self.cp2k_root / "tests" / "SLOW_TESTS_SUPPRESSIONS"
+        self.slow_suppressions = slow_supps_fn.read_text(encoding="utf8").split("\n")
+        huge_supps_fn = self.cp2k_root / "tests" / "HUGE_TESTS_SUPPRESSIONS"
+        self.huge_suppressions = huge_supps_fn.read_text(encoding="utf8").split("\n")
 
         def run_with_capture_stdout(cmd: str) -> bytes:
             # capture_output argument not available before Python 3.7
@@ -249,8 +294,11 @@ class Config:
             env["CUDA_VISIBLE_DEVICES"] = ",".join(visible_gpu_devices)
             env["HIP_VISIBLE_DEVICES"] = ",".join(visible_gpu_devices)
         env["OMP_NUM_THREADS"] = str(self.ompthreads)
-        exe = str(self.cp2k_root / "exe" / self.arch / f"{exe_stem}.{self.version}")
-        cmd = self.mpiexec + ["-n", str(self.mpiranks), exe] if self.use_mpi else [exe]
+        cmd = [str(self.cp2k_root / "exe" / self.arch / f"{exe_stem}.{self.version}")]
+        if self.valgrind:
+            cmd = ["valgrind", "--error-exitcode=42", "--exit-on-first-error=yes"] + cmd
+        if self.use_mpi:
+            cmd = self.mpiexec + ["-n", str(self.mpiranks)] + cmd
         if self.debug:
             print(f"Creating subprocess: {cmd} {args}")
         return asyncio.create_subprocess_exec(
@@ -323,6 +371,7 @@ class Batch:
         self.regtests: List[Regtest] = []
         self.src_dir = cfg.cp2k_root / "tests" / self.name
         self.workdir = cfg.work_base_dir / self.name
+        self.huge_suppressions = cfg.huge_suppressions
 
     def requirements_satisfied(self, flags: List[str], mpiranks: int) -> bool:
         for r in self.requirements:
@@ -335,17 +384,20 @@ class Batch:
 class TestResult:
     def __init__(
         self,
+        batch: Batch,
         test: Union[Regtest, Unittest],
         duration: float,
         status: TestStatus,
         value: Optional[float] = None,
         error: Optional[str] = None,
     ):
+        self.batch = batch
         self.test = test
         self.duration = duration
         self.status = status
         self.value = value
         self.error = error
+        self.fullname = f"{batch.name}/{test.name}"
 
     def __str__(self) -> str:
         value = f"{self.value:.10g}" if self.value else "-"
@@ -373,9 +425,7 @@ class Cp2kShell:
             self._child.terminate()  # Give mpiexec a chance to shutdown
         except ProcessLookupError:
             pass
-        # Read output to prevent a zombie process, but do it in the background.
-        # asyncio.create_task not available before Python 3.7
-        asyncio.get_event_loop().create_task(self._child.communicate())
+        await self._child.communicate()  # Read output to prevent a zombie process.
         self._child = None
 
     async def start(self) -> None:
@@ -464,12 +514,14 @@ async def run_unittests(batch: Batch, cfg: Config) -> List[TestResult]:
         error = "x" * 100 + f"\n{test.out_path}\n{output_tail}\n\n"
         if timed_out:
             error += f"Timed out after {duration} seconds."
-            results.append(TestResult(test, duration, "TIMED OUT", error=error))
+            results.append(TestResult(batch, test, duration, "TIMED OUT", error=error))
         elif returncode != 0:
             error += f"Runtime failure with code {returncode}."
-            results.append(TestResult(test, duration, "RUNTIME FAIL", error=error))
+            results.append(
+                TestResult(batch, test, duration, "RUNTIME FAIL", error=error)
+            )
         else:
-            results.append(TestResult(test, duration, "OK"))
+            results.append(TestResult(batch, test, duration, "OK"))
 
     return results
 
@@ -490,6 +542,7 @@ async def run_regtests_keepalive(batch: Batch, cfg: Config) -> List[TestResult]:
     results: List[TestResult] = []
     for test in batch.regtests:
         start_time = time.perf_counter()
+        start_dirsize = dirsize(batch.workdir)
         await shell.sendline(f"RUN {test.inp_fn} __STD_OUT__")
         with open(test.out_path, "wt", encoding="utf8", errors="replace") as fh:
             try:
@@ -504,7 +557,8 @@ async def run_regtests_keepalive(batch: Batch, cfg: Config) -> List[TestResult]:
             await shell.stop()
             await shell.start()
         duration = time.perf_counter() - start_time
-        res = eval_regtest(batch, test, duration, returncode, timed_out)
+        output_size = dirsize(batch.workdir) - start_dirsize
+        res = eval_regtest(batch, test, duration, output_size, returncode, timed_out)
         results.append(res)
 
     await shell.stop()
@@ -516,49 +570,64 @@ async def run_regtests_classic(batch: Batch, cfg: Config) -> List[TestResult]:
     results: List[TestResult] = []
     for test in batch.regtests:
         start_time = time.perf_counter()
+        start_dirsize = dirsize(batch.workdir)
         child = await cfg.launch_exe("cp2k", test.inp_fn, cwd=batch.workdir)
         output, returncode, timed_out = await wait_for_child_process(child, cfg.timeout)
-        duration = time.perf_counter() - start_time
         test.out_path.write_bytes(output)
-        res = eval_regtest(batch, test, duration, returncode, timed_out)
+        duration = time.perf_counter() - start_time
+        output_size = dirsize(batch.workdir) - start_dirsize
+        res = eval_regtest(batch, test, duration, output_size, returncode, timed_out)
         results.append(res)
 
     return results
 
 
 # ======================================================================================
-def eval_regtest(
-    batch: Batch, test: Regtest, duration: float, returncode: int, timed_out: bool
-) -> TestResult:
+def dirsize(folder: Path) -> int:
+    return sum(f.stat().st_size for f in folder.rglob("*"))
 
+
+# ======================================================================================
+def eval_regtest(
+    batch: Batch,
+    test: Regtest,
+    duration: float,
+    output_size: int,
+    returncode: int,
+    timed_out: bool,
+) -> TestResult:
+    is_huge_suppressed = f"{batch.name}/{test.name}" in batch.huge_suppressions
     output_bytes = test.out_path.read_bytes() if test.out_path.exists() else b""
     output = output_bytes.decode("utf8", errors="replace")
     output_tail = "\n".join(output.split("\n")[-100:])
     error = "x" * 100 + f"\n{test.out_path}\n"
     if timed_out:
         error += f"{output_tail}\n\nTimed out after {duration} seconds."
-        return TestResult(test, duration, "TIMED OUT", error=error)
+        return TestResult(batch, test, duration, "TIMED OUT", error=error)
     elif returncode != 0:
         error += f"{output_tail}\n\nRuntime failure with code {returncode}."
-        return TestResult(test, duration, "RUNTIME FAIL", error=error)
+        return TestResult(batch, test, duration, "RUNTIME FAIL", error=error)
+    elif output_size > 2 * 1024 * 1024 and not is_huge_suppressed:  # 2MiB limit
+        error += f"Test produced {output_size/1024/1024:.2f} MiB of output."
+        return TestResult(batch, test, duration, "HUGE OUTPUT", error=error)
     elif not test.test_type:
-        return TestResult(test, duration, "OK")  # test type zero
+        return TestResult(batch, test, duration, "OK")  # test type zero
     else:
         value_txt = test.test_type.grep(output)
         if not value_txt:
             error += f"{output_tail}\n\nResult not found: '{test.test_type.pattern}'."
-            return TestResult(test, duration, "WRONG RESULT", error=error)
+            return TestResult(batch, test, duration, "WRONG RESULT", error=error)
         else:
             # compare result to reference
             value = float(value_txt)
             diff = value - test.ref_value
             rel_error = abs(diff / test.ref_value if test.ref_value != 0.0 else diff)
             if rel_error <= test.tolerance:
-                return TestResult(test, duration, "OK", value)
+                return TestResult(batch, test, duration, "OK", value)
             else:
                 error += f"Difference too large: {rel_error:.2e} > {test.tolerance}, "
                 error += f"ref_value: {test.ref_value_txt}, value: {value_txt}."
-                return TestResult(test, duration, "WRONG RESULT", value, error)
+                return TestResult(batch, test, duration, "WRONG RESULT", value, error)
 
 
 # ======================================================================================
@@ -576,6 +645,8 @@ def percentile(values: List[float], percent: float) -> float:
 # ======================================================================================
 if __name__ == "__main__":
     # asyncio.run(main()) not available before Python 3.7
-    asyncio.get_event_loop().run_until_complete(main())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(main())
 
 # EOF

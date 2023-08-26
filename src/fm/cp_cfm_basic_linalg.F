@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,8 +23,7 @@ MODULE cp_cfm_basic_linalg
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: z_one,&
                                               z_zero
-   USE message_passing,                 ONLY: mp_prod,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_comm_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -48,6 +47,8 @@ MODULE cp_cfm_basic_linalg
              cp_cfm_transpose, &
              cp_cfm_triangular_invert, &
              cp_cfm_triangular_multiply, &
+             cp_cfm_rot_rows, &
+             cp_cfm_rot_cols, &
              cp_cfm_cholesky_invert
 
    REAL(kind=dp), EXTERNAL :: zlange, pzlange
@@ -194,7 +195,7 @@ CONTAINS
 
       ELSE
          CPASSERT(PRESENT(matrix_b))
-         IF (matrix_a%matrix_struct%context%group /= matrix_b%matrix_struct%context%group) &
+         IF (matrix_a%matrix_struct%context /= matrix_b%matrix_struct%context) &
             CPABORT("matrixes must be in the same blacs context")
 
          IF (cp_fm_struct_equivalent(matrix_a%matrix_struct, &
@@ -301,7 +302,7 @@ CONTAINS
          END IF
 
       ELSE
-         IF (matrix_a%matrix_struct%context%group /= matrix_b%matrix_struct%context%group) &
+         IF (matrix_a%matrix_struct%context /= matrix_b%matrix_struct%context) &
             CPABORT("matrices must be in the same blacs context")
 
          IF (cp_fm_struct_equivalent(matrix_a%matrix_struct, &
@@ -427,7 +428,7 @@ CONTAINS
             icol = icol + 1
          END IF
       END DO
-      CALL mp_prod(determinant, matrix_a%matrix_struct%para_env%group)
+      CALL matrix_a%matrix_struct%para_env%prod(determinant)
 #else
       lda = SIZE(a, 1)
       CALL zgetrf(nrow_global, nrow_global, a(1, 1), lda, ipivot, info)
@@ -715,7 +716,7 @@ CONTAINS
                icol = icol + 1
             END IF
          END DO
-         CALL mp_prod(determinant, matrix_a%matrix_struct%para_env%group)
+         CALL matrix_a%matrix_struct%para_env%prod(determinant)
       END IF
 
       CALL pzgetrs("N", nrow_global, nrow_global, a(1, 1), 1, 1, desca, &
@@ -952,9 +953,10 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'cp_cfm_trace'
 
-      INTEGER                                            :: group, handle, mypcol, myprow, &
-                                                            ncol_local, npcol, nprow, nrow_local
+      INTEGER                                            :: handle, mypcol, myprow, ncol_local, &
+                                                            npcol, nprow, nrow_local
       TYPE(cp_blacs_env_type), POINTER                   :: context
+      TYPE(mp_comm_type)                                 :: group
 
       CALL timeset(routineN, handle)
 
@@ -964,7 +966,7 @@ CONTAINS
       nprow = context%num_pe(1)
       npcol = context%num_pe(2)
 
-      group = matrix_a%matrix_struct%para_env%group
+      group = matrix_a%matrix_struct%para_env
 
       nrow_local = MIN(matrix_a%matrix_struct%nrow_locals(myprow), matrix_b%matrix_struct%nrow_locals(myprow))
       ncol_local = MIN(matrix_a%matrix_struct%ncol_locals(mypcol), matrix_b%matrix_struct%ncol_locals(mypcol))
@@ -973,7 +975,7 @@ CONTAINS
       trace = accurate_dot_product(matrix_a%local_data(1:nrow_local, 1:ncol_local), &
                                    matrix_b%local_data(1:nrow_local, 1:ncol_local))
 
-      CALL mp_sum(trace, group)
+      CALL group%sum(trace)
 
       CALL timestop(handle)
 
@@ -1281,4 +1283,95 @@ CONTAINS
       DEALLOCATE (work)
       CALL timestop(handle)
    END FUNCTION cp_cfm_norm
+
+! **************************************************************************************************
+!> \brief Applies a planar rotation defined by cs and sn to the i'th and j'th rows.
+!> \param matrix ...
+!> \param irow ...
+!> \param jrow ...
+!> \param cs cosine of the rotation angle
+!> \param sn sinus of the rotation angle
+!> \author Ole Schuett
+! **************************************************************************************************
+   SUBROUTINE cp_cfm_rot_rows(matrix, irow, jrow, cs, sn)
+      TYPE(cp_cfm_type), INTENT(IN)            :: matrix
+      INTEGER, INTENT(IN)                      :: irow, jrow
+      REAL(dp), INTENT(IN)                     :: cs, sn
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'cp_cfm_rot_rows'
+      INTEGER                                  :: handle, nrow, ncol
+      COMPLEX(KIND=dp)                         :: sn_cmplx
+
+#if defined(__SCALAPACK)
+      INTEGER                                  :: info, lwork
+      INTEGER, DIMENSION(9)                    :: desc
+      REAL(dp), DIMENSION(:), ALLOCATABLE      :: work
+#endif
+
+      CALL timeset(routineN, handle)
+      CALL cp_cfm_get_info(matrix, nrow_global=nrow, ncol_global=ncol)
+      sn_cmplx = CMPLX(sn, 0.0_dp, dp)
+
+#if defined(__SCALAPACK)
+      lwork = 2*ncol + 1
+      ALLOCATE (work(lwork))
+      desc(:) = matrix%matrix_struct%descriptor(:)
+      CALL pzrot(ncol, &
+                 matrix%local_data(1, 1), irow, 1, desc, ncol, &
+                 matrix%local_data(1, 1), jrow, 1, desc, ncol, &
+                 cs, sn_cmplx, work, lwork, info)
+      CPASSERT(info == 0)
+      DEALLOCATE (work)
+#else
+      CALL zrot(ncol, matrix%local_data(irow, 1), ncol, matrix%local_data(jrow, 1), ncol, cs, sn_cmplx)
+#endif
+
+      CALL timestop(handle)
+   END SUBROUTINE cp_cfm_rot_rows
+
+! **************************************************************************************************
+!> \brief Applies a planar rotation defined by cs and sn to the i'th and j'th columnns.
+!> \param matrix ...
+!> \param icol ...
+!> \param jcol ...
+!> \param cs cosine of the rotation angle
+!> \param sn sinus of the rotation angle
+!> \author Ole Schuett
+! **************************************************************************************************
+   SUBROUTINE cp_cfm_rot_cols(matrix, icol, jcol, cs, sn)
+      TYPE(cp_cfm_type), INTENT(IN)            :: matrix
+      INTEGER, INTENT(IN)                      :: icol, jcol
+      REAL(dp), INTENT(IN)                     :: cs, sn
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'cp_cfm_rot_cols'
+      INTEGER                                  :: handle, nrow, ncol
+      COMPLEX(KIND=dp)                         :: sn_cmplx
+
+#if defined(__SCALAPACK)
+      INTEGER                                  :: info, lwork
+      INTEGER, DIMENSION(9)                    :: desc
+      REAL(dp), DIMENSION(:), ALLOCATABLE      :: work
+#endif
+
+      CALL timeset(routineN, handle)
+      CALL cp_cfm_get_info(matrix, nrow_global=nrow, ncol_global=ncol)
+      sn_cmplx = CMPLX(sn, 0.0_dp, dp)
+
+#if defined(__SCALAPACK)
+      lwork = 2*nrow + 1
+      ALLOCATE (work(lwork))
+      desc(:) = matrix%matrix_struct%descriptor(:)
+      CALL pzrot(nrow, &
+                 matrix%local_data(1, 1), 1, icol, desc, 1, &
+                 matrix%local_data(1, 1), 1, jcol, desc, 1, &
+                 cs, sn_cmplx, work, lwork, info)
+      CPASSERT(info == 0)
+      DEALLOCATE (work)
+#else
+      CALL zrot(nrow, matrix%local_data(1, icol), 1, matrix%local_data(1, jcol), 1, cs, sn_cmplx)
+#endif
+
+      CALL timestop(handle)
+   END SUBROUTINE cp_cfm_rot_cols
+
 END MODULE cp_cfm_basic_linalg

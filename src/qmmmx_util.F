@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,7 +20,6 @@ MODULE qmmmx_util
                                               pbc
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit,&
                                               cp_logger_get_default_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE fist_neighbor_list_types,        ONLY: fist_neighbor_deallocate,&
@@ -34,6 +33,7 @@ MODULE qmmmx_util
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_list_types,             ONLY: molecule_list_type
    USE molecule_types,                  ONLY: molecule_type
    USE particle_list_types,             ONLY: particle_list_type
@@ -128,10 +128,10 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: nearest_dist(:)
       REAL(dp), POINTER                                  :: r_buf(:), r_core(:), r_qm(:)
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(fist_neighbor_type), POINTER                  :: nlist
       TYPE(molecule_list_type), POINTER                  :: molecules
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(section_vals_type), POINTER                   :: force_mixing_section, &
@@ -340,7 +340,7 @@ CONTAINS
 
       ![NB] perhap be controlled by some &PRINT section?
       CALL cp_subsys_get(subsys, para_env=para_env)
-      IF (para_env%ionode .AND. output_unit > 0) THEN
+      IF (para_env%is_source() .AND. output_unit > 0) THEN
          WRITE (unit=output_unit, fmt='(A,A,I6,A,I5,A,I5,A,I5)') &
             "QMMM FORCE MIXING final count (not including links): ", &
             " N_QM core_list ", COUNT(new_labels == force_mixing_label_QM_core_list), &

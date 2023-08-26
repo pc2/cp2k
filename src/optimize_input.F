@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,7 +16,6 @@ MODULE optimize_input
                                               cp_print_key_finished_output,&
                                               cp_print_key_unit_nr,&
                                               cp_rm_iter_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_read_line
    USE cp_parser_types,                 ONLY: cp_parser_type,&
                                               parser_create,&
@@ -40,12 +39,8 @@ MODULE optimize_input
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_comm_free,&
-                                              mp_comm_split,&
-                                              mp_comm_split_direct,&
-                                              mp_environ,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE parallel_rng_types,              ONLY: UNIFORM,&
                                               rng_stream_type
    USE physcon,                         ONLY: bohr
@@ -107,7 +102,7 @@ CONTAINS
    SUBROUTINE run_optimize_input(input_declaration, root_section, para_env)
       TYPE(section_type), POINTER                        :: input_declaration
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'run_optimize_input'
 
@@ -160,7 +155,7 @@ CONTAINS
       TYPE(oi_env_type)                                  :: oi_env
       TYPE(section_type), POINTER                        :: input_declaration
       TYPE(section_vals_type), POINTER                   :: root_section
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'force_matching'
 
@@ -168,9 +163,8 @@ CONTAINS
       CHARACTER(len=default_string_length), &
          ALLOCATABLE, DIMENSION(:, :)                    :: initial_variables
       INTEGER :: color, energies_unit, handle, history_unit, i_atom, i_el, i_frame, i_free_var, &
-         i_var, ierr, mepos_master, mepos_slave, mpi_comm_master, mpi_comm_slave, &
-         mpi_comm_slave_primus, n_atom, n_el, n_frames, n_free_var, n_groups, n_var, new_env_id, &
-         num_pe_master, num_pe_slave, output_unit, restart_unit, state
+         i_var, ierr, mepos_master, mepos_minion, n_atom, n_el, n_frames, n_free_var, n_groups, &
+         n_var, new_env_id, num_pe_master, output_unit, restart_unit, state
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: free_var_index
       INTEGER, DIMENSION(:), POINTER                     :: group_distribution
       LOGICAL                                            :: should_stop
@@ -183,6 +177,8 @@ CONTAINS
                                                             force_traj_read, force_var, pos_traj, &
                                                             pos_traj_read
       TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(mp_comm_type)                                 :: mpi_comm_master, mpi_comm_minion, &
+                                                            mpi_comm_minion_primus
       TYPE(opt_state_type)                               :: ostate
       TYPE(section_vals_type), POINTER                   :: oi_section, variable_section
 
@@ -230,17 +226,17 @@ CONTAINS
       ALLOCATE (energy_var(n_frames), force_var(3, n_atom, n_frames))
 
       ! split the para_env in a set of sub_para_envs that will do the force_env communications
-      mpi_comm_master = para_env%group
+      mpi_comm_master = para_env
       num_pe_master = para_env%num_pe
       mepos_master = para_env%mepos
       ALLOCATE (group_distribution(0:num_pe_master - 1))
       IF (oi_env%fm_env%group_size > para_env%num_pe) oi_env%fm_env%group_size = para_env%num_pe
 
-      CALL mp_comm_split(mpi_comm_master, mpi_comm_slave, n_groups, group_distribution, subgroup_min_size=oi_env%fm_env%group_size)
-      CALL mp_environ(num_pe_slave, mepos_slave, mpi_comm_slave)
+      CALL mpi_comm_minion%from_split(mpi_comm_master, n_groups, group_distribution, subgroup_min_size=oi_env%fm_env%group_size)
+      mepos_minion = mpi_comm_minion%mepos
       color = 0
-      IF (mepos_slave == 0) color = 1
-      CALL mp_comm_split_direct(mpi_comm_master, mpi_comm_slave_primus, color)
+      IF (mepos_minion == 0) color = 1
+      CALL mpi_comm_minion_primus%from_split(mpi_comm_master, color)
 
       ! assign initial variables
       n_var = SIZE(oi_env%variables, 1)
@@ -270,7 +266,7 @@ CONTAINS
       shift_mm = oi_env%fm_env%shift_mm
       shift_qm = oi_env%fm_env%shift_qm
 
-      IF (para_env%mepos == para_env%source) THEN
+      IF (para_env%is_source()) THEN
          ostate%nf = 0
          ostate%nvar = n_free_var
          ostate%rhoend = oi_env%rhoend
@@ -307,8 +303,8 @@ CONTAINS
       DO
 
          ! globalize the state
-         IF (para_env%mepos == para_env%source) state = ostate%state
-         CALL mp_bcast(state, para_env%source, para_env%group)
+         IF (para_env%is_source()) state = ostate%state
+         CALL para_env%bcast(state)
 
          ! if required get the energy of this set of params
          IF (state == 2) THEN
@@ -324,13 +320,13 @@ CONTAINS
             ierr = 0
             CALL create_force_env(new_env_id=new_env_id, input_declaration=input_declaration, &
                                   input_path=input_path, output_path=output_path, &
-                                  mpi_comm=mpi_comm_slave, initial_variables=initial_variables, ierr=ierr)
+                                  mpi_comm=mpi_comm_minion, initial_variables=initial_variables, ierr=ierr)
 
             ! set to zero initialy, for easier mp_summing
             energy_var = 0.0_dp
             force_var = 0.0_dp
 
-            ! compute energies and forces for all frames, doing the work on a slave sub group based on round robin
+            ! compute energies and forces for all frames, doing the work on a minion sub group based on round robin
             t5 = 0.0_dp
             DO i_frame = group_distribution(mepos_master) + 1, n_frames, n_groups
 
@@ -370,14 +366,14 @@ CONTAINS
             CALL destroy_force_env(env_id=new_env_id, ierr=ierr)
 
             ! get data everywhere on the master group, we could reduce the amount of data by reducing to partial RMSD first
-            ! furthermore, we should only do this operation among the masters of the slave group
-            IF (mepos_slave == 0) THEN
-               CALL mp_sum(energy_var, mpi_comm_slave_primus)
-               CALL mp_sum(force_var, mpi_comm_slave_primus)
+            ! furthermore, we should only do this operation among the masters of the minion group
+            IF (mepos_minion == 0) THEN
+               CALL mpi_comm_minion_primus%sum(energy_var)
+               CALL mpi_comm_minion_primus%sum(force_var)
             END IF
 
-            ! now evaluate the target function to be minimized (only valid on mepos_slave==0)
-            IF (para_env%mepos == para_env%source) THEN
+            ! now evaluate the target function to be minimized (only valid on mepos_minion==0)
+            IF (para_env%is_source()) THEN
                rf = SQRT(SUM((force_var - force_traj)**2)/(REAL(n_frames, KIND=dp)*REAL(n_atom, KIND=dp)))
                IF (oi_env%fm_env%shift_average) THEN
                   shift_mm = SUM(energy_var)/n_frames
@@ -452,24 +448,24 @@ CONTAINS
          IF (should_stop) EXIT
 
          ! do a powell step if needed
-         IF (para_env%mepos == para_env%source) THEN
+         IF (para_env%is_source()) THEN
             CALL powell_optimize(ostate%nvar, free_vars, ostate)
          END IF
-         CALL mp_bcast(free_vars, para_env%source, para_env%group)
+         CALL para_env%bcast(free_vars)
 
       END DO
 
       ! finally, get the best set of variables
-      IF (para_env%mepos == para_env%source) THEN
+      IF (para_env%is_source()) THEN
          ostate%state = 8
          CALL powell_optimize(ostate%nvar, free_vars, ostate)
       END IF
-      CALL mp_bcast(free_vars, para_env%source, para_env%group)
+      CALL para_env%bcast(free_vars)
       DO i_free_var = 1, n_free_var
          WRITE (initial_variables(2, free_var_index(i_free_var)), *) free_vars(i_free_var)
          oi_env%variables(free_var_index(i_free_var))%value = free_vars(i_free_var)
       END DO
-      IF (para_env%mepos == para_env%source) THEN
+      IF (para_env%is_source()) THEN
          WRITE (output_unit, '(T2,A)') ''
          WRITE (output_unit, '(T2,A,T60,F20.12)') 'FORCE_MATCHING| optimal function value found so far:', ostate%fopt
          WRITE (output_unit, '(T2,A)') 'FORCE_MATCHING| optimal variables found so far:'
@@ -484,8 +480,8 @@ CONTAINS
       IF (ASSOCIATED(cell_traj)) DEALLOCATE (cell_traj)
       DEALLOCATE (pos, force, force_traj, pos_traj, force_var)
       DEALLOCATE (group_distribution, energy_traj, energy_var)
-      CALL mp_comm_free(mpi_comm_slave)
-      CALL mp_comm_free(mpi_comm_slave_primus)
+      CALL mpi_comm_minion%free()
+      CALL mpi_comm_minion_primus%free()
 
       CALL timestop(handle)
 
@@ -503,7 +499,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE read_reference_data(oi_env, para_env, force_traj, pos_traj, energy_traj, cell_traj)
       TYPE(oi_env_type)                                  :: oi_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: force_traj, pos_traj
       REAL(KIND=dp), DIMENSION(:), POINTER               :: energy_traj
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: cell_traj

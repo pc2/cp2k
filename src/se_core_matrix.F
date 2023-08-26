@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -23,7 +23,6 @@ MODULE se_core_matrix
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_deallocate_matrix, dbcsr_distribute, dbcsr_get_block_diag, &
         dbcsr_get_block_p, dbcsr_p_type, dbcsr_replicate_all, dbcsr_set, dbcsr_sum_replicated, &
@@ -33,6 +32,7 @@ MODULE se_core_matrix
         do_method_pm6, do_method_pm6fm, do_method_pnnl, do_method_rm1
    USE input_section_types,             ONLY: section_vals_val_get
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: evolt
    USE qs_energy_types,                 ONLY: qs_energy_type
@@ -79,15 +79,14 @@ CONTAINS
    SUBROUTINE build_se_core_matrix(qs_env, para_env, calculate_forces)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN)                                :: calculate_forces
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'build_se_core_matrix'
 
       INTEGER :: after, atom_a, atom_b, handle, i, iatom, icol, icor, ikind, inode, irow, itype, &
          iw, j, jatom, jkind, natom, natorb_a, nkind, nr_a, nra, nrb
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nrt
-      INTEGER, DIMENSION(:), POINTER                     :: atom_of_kind
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, nrt
       LOGICAL                                            :: defined, found, omit_headers, use_virial
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: se_defined
       REAL(KIND=dp)                                      :: delta, dr, econst, eheat, eisol, kh, &
@@ -166,8 +165,6 @@ CONTAINS
          IF (SIZE(matrix_p) == 2) THEN
             CALL dbcsr_add(matrix_p(1)%matrix, matrix_p(2)%matrix, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
          END IF
-         natom = SIZE(particle_set)
-         ALLOCATE (atom_of_kind(natom))
          delta = dft_control%qs_control%se_control%delta
          CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, &
                                   atom_of_kind=atom_of_kind)

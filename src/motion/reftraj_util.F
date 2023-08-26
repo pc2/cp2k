@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -24,7 +24,6 @@ MODULE reftraj_util
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_get_next_line
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
@@ -42,8 +41,7 @@ MODULE reftraj_util
    USE machine,                         ONLY: m_flush
    USE md_environment_types,            ONLY: get_md_env,&
                                               md_environment_type
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_list_types,        ONLY: molecule_kind_list_type
    USE molecule_kind_types,             ONLY: get_molecule_kind,&
                                               molecule_kind_type
@@ -88,9 +86,9 @@ CONTAINS
 
       INTEGER                                            :: natom, nline_to_skip, nskip
       LOGICAL                                            :: my_end
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(force_env_type), POINTER                      :: force_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(section_vals_type), POINTER                   :: msd_section
       TYPE(simpar_type), POINTER                         :: simpar
@@ -168,7 +166,6 @@ CONTAINS
                                                             nmolecule, nmolkind, npart
       REAL(KIND=dp)                                      :: com(3), mass, mass_mol, tol, x, y, z
       TYPE(atomic_kind_list_type), POINTER               :: atomic_kinds
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(molecule_kind_list_type), POINTER             :: molecule_kinds
@@ -177,6 +174,7 @@ CONTAINS
       TYPE(molecule_list_type), POINTER                  :: molecules
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
       TYPE(molecule_type), POINTER                       :: molecule
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
@@ -206,7 +204,7 @@ CONTAINS
       ALLOCATE (msd%ref0_pos(3, reftraj%natom))
       msd%ref0_pos = 0.0_dp
 
-      IF (para_env%mepos == para_env%source) THEN
+      IF (para_env%is_source()) THEN
          REWIND (msd%ref0_unit)
          READ (msd%ref0_unit, *, ERR=999, END=998) natom_read
          IF (natom_read /= reftraj%natom) THEN
@@ -244,9 +242,9 @@ CONTAINS
       END IF
       CALL close_file(unit_number=msd%ref0_unit)
 
-      CALL mp_bcast(msd%total_mass, para_env%source, para_env%group)
-      CALL mp_bcast(msd%ref0_pos, para_env%source, para_env%group)
-      CALL mp_bcast(msd%ref0_com, para_env%source, para_env%group)
+      CALL para_env%bcast(msd%total_mass)
+      CALL para_env%bcast(msd%ref0_pos)
+      CALL para_env%bcast(msd%ref0_com)
 
       CALL section_vals_val_get(msd_section, "MSD_PER_KIND", l_val=msd%msd_kind)
       CALL section_vals_val_get(msd_section, "MSD_PER_MOLKIND", l_val=msd%msd_molecule)
@@ -339,7 +337,6 @@ CONTAINS
                                                             mass, mass_mol, msd_mkind(4), rcom(3)
       TYPE(atomic_kind_list_type), POINTER               :: atomic_kinds
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(distribution_1d_type), POINTER                :: local_molecules
       TYPE(force_env_type), POINTER                      :: force_env
@@ -349,6 +346,7 @@ CONTAINS
       TYPE(molecule_list_type), POINTER                  :: molecules
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
       TYPE(molecule_type), POINTER                       :: molecule
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (force_env, para_env, subsys)
       NULLIFY (atomic_kind, atomic_kinds, atom_list)
@@ -381,12 +379,12 @@ CONTAINS
                rcom(3) = rcom(3) + particle_set(atom)%r(3)*mass
             END DO
          END DO
-         CALL mp_sum(rcom, para_env%group)
+         CALL para_env%sum(rcom)
          rcom = rcom/reftraj%msd%total_mass
          reftraj%msd%drcom(1) = rcom(1) - reftraj%msd%ref0_com(1)
          reftraj%msd%drcom(2) = rcom(2) - reftraj%msd%ref0_com(2)
          reftraj%msd%drcom(3) = rcom(3) - reftraj%msd%ref0_com(3)
-!      IF(para_env%ionode) WRITE(*,'(A,T50,3f10.5)') ' COM displacement (dx,dy,dz) [angstrom]:  ', &
+!      IF(para_env%is_source()) WRITE(*,'(A,T50,3f10.5)') ' COM displacement (dx,dy,dz) [angstrom]:  ', &
 !                         drcom(1)*angstrom,drcom(2)*angstrom,drcom(3)*angstrom
 ! compute_com
 
@@ -425,9 +423,9 @@ CONTAINS
 
          END DO  ! ikind
       END IF
-      CALL mp_sum(reftraj%msd%val_msd_kind, para_env%group)
-      CALL mp_sum(reftraj%msd%num_disp_atom, para_env%group)
-      CALL mp_sum(reftraj%msd%disp_atom_dr, para_env%group)
+      CALL para_env%sum(reftraj%msd%val_msd_kind)
+      CALL para_env%sum(reftraj%msd%num_disp_atom)
+      CALL para_env%sum(reftraj%msd%disp_atom_dr)
 
       IF (reftraj%msd%msd_molecule) THEN
          CALL cp_subsys_get(subsys=subsys, local_molecules=local_molecules, &
@@ -478,7 +476,7 @@ CONTAINS
             reftraj%msd%val_msd_molecule(3, ikind) = msd_mkind(3)/REAL(nmolecule, KIND=dp)
             reftraj%msd%val_msd_molecule(4, ikind) = msd_mkind(4)/REAL(nmolecule, KIND=dp)
          END DO  ! ikind
-         CALL mp_sum(reftraj%msd%val_msd_molecule, para_env%group)
+         CALL para_env%sum(reftraj%msd%val_msd_molecule)
 
       END IF
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -8,13 +8,10 @@
 MODULE hartree_local_methods
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind
-   USE atprop_types,                    ONLY: atprop_array_init,&
-                                              atprop_type
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE hartree_local_types,             ONLY: allocate_ecoul_1center,&
                                               ecoul_1center_type,&
                                               hartree_local_type,&
@@ -22,7 +19,7 @@ MODULE hartree_local_methods
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: indso,&
                                               nsoset
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -204,52 +201,56 @@ CONTAINS
 !> \param local_rho_set ...
 !> \param para_env ...
 !> \param tddft ...
+!> \param local_rho_set_2nd ...
+!> \param core_2nd ...
 !> \par History
 !>      05.2012 JGH refactoring
 !> \author ??
 ! **************************************************************************************************
-   SUBROUTINE Vh_1c_gg_integrals(qs_env, energy_hartree_1c, ecoul_1c, local_rho_set, para_env, tddft)
+   SUBROUTINE Vh_1c_gg_integrals(qs_env, energy_hartree_1c, ecoul_1c, local_rho_set, para_env, tddft, local_rho_set_2nd, &
+                                 core_2nd)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       REAL(kind=dp), INTENT(out)                         :: energy_hartree_1c
       TYPE(ecoul_1center_type), DIMENSION(:), POINTER    :: ecoul_1c
       TYPE(local_rho_type), POINTER                      :: local_rho_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       LOGICAL, INTENT(IN)                                :: tddft
+      TYPE(local_rho_type), OPTIONAL, POINTER            :: local_rho_set_2nd
+      LOGICAL, INTENT(IN), OPTIONAL                      :: core_2nd
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'Vh_1c_gg_integrals'
 
       INTEGER :: bo(2), handle, iat, iatom, ikind, ipgf1, is1, iset1, iso, l_ang, llmax, lmax0, &
-         lmax_0, m1, max_iso, max_iso_not0, max_s_harm, maxl, maxso, mepos, n1, nat, natom, &
+         lmax0_2nd, lmax_0, m1, max_iso, max_iso_not0, max_s_harm, maxl, maxso, mepos, n1, nat, &
          nchan_0, nkind, nr, nset, nsotot, nspins, num_pe
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: cg_n_list
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: cg_list
       INTEGER, DIMENSION(:), POINTER                     :: atom_list, lmax, lmin, npgf
-      LOGICAL                                            :: atenergy, core_charge, my_periodic, &
-                                                            paw_atom
+      LOGICAL                                            :: core_charge, l_2nd_local_rho, &
+                                                            my_core_2nd, my_periodic, paw_atom
       REAL(dp)                                           :: back_ch, factor
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: gexp, sqrtwr
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: aVh1b_00, aVh1b_hh, aVh1b_ss, g0_h_w
       REAL(dp), DIMENSION(:), POINTER                    :: rrad_z, vrrad_z
-      REAL(dp), DIMENSION(:, :), POINTER                 :: g0_h, gsph, rrad_0, Vh1_h, Vh1_s, &
-                                                            vrrad_0, zet
-      REAL(dp), DIMENSION(:, :, :), POINTER              :: my_CG, Qlm_gg
+      REAL(dp), DIMENSION(:, :), POINTER                 :: g0_h, g0_h_2nd, gsph, rrad_0, Vh1_h, &
+                                                            Vh1_s, vrrad_0, zet
+      REAL(dp), DIMENSION(:, :, :), POINTER              :: my_CG, Qlm_gg, Qlm_gg_2nd
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(atprop_type), POINTER                         :: atprop
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(grid_atom_type), POINTER                      :: grid_atom
-      TYPE(gto_basis_set_type), POINTER                  :: orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_1c
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(qs_charges_type), POINTER                     :: qs_charges
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
-      TYPE(rho0_atom_type), DIMENSION(:), POINTER        :: rho0_atom_set
-      TYPE(rho0_mpole_type), POINTER                     :: rho0_mpole
-      TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom_set
+      TYPE(rho0_atom_type), DIMENSION(:), POINTER        :: rho0_atom_set, rho0_atom_set_2nd
+      TYPE(rho0_mpole_type), POINTER                     :: rho0_mpole, rho0_mpole_2nd
+      TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom_set, rho_atom_set_2nd
       TYPE(rho_atom_type), POINTER                       :: rho_atom
-      TYPE(rhoz_type), DIMENSION(:), POINTER             :: rhoz_set
+      TYPE(rhoz_type), DIMENSION(:), POINTER             :: rhoz_set, rhoz_set_2nd
 
       CALL timeset(routineN, handle)
 
@@ -257,13 +258,13 @@ CONTAINS
       NULLIFY (atomic_kind_set, qs_kind_set, rho_atom_set, rho0_atom_set)
       NULLIFY (rho0_mpole, rhoz_set)
       NULLIFY (atom_list, grid_atom, harmonics)
-      NULLIFY (orb_basis, lmin, lmax, npgf, zet)
-      NULLIFY (gsph, atprop)
+      NULLIFY (basis_1c, lmin, lmax, npgf, zet)
+      NULLIFY (gsph)
 
       CALL get_qs_env(qs_env=qs_env, &
                       cell=cell, dft_control=dft_control, &
                       atomic_kind_set=atomic_kind_set, &
-                      qs_kind_set=qs_kind_set, atprop=atprop, &
+                      qs_kind_set=qs_kind_set, &
                       pw_env=pw_env, qs_charges=qs_charges)
 
       CALL pw_env_get(pw_env, poisson_env=poisson_env)
@@ -272,12 +273,22 @@ CONTAINS
       back_ch = qs_charges%background*cell%deth
 
       ! rhoz_set is not accessed in TDDFT
-      CALL get_local_rho(local_rho_set, rho_atom_set, rho0_atom_set, rho0_mpole, rhoz_set)
+      CALL get_local_rho(local_rho_set, rho_atom_set, rho0_atom_set, rho0_mpole, rhoz_set) ! for integral space
+
+      ! for forces we need a second local_rho_set
+      l_2nd_local_rho = .FALSE.
+      IF (PRESENT(local_rho_set_2nd)) THEN ! for potential
+         l_2nd_local_rho = .TRUE.
+         NULLIFY (rho_atom_set_2nd, rho0_atom_set_2nd, rhoz_set_2nd) ! for potential
+         CALL get_local_rho(local_rho_set_2nd, rho_atom_set_2nd, rho0_atom_set_2nd, rho0_mpole_2nd, rhoz_set=rhoz_set_2nd)
+      END IF
 
       nkind = SIZE(atomic_kind_set, 1)
       nspins = dft_control%nspins
 
-      core_charge = .NOT. tddft
+      core_charge = .NOT. tddft  ! for forces mixed version
+      my_core_2nd = .TRUE.
+      IF (PRESENT(core_2nd)) my_core_2nd = .NOT. core_2nd   ! if my_core_2nd true, include core charge
 
       ! The aim of the following code was to return immediately if the subroutine
       ! was called for triplet excited states in spin-restricted case. This check
@@ -291,15 +302,6 @@ CONTAINS
       CALL get_qs_kind_set(qs_kind_set, maxg_iso_not0=max_iso)
       CALL get_rho0_mpole(rho0_mpole=rho0_mpole, lmax_0=lmax_0)
 
-      atenergy = .FALSE.
-      IF (ASSOCIATED(atprop)) THEN
-         atenergy = atprop%energy
-         IF (atenergy) THEN
-            CALL get_qs_env(qs_env=qs_env, natom=natom)
-            CALL atprop_array_init(atprop%ate1c, natom)
-         END IF
-      END IF
-
       !   Put to 0 the local hartree energy contribution from 1 center integrals
       energy_hartree_1c = 0.0_dp
 
@@ -308,14 +310,15 @@ CONTAINS
 
          CALL get_atomic_kind(atomic_kind_set(ikind), atom_list=atom_list, natom=nat)
          CALL get_qs_kind(qs_kind_set(ikind), &
-                          basis_set=orb_basis, &
                           grid_atom=grid_atom, &
                           harmonics=harmonics, ngrid_rad=nr, &
                           max_iso_not0=max_iso_not0, paw_atom=paw_atom)
+         CALL get_qs_kind(qs_kind_set(ikind), &
+                          basis_set=basis_1c, basis_type="GAPW_1C")
 
          IF (paw_atom) THEN
 !===========    PAW   ===============
-            CALL get_gto_basis_set(gto_basis_set=orb_basis, lmax=lmax, lmin=lmin, &
+            CALL get_gto_basis_set(gto_basis_set=basis_1c, lmax=lmax, lmin=lmin, &
                                    maxso=maxso, npgf=npgf, maxl=maxl, &
                                    nset=nset, zet=zet)
 
@@ -339,8 +342,14 @@ CONTAINS
             NULLIFY (Qlm_gg, g0_h)
             CALL get_rho0_mpole(rho0_mpole=rho0_mpole, ikind=ikind, &
                                 l0_ikind=lmax0, &
-                                Qlm_gg=Qlm_gg, g0_h=g0_h)
+                                Qlm_gg=Qlm_gg, g0_h=g0_h) ! Qlm_gg of density
 
+            IF (PRESENT(local_rho_set_2nd)) THEN ! for potential
+               NULLIFY (Qlm_gg_2nd, g0_h_2nd)
+               CALL get_rho0_mpole(rho0_mpole=rho0_mpole_2nd, ikind=ikind, &
+                                   l0_ikind=lmax0_2nd, &
+                                   Qlm_gg=Qlm_gg_2nd, g0_h=g0_h_2nd) ! Qlm_gg of density
+            END IF
             nchan_0 = nsoset(lmax0)
 
             IF (nchan_0 > max_iso_not0) CPABORT("channels for rho0 > # max of spherical harmonics")
@@ -384,11 +393,21 @@ CONTAINS
 
                NULLIFY (rrad_z, vrrad_z, rrad_0, vrrad_0)
                IF (core_charge) THEN
-                  rrad_z => rhoz_set(ikind)%r_coef
-                  vrrad_z => rhoz_set(ikind)%vr_coef
+                  rrad_z => rhoz_set(ikind)%r_coef ! for density
                END IF
-               rrad_0 => rho0_atom_set(iatom)%rho0_rad_h%r_coef
+               IF (my_core_2nd) THEN
+                  IF (l_2nd_local_rho) THEN
+                     vrrad_z => rhoz_set_2nd(ikind)%vr_coef ! for potential
+                  ELSE
+                     vrrad_z => rhoz_set(ikind)%vr_coef ! for potential
+                  END IF
+               END IF
+               rrad_0 => rho0_atom_set(iatom)%rho0_rad_h%r_coef ! for density
                vrrad_0 => rho0_atom_set(iatom)%vrho0_rad_h%r_coef
+               IF (l_2nd_local_rho) THEN
+                  rho_atom => rho_atom_set_2nd(iatom)
+                  vrrad_0 => rho0_atom_set_2nd(iatom)%vrho0_rad_h%r_coef ! for potential
+               END IF
                IF (my_periodic .AND. back_ch .GT. 1.E-3_dp) THEN
                   factor = -2.0_dp*pi/3.0_dp*SQRT(fourpi)*qs_charges%background
                ELSE
@@ -396,17 +415,24 @@ CONTAINS
                END IF
 
                CALL Vh_1c_atom_potential(rho_atom, vrrad_0, &
-                                         grid_atom, core_charge, vrrad_z, Vh1_h, Vh1_s, &
+                                         grid_atom, my_core_2nd, vrrad_z, Vh1_h, Vh1_s, & ! core charge for potential (2nd)
                                          nchan_0, nspins, max_iso_not0, factor)
 
-               CALL Vh_1c_atom_energy(energy_hartree_1c, ecoul_1c, rho_atom, rrad_0, &
-                                      grid_atom, iatom, core_charge, rrad_z, Vh1_h, Vh1_s, &
-                                      nchan_0, nspins, max_iso_not0, atenergy, atprop%ate1c)
+               IF (l_2nd_local_rho) rho_atom => rho_atom_set(iatom) ! rho_atom for density
 
-               CALL Vh_1c_atom_integrals(rho_atom, &
+               CALL Vh_1c_atom_energy(energy_hartree_1c, ecoul_1c, rho_atom, rrad_0, &
+                                      grid_atom, iatom, core_charge, rrad_z, Vh1_h, Vh1_s, & ! core charge for density
+                                      nchan_0, nspins, max_iso_not0)
+
+               IF (l_2nd_local_rho) rho_atom => rho_atom_set_2nd(iatom) ! rho_atom for potential (2nd)
+
+               CALL Vh_1c_atom_integrals(rho_atom, &  ! results (int_local_h and int_local_s) written on rho_atom_2nd
+                                         ! int_local_h and int_local_s are used in update_ks_atom
+                                         ! on int_local_h mixed core / non-core
                                          aVh1b_hh, aVh1b_ss, aVh1b_00, Vh1_h, Vh1_s, max_iso_not0, &
                                          max_s_harm, llmax, cg_list, cg_n_list, &
-                                         nset, npgf, lmin, lmax, nsotot, maxso, nspins, nchan_0, gsph, g0_h_w, my_CG, Qlm_gg)
+                                         nset, npgf, lmin, lmax, nsotot, maxso, nspins, nchan_0, gsph, &
+                                         g0_h_w, my_CG, Qlm_gg) ! Qlm_gg for density from local_rho_set
 
             END DO ! iat
 
@@ -426,7 +452,7 @@ CONTAINS
          END IF ! paw
       END DO ! ikind
 
-      CALL mp_sum(energy_hartree_1c, para_env%group)
+      CALL para_env%sum(energy_hartree_1c)
 
       CALL timestop(handle)
 
@@ -511,12 +537,10 @@ CONTAINS
 !> \param nchan_0 ...
 !> \param nspins ...
 !> \param max_iso_not0 ...
-!> \param atenergy ...
-!> \param ate1c ...
 ! **************************************************************************************************
    SUBROUTINE Vh_1c_atom_energy(energy_hartree_1c, ecoul_1c, rho_atom, rrad_0, &
                                 grid_atom, iatom, core_charge, rrad_z, Vh1_h, Vh1_s, &
-                                nchan_0, nspins, max_iso_not0, atenergy, ate1c)
+                                nchan_0, nspins, max_iso_not0)
 
       REAL(dp), INTENT(INOUT)                            :: energy_hartree_1c
       TYPE(ecoul_1center_type), DIMENSION(:), POINTER    :: ecoul_1c
@@ -528,8 +552,6 @@ CONTAINS
       REAL(dp), DIMENSION(:), POINTER                    :: rrad_z
       REAL(dp), DIMENSION(:, :), POINTER                 :: Vh1_h, Vh1_s
       INTEGER, INTENT(IN)                                :: nchan_0, nspins, max_iso_not0
-      LOGICAL, INTENT(IN)                                :: atenergy
-      REAL(dp), DIMENSION(:), POINTER                    :: ate1c
 
       INTEGER                                            :: iso, ispin, nr
       REAL(dp)                                           :: ecoul_1_0, ecoul_1_h, ecoul_1_s, &
@@ -569,11 +591,6 @@ CONTAINS
       energy_hartree_1c = energy_hartree_1c + ecoul_1_z - ecoul_1_0
       energy_hartree_1c = energy_hartree_1c + ecoul_1_h - ecoul_1_s
 
-      ! atomic energy contribution
-      IF (atenergy) THEN
-         ate1c(iatom) = ate1c(iatom) + ecoul_1_z - ecoul_1_0
-      END IF
-
    END SUBROUTINE Vh_1c_atom_energy
 
 !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -607,7 +624,8 @@ CONTAINS
    SUBROUTINE Vh_1c_atom_integrals(rho_atom, &
                                    aVh1b_hh, aVh1b_ss, aVh1b_00, Vh1_h, Vh1_s, max_iso_not0, &
                                    max_s_harm, llmax, cg_list, cg_n_list, &
-                                   nset, npgf, lmin, lmax, nsotot, maxso, nspins, nchan_0, gsph, g0_h_w, my_CG, Qlm_gg)
+                                   nset, npgf, lmin, lmax, nsotot, maxso, nspins, nchan_0, gsph, &
+                                   g0_h_w, my_CG, Qlm_gg)
 
       TYPE(rho_atom_type), POINTER                       :: rho_atom
       REAL(dp), DIMENSION(:, :)                          :: aVh1b_hh, aVh1b_ss, aVh1b_00
@@ -702,7 +720,6 @@ CONTAINS
          END DO ! iset2
          m1 = m1 + maxso
       END DO !iset1
-
       DO ispin = 1, nspins
          CALL daxpy(nsotot*nsotot, 1.0_dp, aVh1b_hh, 1, int_local_h(ispin)%r_coef, 1)
          CALL daxpy(nsotot*nsotot, 1.0_dp, aVh1b_ss, 1, int_local_s(ispin)%r_coef, 1)

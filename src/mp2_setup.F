@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,7 +15,9 @@ MODULE mp2_setup
    USE cp_eri_mme_interface,            ONLY: cp_eri_mme_init_read_input
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
-   USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
+   USE cp_output_handling,              ONLY: cp_p_file,&
+                                              cp_print_key_finished_output,&
+                                              cp_print_key_should_output,&
                                               cp_print_key_unit_nr
    USE cp_parser_methods,               ONLY: read_float_object
    USE input_constants,                 ONLY: &
@@ -141,6 +143,8 @@ CONTAINS
                                 r_val=mp2_env%ri_g0w0%eps_iter)
       CALL section_vals_val_get(mp2_section, "RI_RPA%GW%PRINT_EXX", &
                                 i_val=mp2_env%ri_g0w0%print_exx)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%PRINT_SELF_ENERGY", &
+                                l_val=mp2_env%ri_g0w0%print_self_energy)
       CALL section_vals_val_get(mp2_section, "RI_RPA%GW%RI_SIGMA_X", &
                                 l_val=mp2_env%ri_g0w0%do_ri_Sigma_x)
       NULLIFY (r_vals)
@@ -157,6 +161,12 @@ CONTAINS
                                 l_val=mp2_env%ri_g0w0%do_gamma_only_sigma)
       CALL section_vals_val_get(mp2_section, "RI_RPA%GW%UPDATE_XC_ENERGY", &
                                 l_val=mp2_env%ri_g0w0%update_xc_energy)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%REGULARIZATION_MINIMAX", &
+                                r_val=mp2_env%ri_g0w0%regularization_minimax)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%SOC", &
+                                i_val=mp2_env%ri_g0w0%soc_type)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%SOC_ENERGY_WINDOW", &
+                                r_val=mp2_env%ri_g0w0%soc_energy_window)
 
       CALL section_vals_val_get(mp2_section, "RI_RPA%GW%BSE", &
                                 l_val=mp2_env%ri_g0w0%do_bse)
@@ -222,8 +232,17 @@ CONTAINS
                                          mp2_env%ri_g0w0%kp_grid_Sigma(2)* &
                                          mp2_env%ri_g0w0%kp_grid_Sigma(3) > 0
 
-      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%PRINT%SELF_ENERGY", &
-                                l_val=mp2_env%ri_g0w0%print_self_energy)
+      mp2_env%ri_g0w0%print_local_bandgap = BTEST(cp_print_key_should_output(logger%iter_info, &
+                                                                             mp2_section, "RI_RPA%GW%PRINT%LOCAL_BANDGAP"), &
+                                                  cp_p_file)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%PRINT%LOCAL_BANDGAP%ENERGY_WINDOW", &
+                                r_val=mp2_env%ri_g0w0%energy_window_print_loc_bandgap)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%PRINT%LOCAL_BANDGAP%ENERGY_SPACING", &
+                                r_val=mp2_env%ri_g0w0%energy_spacing_print_loc_bandgap)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%PRINT%LOCAL_BANDGAP%LDOS_THRESHOLD_GAP", &
+                                r_val=mp2_env%ri_g0w0%ldos_thresh_print_loc_bandgap)
+      CALL section_vals_val_get(mp2_section, "RI_RPA%GW%PRINT%LOCAL_BANDGAP%STRIDE", &
+                                i_vals=mp2_env%ri_g0w0%stride_loc_bandgap)
 
       NULLIFY (low_scaling_section)
       low_scaling_section => section_vals_get_subs_vals(mp2_section, "LOW_SCALING")
@@ -243,18 +262,23 @@ CONTAINS
       CALL section_vals_val_get(low_scaling_section, "KPOINTS", &
                                 i_vals=mp2_env%ri_rpa_im_time%kp_grid)
       mp2_env%ri_rpa_im_time%do_kpoints_from_Gamma = SUM(mp2_env%ri_rpa_im_time%kp_grid) > 0
+      IF (mp2_env%ri_rpa_im_time%do_kpoints_from_Gamma) THEN
+         CPASSERT(mp2_env%ri_g0w0%do_kpoints_Sigma)
+      END IF
       CALL section_vals_val_get(low_scaling_section, "KPOINT_WEIGHTS_W", &
                                 i_val=mp2_env%ri_rpa_im_time%kpoint_weights_W_method)
       CALL section_vals_val_get(low_scaling_section, "EXPONENT_TAILORED_WEIGHTS", &
                                 r_val=mp2_env%ri_rpa_im_time%exp_tailored_weights)
-      CALL section_vals_val_get(low_scaling_section, "REL_CUTOFFS_CHI_W", &
-                                r_vals=mp2_env%ri_rpa_im_time%rel_cutoffs_chi_W)
       CALL section_vals_val_get(low_scaling_section, "REGULARIZATION_RI", &
                                 r_val=mp2_env%ri_rpa_im_time%regularization_RI)
       CALL section_vals_val_get(low_scaling_section, "EPS_EIGVAL_S", &
                                 r_val=mp2_env%ri_rpa_im_time%eps_eigval_S)
+      CALL section_vals_val_get(low_scaling_section, "EPS_EIGVAL_S_GAMMA", &
+                                r_val=mp2_env%ri_rpa_im_time%eps_eigval_S_Gamma)
       CALL section_vals_val_get(low_scaling_section, "MAKE_CHI_POS_DEFINITE", &
                                 l_val=mp2_env%ri_rpa_im_time%make_chi_pos_definite)
+      CALL section_vals_val_get(low_scaling_section, "MAKE_OVERLAP_MAT_AO_POS_DEFINITE", &
+                                l_val=mp2_env%ri_rpa_im_time%make_overlap_mat_ao_pos_definite)
       CALL section_vals_val_get(low_scaling_section, "TRUNC_COULOMB_RI_X", &
                                 l_val=mp2_env%ri_rpa_im_time%trunc_coulomb_ri_x)
       CALL section_vals_val_get(low_scaling_section, "DO_EXTRAPOLATE_KPOINTS", &
@@ -263,8 +287,6 @@ CONTAINS
                                 r_val=mp2_env%ri_rpa_im_time%rel_cutoff_trunc_coulomb_ri_x)
       CALL section_vals_val_get(low_scaling_section, "K_MESH_G_FACTOR", &
                                 i_val=mp2_env%ri_rpa_im_time%k_mesh_g_factor)
-      CALL section_vals_val_get(low_scaling_section, "GREENS_FUNCTION", &
-                                i_val=mp2_env%ri_rpa_im_time%periodic_gf)
 
       CALL section_vals_val_get(low_scaling_section, "KEEP_QUADRATURE", &
                                 l_val=mp2_env%ri_rpa_im_time%keep_quad)
@@ -295,6 +317,7 @@ CONTAINS
          mp2_env%method = ri_mp2_method_gpw
       END IF
       CALL section_vals_val_get(mp2_section, "RI_MP2%BLOCK_SIZE", i_val=mp2_env%ri_mp2%block_size)
+      CALL section_vals_val_get(mp2_section, "RI_MP2%NUMBER_INTEGRATION_GROUPS", i_val=mp2_env%ri_mp2%number_integration_groups)
       CALL section_vals_val_get(mp2_section, "RI_MP2%PRINT_DGEMM_INFO", l_val=mp2_env%ri_mp2%print_dgemm_info)
 
       CALL section_vals_val_get(mp2_section, "RI%ROW_BLOCK", i_val=mp2_env%block_size_row)
@@ -375,6 +398,7 @@ CONTAINS
       CALL section_vals_val_get(mp2_section, "CANONICAL_GRADIENTS%EPS_CANONICAL", r_val=mp2_env%ri_grad%eps_canonical)
       CALL section_vals_val_get(mp2_section, "CANONICAL_GRADIENTS%USE_OLD_GRADIENT_CODE", l_val=mp2_env%ri_grad%use_old_grad)
       CALL section_vals_val_get(mp2_section, "CANONICAL_GRADIENTS%DOT_PRODUCT_BLKSIZE", i_val=mp2_env%ri_grad%dot_blksize)
+      CALL section_vals_val_get(mp2_section, "CANONICAL_GRADIENTS%MAX_PARALLEL_COMM", i_val=mp2_env%ri_grad%max_parallel_comm)
       cphf_section => section_vals_get_subs_vals(mp2_section, "CANONICAL_GRADIENTS%CPHF")
       IF (ASSOCIATED(cphf_section)) THEN
          CALL section_vals_val_get(cphf_section, "MAX_ITER", i_val=mp2_env%ri_grad%cphf_max_num_iter)

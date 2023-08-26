@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -20,7 +20,6 @@ MODULE mc_types
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE cp_units,                        ONLY: cp_unit_to_cp2k
@@ -44,6 +43,8 @@ MODULE mc_types
                                               default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: pi
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE molecule_kind_list_types,        ONLY: molecule_kind_list_p_type
    USE molecule_kind_types,             ONLY: atom_type,&
                                               get_molecule_kind,&
@@ -80,85 +81,87 @@ MODULE mc_types
    TYPE mc_simpar_type
 ! contains all the parameters needed for running Monte Carlo simulations
       PRIVATE
-      INTEGER, DIMENSION(:), POINTER :: avbmc_atom
-      INTEGER :: nstep
-      INTEGER :: iupvolume
-      INTEGER :: iuptrans
-      INTEGER :: iupcltrans
-      INTEGER :: nvirial
-      INTEGER :: nbox
-      INTEGER :: nmoves
-      INTEGER :: nswapmoves
-      INTEGER :: rm
-      INTEGER :: cl
-      INTEGER :: diff
-      INTEGER :: nstart
-      INTEGER :: source
-      INTEGER :: group
-      INTEGER :: iprint
-      LOGICAL :: ldiscrete
-      LOGICAL :: lbias
-      LOGICAL :: ionode
-      LOGICAL :: lrestart
-      LOGICAL :: lstop
-      LOGICAL :: lhmc
-      CHARACTER(LEN=20) :: ensemble
-      CHARACTER(LEN=default_path_length) :: restart_file_name
-      CHARACTER(LEN=default_path_length) :: molecules_file
-      CHARACTER(LEN=default_path_length) :: moves_file
-      CHARACTER(LEN=default_path_length) :: coords_file
-      CHARACTER(LEN=default_path_length) :: energy_file
-      CHARACTER(LEN=default_path_length) :: displacement_file
-      CHARACTER(LEN=default_path_length) :: cell_file
-      CHARACTER(LEN=default_path_length) :: dat_file
-      CHARACTER(LEN=default_path_length) :: data_file
-      CHARACTER(LEN=default_path_length) :: box2_file
-      CHARACTER(LEN=200) :: fft_lib
-      CHARACTER(LEN=50) :: PROGRAM
-      REAL(dp), DIMENSION(:), POINTER :: pmtraion_mol, pmtrans_mol, pmrot_mol, pmswap_mol, &
-                                         pbias, pmavbmc_mol
-      REAL(dp) :: discrete_step
-      REAL(dp) :: rmvolume, rmcltrans
-      REAL(dp), DIMENSION(:), POINTER :: rmbond, rmangle, rmdihedral, rmrot, rmtrans
-      REAL(dp), DIMENSION(:), POINTER :: eta
-      REAL(dp) :: temperature
-      REAL(dp) :: pressure
-      REAL(dp) :: rclus
-      REAL(dp) :: pmavbmc
-      REAL(dp) :: pmswap
-      REAL(dp) :: pmvolume, pmvol_box, pmclus_box
-      REAL(dp) :: pmhmc, pmhmc_box
-      REAL(dp) :: pmtraion
-      REAL(dp) :: pmtrans
-      REAL(dp) :: pmcltrans
-      REAL(dp) :: BETA
-      REAL(dp) :: rcut
-      REAL(dp), DIMENSION(:), POINTER :: avbmc_rmin, avbmc_rmax
-      REAL(dp), DIMENSION(:), POINTER :: virial_temps
+      INTEGER, DIMENSION(:), POINTER :: avbmc_atom => NULL()
+      INTEGER :: nstep = 0
+      INTEGER :: iupvolume = 0
+      INTEGER :: iuptrans = 0
+      INTEGER :: iupcltrans = 0
+      INTEGER :: nvirial = 0
+      INTEGER :: nbox = 0
+      INTEGER :: nmoves = 0
+      INTEGER :: nswapmoves = 0
+      INTEGER :: rm = 0
+      INTEGER :: cl = 0
+      INTEGER :: diff = 0
+      INTEGER :: nstart = 0
+      INTEGER :: source = 0
+      TYPE(mp_comm_type) :: group = mp_comm_type()
+      INTEGER :: iprint = 0
+      LOGICAL :: ldiscrete = .FALSE.
+      LOGICAL :: lbias = .FALSE.
+      LOGICAL :: ionode = .FALSE.
+      LOGICAL :: lrestart = .FALSE.
+      LOGICAL :: lstop = .FALSE.
+      LOGICAL :: lhmc = .FALSE.
+      CHARACTER(LEN=20) :: ensemble = ""
+      CHARACTER(LEN=default_path_length) :: restart_file_name = ""
+      CHARACTER(LEN=default_path_length) :: molecules_file = ""
+      CHARACTER(LEN=default_path_length) :: moves_file = ""
+      CHARACTER(LEN=default_path_length) :: coords_file = ""
+      CHARACTER(LEN=default_path_length) :: energy_file = ""
+      CHARACTER(LEN=default_path_length) :: displacement_file = ""
+      CHARACTER(LEN=default_path_length) :: cell_file = ""
+      CHARACTER(LEN=default_path_length) :: dat_file = ""
+      CHARACTER(LEN=default_path_length) :: data_file = ""
+      CHARACTER(LEN=default_path_length) :: box2_file = ""
+      CHARACTER(LEN=200) :: fft_lib = ""
+      CHARACTER(LEN=50) :: PROGRAM = ""
+      REAL(dp), DIMENSION(:), POINTER :: pmtraion_mol => NULL(), pmtrans_mol => NULL(), &
+                                         pmrot_mol => NULL(), pmswap_mol => NULL(), &
+                                         pbias => NULL(), pmavbmc_mol => NULL()
+      REAL(dp) :: discrete_step = 0.0_dp
+      REAL(dp) :: rmvolume = 0.0_dp, rmcltrans = 0.0_dp
+      REAL(dp), DIMENSION(:), POINTER :: rmbond => NULL(), rmangle => NULL(), rmdihedral => NULL(), &
+                                         rmrot => NULL(), rmtrans => NULL()
+      REAL(dp), DIMENSION(:), POINTER :: eta => NULL()
+      REAL(dp) :: temperature = 0.0_dp
+      REAL(dp) :: pressure = 0.0_dp
+      REAL(dp) :: rclus = 0.0_dp
+      REAL(dp) :: pmavbmc = 0.0_dp
+      REAL(dp) :: pmswap = 0.0_dp
+      REAL(dp) :: pmvolume = 0.0_dp, pmvol_box = 0.0_dp, pmclus_box = 0.0_dp
+      REAL(dp) :: pmhmc = 0.0_dp, pmhmc_box = 0.0_dp
+      REAL(dp) :: pmtraion = 0.0_dp
+      REAL(dp) :: pmtrans = 0.0_dp
+      REAL(dp) :: pmcltrans = 0.0_dp
+      REAL(dp) :: BETA = 0.0_dp
+      REAL(dp) :: rcut = 0.0_dp
+      REAL(dp), DIMENSION(:), POINTER :: avbmc_rmin => NULL(), avbmc_rmax => NULL()
+      REAL(dp), DIMENSION(:), POINTER :: virial_temps => NULL()
       TYPE(mc_input_file_type), POINTER :: &
-         mc_input_file, mc_bias_file
-      TYPE(section_vals_type), POINTER :: input_file
-      TYPE(mc_molecule_info_type), POINTER :: mc_molecule_info
-      REAL(dp) :: exp_min_val, exp_max_val, min_val, max_val
-      INTEGER     :: rand2skip
+         mc_input_file => NULL(), mc_bias_file => NULL()
+      TYPE(section_vals_type), POINTER :: input_file => NULL()
+      TYPE(mc_molecule_info_type), POINTER :: mc_molecule_info => NULL()
+      REAL(dp) :: exp_min_val = 0.0_dp, exp_max_val = 0.0_dp, min_val = 0.0_dp, max_val = 0.0_dp
+      INTEGER     :: rand2skip = 0
    END TYPE mc_simpar_type
 
 ! **************************************************************************************************
    TYPE mc_ekin_type
 ! contains the kinetic energy of an MD sequence from hybrid MC
-      REAL(dp) :: initial_ekin, final_ekin
+      REAL(dp) :: initial_ekin = 0.0_dp, final_ekin = 0.0_dp
    END TYPE mc_ekin_type
 ! **************************************************************************************************
    TYPE mc_input_file_type
 ! contains all the text of the input file
       PRIVATE
-      INTEGER :: run_type_row, run_type_column, coord_row_start, coord_row_end, &
-                 cell_row, cell_column, global_row_end, in_use, nunits_empty, &
-                 motion_row_end, motion_row_start
-      INTEGER, DIMENSION(:), POINTER :: mol_set_nmol_row, mol_set_nmol_column
-      CHARACTER(LEN=default_string_length), DIMENSION(:), POINTER :: text
-      CHARACTER(LEN=default_string_length), DIMENSION(:), POINTER :: atom_names_empty
-      REAL(dp), DIMENSION(:, :), POINTER :: coordinates_empty
+      INTEGER :: run_type_row = 0, run_type_column = 0, coord_row_start = 0, coord_row_end = 0, &
+                 cell_row = 0, cell_column = 0, global_row_end = 0, in_use = 0, nunits_empty = 0, &
+                 motion_row_end = 0, motion_row_start = 0
+      INTEGER, DIMENSION(:), POINTER :: mol_set_nmol_row => NULL(), mol_set_nmol_column => NULL()
+      CHARACTER(LEN=default_string_length), DIMENSION(:), POINTER :: text => NULL()
+      CHARACTER(LEN=default_string_length), DIMENSION(:), POINTER :: atom_names_empty => NULL()
+      REAL(dp), DIMENSION(:, :), POINTER :: coordinates_empty => NULL()
    END TYPE mc_input_file_type
 
 ! **************************************************************************************************
@@ -166,74 +169,74 @@ MODULE mc_types
 ! contains information on molecules...I had to do this because I use multiple force
 ! environments, and they know nothing about each other
       PRIVATE
-      INTEGER :: nboxes
-      CHARACTER(LEN=default_string_length), DIMENSION(:), POINTER :: names
+      INTEGER :: nboxes = 0
+      CHARACTER(LEN=default_string_length), DIMENSION(:), POINTER :: names => NULL()
       CHARACTER(LEN=default_string_length), &
-         DIMENSION(:, :), POINTER :: atom_names
-      REAL(dp), DIMENSION(:, :), POINTER :: conf_prob, mass
-      INTEGER, DIMENSION(:, :), POINTER :: nchains
-      INTEGER :: nmol_types, nchain_total
-      INTEGER, DIMENSION(:), POINTER :: nunits, mol_type, nunits_tot, in_box
+         DIMENSION(:, :), POINTER :: atom_names => NULL()
+      REAL(dp), DIMENSION(:, :), POINTER :: conf_prob => NULL(), mass => NULL()
+      INTEGER, DIMENSION(:, :), POINTER :: nchains => NULL()
+      INTEGER :: nmol_types = 0, nchain_total = 0
+      INTEGER, DIMENSION(:), POINTER :: nunits => NULL(), mol_type => NULL(), nunits_tot => NULL(), in_box => NULL()
    END TYPE mc_molecule_info_type
 
 ! **************************************************************************************************
    TYPE mc_simulation_parameters_p_type
 ! a pointer for multiple boxes
-      TYPE(mc_simpar_type), POINTER :: mc_par
+      TYPE(mc_simpar_type), POINTER :: mc_par => NULL()
    END TYPE mc_simulation_parameters_p_type
 
 ! **************************************************************************************************
    TYPE mc_averages_type
 ! contains some data that is averaged throughout the course of a run
-      REAL(KIND=dp) :: ave_energy
-      REAL(KIND=dp) :: ave_energy_squared
-      REAL(KIND=dp) :: ave_volume
-      REAL(KIND=dp) :: molecules
+      REAL(KIND=dp) :: ave_energy = 0.0_dp
+      REAL(KIND=dp) :: ave_energy_squared = 0.0_dp
+      REAL(KIND=dp) :: ave_volume = 0.0_dp
+      REAL(KIND=dp) :: molecules = 0.0_dp
    END TYPE mc_averages_type
 
 ! **************************************************************************************************
    TYPE mc_averages_p_type
-      TYPE(mc_averages_type), POINTER :: averages
+      TYPE(mc_averages_type), POINTER :: averages => NULL()
    END TYPE mc_averages_p_type
 
 ! **************************************************************************************************
    TYPE mc_moves_type
 ! contains data for how many moves of a give type we've accepted/rejected
-      TYPE(accattempt), POINTER :: bias_bond
-      TYPE(accattempt), POINTER :: bias_angle
-      TYPE(accattempt), POINTER :: bias_dihedral
-      TYPE(accattempt), POINTER :: bias_trans
-      TYPE(accattempt), POINTER :: bias_cltrans
-      TYPE(accattempt), POINTER :: bias_rot
-      TYPE(accattempt), POINTER :: bond
-      TYPE(accattempt), POINTER :: angle
-      TYPE(accattempt), POINTER :: dihedral
-      TYPE(accattempt), POINTER :: trans
-      TYPE(accattempt), POINTER :: cltrans
-      TYPE(accattempt), POINTER :: rot
-      TYPE(accattempt), POINTER :: swap
-      TYPE(accattempt), POINTER :: volume
-      TYPE(accattempt), POINTER :: hmc
-      TYPE(accattempt), POINTER :: avbmc_inin
-      TYPE(accattempt), POINTER :: avbmc_outin
-      TYPE(accattempt), POINTER :: avbmc_inout
-      TYPE(accattempt), POINTER :: avbmc_outout
-      TYPE(accattempt), POINTER :: Quickstep
-      REAL(KIND=dp) :: trans_dis, qtrans_dis
-      REAL(KIND=dp) :: cltrans_dis, qcltrans_dis
-      INTEGER :: empty, grown, empty_conf, empty_avbmc
+      TYPE(accattempt), POINTER :: bias_bond => NULL()
+      TYPE(accattempt), POINTER :: bias_angle => NULL()
+      TYPE(accattempt), POINTER :: bias_dihedral => NULL()
+      TYPE(accattempt), POINTER :: bias_trans => NULL()
+      TYPE(accattempt), POINTER :: bias_cltrans => NULL()
+      TYPE(accattempt), POINTER :: bias_rot => NULL()
+      TYPE(accattempt), POINTER :: bond => NULL()
+      TYPE(accattempt), POINTER :: angle => NULL()
+      TYPE(accattempt), POINTER :: dihedral => NULL()
+      TYPE(accattempt), POINTER :: trans => NULL()
+      TYPE(accattempt), POINTER :: cltrans => NULL()
+      TYPE(accattempt), POINTER :: rot => NULL()
+      TYPE(accattempt), POINTER :: swap => NULL()
+      TYPE(accattempt), POINTER :: volume => NULL()
+      TYPE(accattempt), POINTER :: hmc => NULL()
+      TYPE(accattempt), POINTER :: avbmc_inin => NULL()
+      TYPE(accattempt), POINTER :: avbmc_outin => NULL()
+      TYPE(accattempt), POINTER :: avbmc_inout => NULL()
+      TYPE(accattempt), POINTER :: avbmc_outout => NULL()
+      TYPE(accattempt), POINTER :: Quickstep => NULL()
+      REAL(KIND=dp) :: trans_dis = 0.0_dp, qtrans_dis = 0.0_dp
+      REAL(KIND=dp) :: cltrans_dis = 0.0_dp, qcltrans_dis = 0.0_dp
+      INTEGER :: empty = 0, grown = 0, empty_conf = 0, empty_avbmc = 0
    END TYPE mc_moves_type
 
 ! **************************************************************************************************
    TYPE accattempt
-      INTEGER :: successes
-      INTEGER :: qsuccesses
-      INTEGER :: attempts
+      INTEGER :: successes = 0
+      INTEGER :: qsuccesses = 0
+      INTEGER :: attempts = 0
    END TYPE accattempt
 
 ! **************************************************************************************************
    TYPE mc_moves_p_type
-      TYPE(mc_moves_type), POINTER :: moves
+      TYPE(mc_moves_type), POINTER :: moves => NULL()
    END TYPE mc_moves_p_type
 
 ! *** Global parameters ***
@@ -401,7 +404,8 @@ CONTAINS
       TYPE(mc_simpar_type), POINTER                      :: mc_par
       INTEGER, INTENT(OUT), OPTIONAL                     :: nstep, nvirial, iuptrans, iupcltrans, &
                                                             iupvolume, nmoves, nswapmoves, rm, cl, &
-                                                            diff, nstart, source, group
+                                                            diff, nstart, source
+      TYPE(mp_comm_type), INTENT(OUT), OPTIONAL          :: group
       LOGICAL, INTENT(OUT), OPTIONAL                     :: lbias, ionode, lrestart, lstop
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: rmvolume, rmcltrans
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: rmbond, rmangle, rmrot, rmtrans
@@ -576,8 +580,8 @@ CONTAINS
    END SUBROUTINE get_mc_molecule_info
 
 ! **************************************************************************************************
-!> \brief ...
-!> \param mc_par ...
+!> \brief changes the private elements of the mc_parameters_type
+!> \param mc_par the structure mc parameters you want
 !> \param rm ...
 !> \param cl ...
 !> \param diff ...
@@ -640,6 +644,8 @@ CONTAINS
 !> \param source ...
 !> \param group ...
 !> \param rand2skip ...
+!>    Suitable for parallel.
+!> \author MJM
 ! **************************************************************************************************
    SUBROUTINE set_mc_par(mc_par, rm, cl, &
                          diff, nstart, rmvolume, rmcltrans, rmbond, rmangle, rmdihedral, rmrot, rmtrans, PROGRAM, &
@@ -651,12 +657,6 @@ CONTAINS
                          mc_input_file, mc_bias_file, exp_max_val, exp_min_val, min_val, max_val, &
                          pmhmc, pmhmc_box, lhmc, ionode, source, group, rand2skip)
 
-! **************************************************************************************************
-!> \brief changes the private elements of the mc_parameters_type
-!> \param mc_par the structure mc parameters you want
-!>
-!>    Suitable for parallel.
-!> \author MJM
       TYPE(mc_simpar_type), POINTER                      :: mc_par
       INTEGER, INTENT(IN), OPTIONAL                      :: rm, cl, diff, nstart
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: rmvolume, rmcltrans
@@ -687,7 +687,10 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: exp_max_val, exp_min_val, min_val, &
                                                             max_val, pmhmc, pmhmc_box
       LOGICAL, INTENT(IN), OPTIONAL                      :: lhmc, ionode
-      INTEGER, INTENT(IN), OPTIONAL                      :: source, group, rand2skip
+      INTEGER, INTENT(IN), OPTIONAL                      :: source
+
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL           :: group
+      INTEGER, INTENT(IN), OPTIONAL                      :: rand2skip
 
       INTEGER                                            :: iparm
 
@@ -1193,7 +1196,7 @@ CONTAINS
    SUBROUTINE read_mc_section(mc_par, para_env, globenv, input_file_name, input_file, force_env_section)
 
       TYPE(mc_simpar_type), POINTER                      :: mc_par
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
       CHARACTER(LEN=*), INTENT(IN)                       :: input_file_name
       TYPE(section_vals_type), POINTER                   :: input_file, force_env_section
@@ -1226,8 +1229,8 @@ CONTAINS
       mc_par%input_file => input_file
 
 ! set the ionode and mepos
-      mc_par%ionode = para_env%ionode
-      mc_par%group = para_env%group
+      mc_par%ionode = para_env%is_source()
+      mc_par%group = para_env
       mc_par%source = para_env%source
 
 ! for convenience

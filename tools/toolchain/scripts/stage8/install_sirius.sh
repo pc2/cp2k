@@ -6,8 +6,8 @@
 [ "${BASH_SOURCE[0]}" ] && SCRIPT_NAME="${BASH_SOURCE[0]}" || SCRIPT_NAME=$0
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
-sirius_ver="7.3.2"
-sirius_sha256="a256508de6b344345c295ad8642dbb260c4753cd87cc3dd192605c33542955d7"
+sirius_ver="7.4.3"
+sirius_sha256="015679a60a39fa750c5d1bd8fb1ce73945524bef561270d8a171ea2fd4687fec"
 
 source "${SCRIPT_DIR}"/common_vars.sh
 source "${SCRIPT_DIR}"/tool_kit.sh
@@ -83,8 +83,19 @@ case "$with_sirius" in
     fi
 
     if [ "$ARCH" = "x86_64" ]; then
-      SIRIUS_OPT="-O3 -DNDEBUG -mtune=native -ftree-loop-vectorize ${MATH_CFLAGS}"
-      SIRIUS_DBG="-O2 -g -mtune=native -ftree-loop-vectorize ${MATH_CFLAGS}"
+      if [ "${with_intel}" != "__DONTUSE__" ]; then
+        SIRIUS_OPT="-DNDEBUG -O2 -g ${MATH_CFLAGS}"
+        SIRIUS_DBG="-O1 -g ${MATH_CFLAGS}"
+        # SIRIUS_DBG and SIRIUS_OPT are not really considered by CMake and rather the CMAKE_BUILD_TYPE matters.
+        # The CMAKE_BUILD_TYPEs "Release" and "RelWithDebInfo" employ -O3/-O2, but already -O2 makes the SIRIUS
+        # build quite memory and time intensive. The CMAKE_BUILD_TYPE "Debug" allows for fast compilation, but it
+        # generates very slow code.
+        # EXTRA_CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS= ${EXTRA_CMAKE_FLAGS}"
+        EXTRA_CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS= ${EXTRA_CMAKE_FLAGS}"
+      else
+        SIRIUS_OPT="-O3 -DNDEBUG -mtune=native -ftree-loop-vectorize ${MATH_CFLAGS}"
+        SIRIUS_DBG="-O2 -g -mtune=native -ftree-loop-vectorize ${MATH_CFLAGS}"
+      fi
     fi
 
     pkg_install_dir="${INSTALLDIR}/sirius-${sirius_ver}"
@@ -102,6 +113,10 @@ case "$with_sirius" in
       [ -d sirius-${sirius_ver} ] && rm -rf sirius-${sirius_ver}
       tar -xzf SIRIUS-${sirius_ver}.tar.gz
       cd SIRIUS-${sirius_ver}
+
+      # GCC 13 stopped including some common headers.
+      # https://github.com/electronic-structure/SIRIUS/issues/854
+      sed -i '1 i\#include <cstdint>' src/*.hpp
 
       rm -Rf build
       mkdir build
@@ -145,6 +160,7 @@ case "$with_sirius" in
         -DCMAKE_Fortran_COMPILER="${MPIFC}" \
         -DCMAKE_VERBOSE_MAKEFILE=ON \
         -DBUILD_SHARED_LIBS=OFF \
+        -DUSE_MEMORY_POOL=OFF \
         -DUSE_ELPA=OFF \
         ${EXTRA_CMAKE_FLAGS} .. \
         > cmake.log 2>&1 || tail -n ${LOG_LINES} cmake.log
@@ -172,6 +188,7 @@ case "$with_sirius" in
           -DUSE_CUDA=ON \
           -DUSE_ELPA=OFF \
           -DGPU_MODEL=P100 \
+          -DUSE_MEMORY_POOL=OFF \
           -DBUILD_SHARED_LIBS=OFF \
           -DCMAKE_CXX_COMPILER="${MPICXX}" \
           -DCMAKE_C_COMPILER="${MPICC}" \
@@ -255,6 +272,8 @@ prepend_path LD_RUN_PATH "$pkg_install_dir/lib/cuda"
 prepend_path LIBRARY_PATH "$pkg_install_dir/lib"
 prepend_path LIBRARY_PATH "$pkg_install_dir/lib/cuda"
 prepend_path CPATH "$pkg_install_dir/include"
+prepend_path PKG_CONFIG_PATH "$pkg_install_dir/lib/pkgconfig"
+prepend_path CMAKE_PREFIX_PATH "$pkg_install_dir"
 EOF
     cat "${BUILDDIR}/setup_sirius" >> $SETUPFILE
   fi
@@ -268,6 +287,14 @@ export CP_DFLAGS="\${CP_DFLAGS} IF_MPI("-D__SIRIUS"|)"
 export CP_CFLAGS="\${CP_CFLAGS} IF_MPI("\${SIRIUS_CFLAGS}"|)"
 export CP_LDFLAGS="\${CP_LDFLAGS} IF_MPI(IF_CUDA("\${SIRIUS_CUDA_LDFLAGS}"|"\${SIRIUS_LDFLAGS}")|)"
 export CP_LIBS="IF_MPI("\${SIRIUS_LIBS}"|) \${CP_LIBS}"
+EOF
+
+  cat << EOF >> ${INSTALLDIR}/lsan.supp
+# leaks related to SIRIUS
+leak:cublasXtDeviceSelect
+leak:sirius::sirius_free_object_handler
+leak:sirius::sddk::memory_pool::free
+leak:sirius::sddk::memory_block_descriptor::free_subblock
 EOF
 fi
 

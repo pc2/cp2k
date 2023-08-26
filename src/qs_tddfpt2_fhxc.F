@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,10 +15,8 @@ MODULE qs_tddfpt2_fhxc
                                               cp_dbcsr_sm_fm_multiply
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
-                                              cp_fm_p_type,&
                                               cp_fm_release,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
         dbcsr_p_type, dbcsr_release, dbcsr_set, dbcsr_type, dbcsr_type_symmetric
@@ -26,7 +24,7 @@ MODULE qs_tddfpt2_fhxc
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE lri_environment_types,           ONLY: lri_kind_type
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE pw_env_types,                    ONLY: pw_env_get
    USE pw_methods,                      ONLY: pw_axpy,&
@@ -52,7 +50,8 @@ MODULE qs_tddfpt2_fhxc
    USE qs_tddfpt2_densities,            ONLY: tddfpt_construct_aux_fit_density
    USE qs_tddfpt2_lri_utils,            ONLY: tddfpt2_lri_Amat
    USE qs_tddfpt2_operators,            ONLY: tddfpt_apply_coulomb,&
-                                              tddfpt_apply_xc
+                                              tddfpt_apply_xc,&
+                                              tddfpt_apply_xc_potential
    USE qs_tddfpt2_stda_types,           ONLY: stda_env_type
    USE qs_tddfpt2_stda_utils,           ONLY: stda_calculate_kernel
    USE qs_tddfpt2_subgroups,            ONLY: tddfpt_subgroup_env_type
@@ -99,7 +98,7 @@ CONTAINS
    SUBROUTINE fhxc_kernel(Aop_evects, evects, is_rks_triplets, &
                           do_hfx, do_admm, qs_env, kernel_env, kernel_env_admm_aux, &
                           sub_env, work_matrices, admm_symm, admm_xc_correction, do_lrigpw)
-      TYPE(cp_fm_p_type), DIMENSION(:, :)                :: Aop_evects, evects
+      TYPE(cp_fm_type), DIMENSION(:, :), INTENT(IN)      :: Aop_evects, evects
       LOGICAL, INTENT(in)                                :: is_rks_triplets, do_hfx, do_admm
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(full_kernel_env_type), POINTER                :: kernel_env, kernel_env_admm_aux
@@ -117,12 +116,12 @@ CONTAINS
       LOGICAL                                            :: gapw, gapw_xc
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(cp_fm_type)                                   :: work_aux_orb, work_orb_orb
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: A_xc_munu_sub, rho_ia_ao, &
                                                             rho_ia_ao_aux_fit
       TYPE(dbcsr_type), POINTER                          :: dbwork
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(lri_kind_type), DIMENSION(:), POINTER         :: lri_v_int
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
       TYPE(pw_type), ALLOCATABLE, DIMENSION(:)           :: V_rspace_sub
       TYPE(pw_type), DIMENSION(:), POINTER               :: rho_ia_g, rho_ia_g_aux_fit, rho_ia_r, &
@@ -143,9 +142,9 @@ CONTAINS
       gapw = dft_control%qs_control%gapw
       gapw_xc = dft_control%qs_control%gapw_xc
 
-      CALL cp_fm_get_info(evects(1, 1)%matrix, nrow_global=nao)
+      CALL cp_fm_get_info(evects(1, 1), nrow_global=nao)
       DO ispin = 1, nspins
-         CALL cp_fm_get_info(evects(ispin, 1)%matrix, ncol_global=nactive(ispin))
+         CALL cp_fm_get_info(evects(ispin, 1), ncol_global=nactive(ispin))
       END DO
 
       CALL qs_rho_get(work_matrices%rho_orb_struct_sub, rho_ao=rho_ia_ao, &
@@ -159,12 +158,12 @@ CONTAINS
 
       DO ivect = 1, nvects
          IF (ALLOCATED(work_matrices%evects_sub)) THEN
-            IF (ASSOCIATED(work_matrices%evects_sub(1, ivect)%matrix)) THEN
+            IF (ASSOCIATED(work_matrices%evects_sub(1, ivect)%matrix_struct)) THEN
                DO ispin = 1, nspins
                   CALL dbcsr_set(rho_ia_ao(ispin)%matrix, 0.0_dp)
                   CALL cp_dbcsr_plus_fm_fm_t(rho_ia_ao(ispin)%matrix, &
-                                             matrix_v=sub_env%mos_occ(ispin)%matrix, &
-                                             matrix_g=work_matrices%evects_sub(ispin, ivect)%matrix, &
+                                             matrix_v=sub_env%mos_occ(ispin), &
+                                             matrix_g=work_matrices%evects_sub(ispin, ivect), &
                                              ncol=nactive(ispin), symmetry_mode=1)
                END DO
             ELSE
@@ -175,8 +174,8 @@ CONTAINS
             DO ispin = 1, nspins
                CALL dbcsr_set(rho_ia_ao(ispin)%matrix, 0.0_dp)
                CALL cp_dbcsr_plus_fm_fm_t(rho_ia_ao(ispin)%matrix, &
-                                          matrix_v=sub_env%mos_occ(ispin)%matrix, &
-                                          matrix_g=evects(ispin, ivect)%matrix, &
+                                          matrix_v=sub_env%mos_occ(ispin), &
+                                          matrix_g=evects(ispin, ivect), &
                                           ncol=nactive(ispin), symmetry_mode=1)
             END DO
          END IF
@@ -201,7 +200,8 @@ CONTAINS
                                       pw_env_external=sub_env%pw_env, &
                                       task_list_external=sub_env%task_list_orb_soft, &
                                       para_env_external=sub_env%para_env)
-               CALL prepare_gapw_den(qs_env, work_matrices%local_rho_set)
+               CALL prepare_gapw_den(qs_env, work_matrices%local_rho_set, &
+                                     do_rho0=(.NOT. is_rks_triplets))
             ELSEIF (gapw_xc) THEN
                CALL qs_rho_update_rho(work_matrices%rho_orb_struct_sub, qs_env, &
                                       rho_xc_external=work_matrices%rho_xc_struct_sub, &
@@ -231,11 +231,15 @@ CONTAINS
          ! C_x d^{2}E_{x}^{DFT}[\rho] / d\rho^2
          ! + C_{HF} d^{2}E_{x, ADMM}^{DFT}[\rho] / d\rho^2 in case of ADMM calculation
          IF (gapw_xc) THEN
-            CALL tddfpt_apply_xc(A_ia_rspace=work_matrices%A_ia_rspace_sub, kernel_env=kernel_env, &
-                                 rho_ia_struct=work_matrices%rho_xc_struct_sub, &
-                                 is_rks_triplets=is_rks_triplets, pw_env=sub_env%pw_env, &
-                                 work_v_xc=work_matrices%wpw_rspace_sub, &
-                                 work_v_xc_tau=work_matrices%wpw_tau_rspace_sub)
+            IF (kernel_env%do_exck) THEN
+               CPABORT("NYA")
+            ELSE
+               CALL tddfpt_apply_xc(A_ia_rspace=work_matrices%A_ia_rspace_sub, kernel_env=kernel_env, &
+                                    rho_ia_struct=work_matrices%rho_xc_struct_sub, &
+                                    is_rks_triplets=is_rks_triplets, pw_env=sub_env%pw_env, &
+                                    work_v_xc=work_matrices%wpw_rspace_sub, &
+                                    work_v_xc_tau=work_matrices%wpw_tau_rspace_sub)
+            END IF
             DO ispin = 1, nspins
                CALL pw_scale(work_matrices%A_ia_rspace_sub(ispin), &
                              work_matrices%A_ia_rspace_sub(ispin)%pw_grid%dvol)
@@ -247,11 +251,16 @@ CONTAINS
                CALL pw_zero(work_matrices%A_ia_rspace_sub(ispin))
             END DO
          ELSE
-            CALL tddfpt_apply_xc(A_ia_rspace=work_matrices%A_ia_rspace_sub, kernel_env=kernel_env, &
-                                 rho_ia_struct=work_matrices%rho_orb_struct_sub, &
-                                 is_rks_triplets=is_rks_triplets, pw_env=sub_env%pw_env, &
-                                 work_v_xc=work_matrices%wpw_rspace_sub, &
-                                 work_v_xc_tau=work_matrices%wpw_tau_rspace_sub)
+            IF (kernel_env%do_exck) THEN
+               CALL tddfpt_apply_xc_potential(work_matrices%A_ia_rspace_sub, work_matrices%fxc_rspace_sub, &
+                                              work_matrices%rho_orb_struct_sub, is_rks_triplets)
+            ELSE
+               CALL tddfpt_apply_xc(A_ia_rspace=work_matrices%A_ia_rspace_sub, kernel_env=kernel_env, &
+                                    rho_ia_struct=work_matrices%rho_orb_struct_sub, &
+                                    is_rks_triplets=is_rks_triplets, pw_env=sub_env%pw_env, &
+                                    work_v_xc=work_matrices%wpw_rspace_sub, &
+                                    work_v_xc_tau=work_matrices%wpw_tau_rspace_sub)
+            END IF
          END IF
          IF (gapw .OR. gapw_xc) THEN
             rho_atom_set => sub_env%local_rho_set%rho_atom_set
@@ -400,9 +409,6 @@ CONTAINS
                                           qs_env=qs_env, calculate_forces=.FALSE., gapw=gapw, &
                                           pw_env_external=sub_env%pw_env, &
                                           task_list_external=sub_env%task_list_orb_soft)
-                  ! rho_ia_ao will not be touched
-                  CALL update_ks_atom(qs_env, work_matrices%A_ia_munu_sub, rho_ia_ao, forces=.FALSE., tddft=.TRUE., &
-                                      rho_atom_external=work_matrices%local_rho_set%rho_atom_set)
                ELSEIF (gapw_xc) THEN
                   IF (.NOT. is_rks_triplets) THEN
                      CALL integrate_v_rspace(v_rspace=work_matrices%A_ia_rspace_sub(ispin), &
@@ -410,9 +416,6 @@ CONTAINS
                                              qs_env=qs_env, calculate_forces=.FALSE., gapw=.FALSE., &
                                              pw_env_external=sub_env%pw_env, task_list_external=sub_env%task_list_orb)
                   END IF
-                  ! rho_ia_ao will not be touched
-                  CALL update_ks_atom(qs_env, work_matrices%A_ia_munu_sub, rho_ia_ao, forces=.FALSE., tddft=.TRUE., &
-                                      rho_atom_external=work_matrices%local_rho_set%rho_atom_set)
                ELSE
                   CALL integrate_v_rspace(v_rspace=work_matrices%A_ia_rspace_sub(ispin), &
                                           hmat=work_matrices%A_ia_munu_sub(ispin), &
@@ -430,10 +433,20 @@ CONTAINS
                CALL integrate_v_rspace_one_center(work_matrices%A_ia_rspace_sub(ispin), &
                                                   qs_env, lri_v_int, .FALSE., "P_LRI_AUX")
                DO ikind = 1, nkind
-                  CALL mp_sum(lri_v_int(ikind)%v_int, para_env%group)
+                  CALL para_env%sum(lri_v_int(ikind)%v_int)
                END DO
             END IF ! for full kernel using lri
          END DO
+
+         ! local atom contributions
+         IF (.NOT. do_lrigpw) THEN
+            IF (gapw .OR. gapw_xc) THEN
+               ! rho_ia_ao will not be touched
+               CALL update_ks_atom(qs_env, work_matrices%A_ia_munu_sub, rho_ia_ao, forces=.FALSE., &
+                                   rho_atom_external=work_matrices%local_rho_set%rho_atom_set, &
+                                   tddft=.TRUE.)
+            END IF
+         END IF
 
          ! calculate Coulomb contribution to response vector for lrigpw !
          ! this is restricting lri to Coulomb only at the moment !
@@ -444,15 +457,15 @@ CONTAINS
          IF (ALLOCATED(work_matrices%evects_sub)) THEN
             DO ispin = 1, nspins
                CALL cp_dbcsr_sm_fm_multiply(work_matrices%A_ia_munu_sub(ispin)%matrix, &
-                                            sub_env%mos_occ(ispin)%matrix, &
-                                            work_matrices%Aop_evects_sub(ispin, ivect)%matrix, &
+                                            sub_env%mos_occ(ispin), &
+                                            work_matrices%Aop_evects_sub(ispin, ivect), &
                                             ncol=nactive(ispin), alpha=1.0_dp, beta=0.0_dp)
             END DO
          ELSE
             DO ispin = 1, nspins
                CALL cp_dbcsr_sm_fm_multiply(work_matrices%A_ia_munu_sub(ispin)%matrix, &
-                                            sub_env%mos_occ(ispin)%matrix, &
-                                            Aop_evects(ispin, ivect)%matrix, &
+                                            sub_env%mos_occ(ispin), &
+                                            Aop_evects(ispin, ivect), &
                                             ncol=nactive(ispin), alpha=1.0_dp, beta=0.0_dp)
             END DO
          END IF
@@ -480,7 +493,7 @@ CONTAINS
                           qs_env, stda_control, stda_env, &
                           sub_env, work_matrices)
 
-      TYPE(cp_fm_p_type), DIMENSION(:, :)                :: Aop_evects, evects
+      TYPE(cp_fm_type), DIMENSION(:, :), INTENT(IN)      :: Aop_evects, evects
       LOGICAL, INTENT(in)                                :: is_rks_triplets
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(stda_control_type)                            :: stda_control
@@ -498,7 +511,7 @@ CONTAINS
 
       DO ivect = 1, nvects
          IF (ALLOCATED(work_matrices%evects_sub)) THEN
-            IF (ASSOCIATED(work_matrices%evects_sub(1, ivect)%matrix)) THEN
+            IF (ASSOCIATED(work_matrices%evects_sub(1, ivect)%matrix_struct)) THEN
                CALL stda_calculate_kernel(qs_env, stda_control, stda_env, sub_env, work_matrices, &
                                           is_rks_triplets, work_matrices%evects_sub(:, ivect), &
                                           work_matrices%Aop_evects_sub(:, ivect))

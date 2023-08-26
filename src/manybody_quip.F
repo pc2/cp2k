@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,7 +12,7 @@ MODULE manybody_quip
    USE bibliography, ONLY: QUIP_ref, &
                            cite_reference
    USE cell_types, ONLY: cell_type
-   USE cp_para_types, ONLY: cp_para_env_type
+   USE message_passing, ONLY: mp_para_env_type
    USE fist_nonbond_env_types, ONLY: fist_nonbond_env_get, &
                                      fist_nonbond_env_set, &
                                      fist_nonbond_env_type, &
@@ -59,7 +59,7 @@ CONTAINS
       TYPE(pair_potential_pp_type), POINTER    :: potparm
       TYPE(fist_nonbond_env_type), POINTER     :: fist_nonbond_env
       REAL(kind=dp)                            :: pot_quip
-      TYPE(cp_para_env_type), OPTIONAL, &
+      TYPE(mp_para_env_type), OPTIONAL, &
          POINTER                                :: para_env
 
 #ifdef __QUIP
@@ -134,7 +134,7 @@ CONTAINS
             calc_args_str=TRIM(quip%calc_args), &
             calc_args_str_len=LEN_TRIM(quip%calc_args), &
             energy=pot_quip, force=force, virial=virial, &
-            output_unit=output_unit, mpi_communicator=para_env%group)
+            output_unit=output_unit, mpi_communicator=para_env%get_handle())
       ELSE
          CALL quip_unified_wrapper( &
             N=n_atoms_use, pos=pos, lattice=lattice, symbol=elem_symbol, &

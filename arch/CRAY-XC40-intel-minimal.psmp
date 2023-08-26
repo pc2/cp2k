@@ -4,8 +4,8 @@
 #
 # Tested with: Intel(R) Fortran Intel(R) 64 Compiler Classic for applications running on Intel(R) 64, Version 2021.3.0
 #              on Cray XC40 (Piz Daint, CSCS, multi-core partition)
-
-# Author: Matthias Krack (25.02.2022)
+#
+# Last update: 25.02.2022
 # \
    if [[ "${0}" == "${BASH_SOURCE}" ]]; then \
       echo "ERROR: Script ${0##*/} must be sourced"; \
@@ -33,7 +33,6 @@ CFLAGS    = -O2 -fopenmp -fp-model precise -funroll-loops -g -qopenmp-simd -trac
 DFLAGS    = -D__FFTW3
 DFLAGS   += -D__MAX_CONTR=4
 DFLAGS   += -D__MKL
-DFLAGS   += -D__MPI_VERSION=3
 DFLAGS   += -D__parallel
 DFLAGS   += -D__SCALAPACK
 

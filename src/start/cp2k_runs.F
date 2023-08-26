@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -30,10 +30,6 @@ MODULE cp2k_runs
                                               cp_print_key_finished_output,&
                                               cp_print_key_unit_nr,&
                                               cp_rm_iter_level
-   USE cp_para_env,                     ONLY: cp_para_env_create,&
-                                              cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_parser_methods,               ONLY: parser_search_string
    USE cp_parser_types,                 ONLY: cp_parser_type,&
                                               parser_create,&
@@ -108,9 +104,10 @@ MODULE cp2k_runs
                                               m_walltime
    USE mc_run,                          ONLY: do_mon_car
    USE md_run,                          ONLY: qs_mol_dyn
-   USE message_passing,                 ONLY: &
-        mp_any_source, mp_bcast, mp_comm_dup, mp_comm_free, mp_comm_split, mp_environ, mp_max, &
-        mp_recv, mp_send, mp_sum, mp_sync
+   USE message_passing,                 ONLY: mp_any_source,&
+                                              mp_comm_type,&
+                                              mp_para_env_release,&
+                                              mp_para_env_type
    USE mscfg_methods,                   ONLY: do_mol_loop,&
                                               loop_over_molecules
    USE neb_methods,                     ONLY: neb
@@ -177,7 +174,9 @@ CONTAINS
    RECURSIVE SUBROUTINE cp2k_run(input_declaration, input_file_name, output_unit, mpi_comm, initial_variables)
       TYPE(section_type), POINTER                        :: input_declaration
       CHARACTER(LEN=*), INTENT(IN)                       :: input_file_name
-      INTEGER, INTENT(IN)                                :: output_unit, mpi_comm
+      INTEGER, INTENT(IN)                                :: output_unit
+
+      CLASS(mp_comm_type)                                 :: mpi_comm
       CHARACTER(len=default_path_length), &
          DIMENSION(:, :), INTENT(IN)                     :: initial_variables
 
@@ -188,7 +187,7 @@ CONTAINS
       LOGICAL                                            :: echo_input, grid_apply_cutoff, &
                                                             grid_validate, I_was_ionode
       TYPE(cp_logger_type), POINTER                      :: logger, sublogger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(f_env_type), POINTER                          :: f_env
       TYPE(force_env_type), POINTER                      :: force_env
@@ -196,17 +195,18 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: glob_section, input_file, root_section
 
       NULLIFY (para_env, f_env, dft_control)
-      CALL cp_para_env_create(para_env, group=mpi_comm, owns_group=.FALSE.)
+      ALLOCATE (para_env)
+      para_env = mpi_comm
 
 #if defined(__DBCSR_ACC)
       IF (offload_get_device_count() > 0) THEN
-         CALL dbcsr_init_lib(mpi_comm, io_unit=output_unit, &
+         CALL dbcsr_init_lib(mpi_comm%get_handle(), io_unit=output_unit, &
                              accdrv_active_device_id=offload_get_chosen_device())
       ELSE
-         CALL dbcsr_init_lib(mpi_comm, io_unit=output_unit)
+         CALL dbcsr_init_lib(mpi_comm%get_handle(), io_unit=output_unit)
       END IF
 #else
-      CALL dbcsr_init_lib(mpi_comm, io_unit=output_unit)
+      CALL dbcsr_init_lib(mpi_comm%get_handle(), io_unit=output_unit)
 #endif
 
       CALL pw_gpu_init()
@@ -220,7 +220,7 @@ CONTAINS
       input_file => read_input(input_declaration, input_file_name, initial_variables=initial_variables, &
                                para_env=para_env)
 
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
 
       glob_section => section_vals_get_subs_vals(input_file, "GLOBAL")
       CALL section_vals_val_get(glob_section, "ECHO_INPUT", l_val=echo_input)
@@ -284,13 +284,13 @@ CONTAINS
          CALL farming_run(input_declaration, root_section, para_env, initial_variables)
 #if defined(__DBCSR_ACC)
          IF (offload_get_device_count() > 0) THEN
-            CALL dbcsr_init_lib(mpi_comm, io_unit=output_unit, &
+            CALL dbcsr_init_lib(mpi_comm%get_handle(), io_unit=output_unit, &
                                 accdrv_active_device_id=offload_get_chosen_device())
          ELSE
-            CALL dbcsr_init_lib(mpi_comm, io_unit=output_unit)
+            CALL dbcsr_init_lib(mpi_comm%get_handle(), io_unit=output_unit)
          END IF
 #else
-         CALL dbcsr_init_lib(mpi_comm, io_unit=output_unit)
+         CALL dbcsr_init_lib(mpi_comm%get_handle(), io_unit=output_unit)
 #endif
 
          CALL pw_gpu_init()
@@ -304,7 +304,7 @@ CONTAINS
          CALL create_force_env(new_env_id, &
                                input_declaration=input_declaration, &
                                input_path=input_file_name, &
-                               output_path="__STD_OUT__", mpi_comm=para_env%group, &
+                               output_path="__STD_OUT__", mpi_comm=para_env, &
                                output_unit=output_unit, &
                                owns_out_unit=.FALSE., &
                                input=input_file, ierr=ierr)
@@ -426,7 +426,7 @@ CONTAINS
       CALL grid_library_print_stats(mpi_comm=mpi_comm, output_unit=output_unit)
 
       m_memory_max_mpi = m_memory_max
-      CALL mp_max(m_memory_max_mpi, mpi_comm)
+      CALL mpi_comm%max(m_memory_max_mpi)
       IF (output_unit > 0) THEN
          WRITE (output_unit, *)
          WRITE (output_unit, '(T2,"MEMORY| Estimated peak process memory [MiB]",T73,I8)') &
@@ -447,7 +447,7 @@ CONTAINS
          CALL destroy_force_env(new_env_id, ierr=ierr)
          CPASSERT(ierr == 0)
       ELSE
-         I_was_ionode = para_env%ionode
+         I_was_ionode = para_env%is_source()
          CALL cp2k_finalize(root_section, para_env, globenv)
          CPASSERT(globenv%ref_count == 1)
          CALL section_vals_release(root_section)
@@ -456,7 +456,7 @@ CONTAINS
 
       CALL dbcsr_finalize_lib()
 
-      CALL cp_para_env_release(para_env)
+      CALL mp_para_env_release(para_env)
 
    END SUBROUTINE cp2k_run
 
@@ -474,25 +474,25 @@ CONTAINS
    RECURSIVE SUBROUTINE farming_run(input_declaration, root_section, para_env, initial_variables)
       TYPE(section_type), POINTER              :: input_declaration
       TYPE(section_vals_type), POINTER         :: root_section
-      TYPE(cp_para_env_type), POINTER          :: para_env
+      TYPE(mp_para_env_type), POINTER          :: para_env
       CHARACTER(len=default_path_length), DIMENSION(:, :), INTENT(IN) :: initial_variables
 
       CHARACTER(len=*), PARAMETER :: routineN = 'farming_run'
-      INTEGER, PARAMETER                       :: slave_status_done = -3, &
-                                                  slave_status_wait = -4
+      INTEGER, PARAMETER                       :: minion_status_done = -3, &
+                                                  minion_status_wait = -4
 
       CHARACTER(len=7)                         :: label
       CHARACTER(LEN=default_path_length)       :: output_file
       CHARACTER(LEN=default_string_length)     :: str
       INTEGER :: dest, handle, i, i_job_to_restart, ierr, ijob, ijob_current, &
-                 ijob_end, ijob_start, iunit, n_jobs_to_run, new_group, new_output_unit, &
-                 new_rank, new_size, ngroups, num_slaves, output_unit, primus_slave, &
-                 slave_group, slave_rank, source, tag, todo
+                 ijob_end, ijob_start, iunit, n_jobs_to_run, new_output_unit, &
+                 new_rank, ngroups, num_minions, output_unit, primus_minion, &
+                 minion_rank, source, tag, todo
       INTEGER, DIMENSION(:), POINTER           :: group_distribution, &
-                                                  master_slave_partition, &
-                                                  slave_distribution, &
-                                                  slave_status
-      LOGICAL                                  :: found, master, slave
+                                                  captain_minion_partition, &
+                                                  minion_distribution, &
+                                                  minion_status
+      LOGICAL                                  :: found, captain, minion
       REAL(KIND=dp)                            :: t1, t2
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: waittime
       TYPE(cp_logger_type), POINTER            :: logger
@@ -501,8 +501,9 @@ CONTAINS
       TYPE(farming_env_type), POINTER          :: farming_env
       TYPE(section_type), POINTER              :: g_section
       TYPE(section_vals_type), POINTER         :: g_data
+      TYPE(mp_comm_type)                       :: minion_group, new_group
 
-      ! the primus of all slaves, talks to the master on topics concerning all slaves
+      ! the primus of all minions, talks to the captain on topics concerning all minions
       CALL timeset(routineN, handle)
       NULLIFY (my_parser, g_section, g_data)
 
@@ -518,96 +519,97 @@ CONTAINS
       CALL m_getcwd(farming_env%cwd)
       CALL farming_parse_input(farming_env, root_section, para_env)
 
-      ! the full mpi group is first split in a slave group and a master group, the latter being at most 1 process
-      slave = .TRUE.
-      master = .FALSE.
-      IF (farming_env%master_slave) THEN
-         IF (output_unit > 0) WRITE (output_unit, FMT="(T2,A)") "FARMING| using a master-slave setup"
+      ! the full mpi group is first split in a minion group and a captain group, the latter being at most 1 process
+      minion = .TRUE.
+      captain = .FALSE.
+      IF (farming_env%captain_minion) THEN
+         IF (output_unit > 0) WRITE (output_unit, FMT="(T2,A)") "FARMING| Using a Captain-Minion setup"
 
-         ALLOCATE (master_slave_partition(0:1))
-         master_slave_partition = (/1, para_env%num_pe - 1/)
+         ALLOCATE (captain_minion_partition(0:1))
+         captain_minion_partition = (/1, para_env%num_pe - 1/)
          ALLOCATE (group_distribution(0:para_env%num_pe - 1))
 
-         CALL mp_comm_split(para_env%group, slave_group, ngroups, group_distribution, &
-                            n_subgroups=2, group_partition=master_slave_partition)
-         DEALLOCATE (master_slave_partition)
+         CALL minion_group%from_split(para_env, ngroups, group_distribution, &
+                                      n_subgroups=2, group_partition=captain_minion_partition)
+         DEALLOCATE (captain_minion_partition)
          DEALLOCATE (group_distribution)
-         CALL mp_environ(num_slaves, slave_rank, slave_group)
+         num_minions = minion_group%num_pe
+         minion_rank = minion_group%mepos
 
          IF (para_env%mepos == 0) THEN
-            slave = .FALSE.
-            master = .TRUE.
-            ! on the master node, num_slaves corresponds to the size of the master group
-            ! due to the mp_environ call.
-            CPASSERT(num_slaves == 1)
-            num_slaves = para_env%num_pe - 1
-            slave_rank = -1
+            minion = .FALSE.
+            captain = .TRUE.
+            ! on the captain node, num_minions corresponds to the size of the captain group
+            CPASSERT(num_minions == 1)
+            num_minions = para_env%num_pe - 1
+            minion_rank = -1
          END IF
-         CPASSERT(num_slaves == para_env%num_pe - 1)
+         CPASSERT(num_minions == para_env%num_pe - 1)
       ELSE
-         ! all processes are slaves
-         IF (output_unit > 0) WRITE (output_unit, FMT="(T2,A)") "FARMING| using a slave-only setup"
-         CALL mp_comm_dup(para_env%group, slave_group)
-         CALL mp_environ(num_slaves, slave_rank, slave_group)
+         ! all processes are minions
+         IF (output_unit > 0) WRITE (output_unit, FMT="(T2,A)") "FARMING| Using a Minion-only setup"
+         CALL minion_group%from_dup(para_env)
+         num_minions = minion_group%num_pe
+         minion_rank = minion_group%mepos
       END IF
-      IF (output_unit > 0) WRITE (output_unit, FMT="(T2,A,I0)") "FARMING| number of slaves ", num_slaves
+      IF (output_unit > 0) WRITE (output_unit, FMT="(T2,A,I0)") "FARMING| Number of Minions ", num_minions
 
-      ! keep track of which para_env rank is which slave/master
-      ALLOCATE (slave_distribution(0:para_env%num_pe - 1))
-      slave_distribution = 0
-      slave_distribution(para_env%mepos) = slave_rank
-      CALL mp_sum(slave_distribution, para_env%group)
+      ! keep track of which para_env rank is which minion/captain
+      ALLOCATE (minion_distribution(0:para_env%num_pe - 1))
+      minion_distribution = 0
+      minion_distribution(para_env%mepos) = minion_rank
+      CALL para_env%sum(minion_distribution)
       ! we do have a primus inter pares
-      primus_slave = 0
+      primus_minion = 0
       DO i = 1, para_env%num_pe - 1
-         IF (slave_distribution(i) == 0) primus_slave = i
+         IF (minion_distribution(i) == 0) primus_minion = i
       END DO
 
-      ! split the current communicator for the slaves
+      ! split the current communicator for the minions
       ! in a new_group, new_size and new_rank according to the number of groups required according to the input
-      ALLOCATE (group_distribution(0:num_slaves - 1))
+      ALLOCATE (group_distribution(0:num_minions - 1))
       group_distribution = -1
-      IF (slave) THEN
+      IF (minion) THEN
          IF (farming_env%group_size_wish_set) THEN
             farming_env%group_size_wish = MIN(farming_env%group_size_wish, para_env%num_pe)
-            CALL mp_comm_split(slave_group, new_group, ngroups, group_distribution, &
-                               subgroup_min_size=farming_env%group_size_wish, stride=farming_env%stride)
+            CALL new_group%from_split(minion_group, ngroups, group_distribution, &
+                                      subgroup_min_size=farming_env%group_size_wish, stride=farming_env%stride)
          ELSE IF (farming_env%ngroup_wish_set) THEN
             IF (ASSOCIATED(farming_env%group_partition)) THEN
-               CALL mp_comm_split(slave_group, new_group, ngroups, group_distribution, &
-                                  n_subgroups=farming_env%ngroup_wish, &
-                                  group_partition=farming_env%group_partition, stride=farming_env%stride)
+               CALL new_group%from_split(minion_group, ngroups, group_distribution, &
+                                         n_subgroups=farming_env%ngroup_wish, &
+                                         group_partition=farming_env%group_partition, stride=farming_env%stride)
             ELSE
-               CALL mp_comm_split(slave_group, new_group, ngroups, group_distribution, &
-                                  n_subgroups=farming_env%ngroup_wish, stride=farming_env%stride)
+               CALL new_group%from_split(minion_group, ngroups, group_distribution, &
+                                         n_subgroups=farming_env%ngroup_wish, stride=farming_env%stride)
             END IF
          ELSE
             CPABORT("must set either group_size_wish or ngroup_wish")
          END IF
-         CALL mp_environ(new_size, new_rank, new_group)
+         new_rank = new_group%mepos
       END IF
 
-      ! transfer the info about the slave group distribution to the master
-      IF (farming_env%master_slave) THEN
-         IF (para_env%mepos == primus_slave) THEN
+      ! transfer the info about the minion group distribution to the captain
+      IF (farming_env%captain_minion) THEN
+         IF (para_env%mepos == primus_minion) THEN
             tag = 1
-            CALL mp_send(group_distribution, 0, tag, para_env%group)
+            CALL para_env%send(group_distribution, 0, tag)
             tag = 2
-            CALL mp_send(ngroups, 0, tag, para_env%group)
+            CALL para_env%send(ngroups, 0, tag)
          END IF
          IF (para_env%mepos == 0) THEN
             tag = 1
-            CALL mp_recv(group_distribution, primus_slave, tag, para_env%group)
+            CALL para_env%recv(group_distribution, primus_minion, tag)
             tag = 2
-            CALL mp_recv(ngroups, primus_slave, tag, para_env%group)
+            CALL para_env%recv(ngroups, primus_minion, tag)
          END IF
       END IF
 
       ! write info on group distribution
       IF (output_unit > 0) THEN
-         WRITE (output_unit, FMT="(T2,A,T71,I10)") "FARMING| Number of created MPI (slave) groups:", ngroups
-         WRITE (output_unit, FMT="(T2,A)", ADVANCE="NO") "FARMING| MPI (slave) process to group correspondence:"
-         DO i = 0, num_slaves - 1
+         WRITE (output_unit, FMT="(T2,A,T71,I10)") "FARMING| Number of created MPI (Minion) groups:", ngroups
+         WRITE (output_unit, FMT="(T2,A)", ADVANCE="NO") "FARMING| MPI (Minion) process to group correspondence:"
+         DO i = 0, num_minions - 1
             IF (MODULO(i, 4) == 0) WRITE (output_unit, *)
             WRITE (output_unit, FMT='(A3,I6,A3,I6,A1)', ADVANCE="NO") &
                "  (", i, " : ", group_distribution(i), ")"
@@ -646,27 +648,27 @@ CONTAINS
       END IF
 
       ! actual executions of the jobs in two different modes
-      IF (farming_env%master_slave) THEN
-         IF (slave) THEN
-            ! keep on doing work until master has decided otherwise
+      IF (farming_env%captain_minion) THEN
+         IF (minion) THEN
+            ! keep on doing work until captain has decided otherwise
             todo = do_wait
             DO
                IF (new_rank == 0) THEN
-                  ! the head slave tells the master he's done or ready to start
+                  ! the head minion tells the captain he's done or ready to start
                   ! the message tells what has been done lately
                   tag = 1
                   dest = 0
-                  CALL mp_send(todo, dest, tag, para_env%group)
+                  CALL para_env%send(todo, dest, tag)
 
                   ! gets the new todo item
                   tag = 2
                   source = 0
-                  CALL mp_recv(todo, source, tag, para_env%group)
+                  CALL para_env%recv(todo, source, tag)
 
-                  ! and informs his peer slaves
-                  CALL mp_bcast(todo, 0, new_group)
+                  ! and informs his peer minions
+                  CALL new_group%bcast(todo, 0)
                ELSE
-                  CALL mp_bcast(todo, 0, new_group)
+                  CALL new_group%bcast(todo, 0)
                END IF
 
                ! if the todo is do_nothing we are flagged to quit. Otherwise it is the job number
@@ -684,18 +686,18 @@ CONTAINS
                   CALL execute_job(todo)
                END SELECT
             END DO
-         ELSE ! master
-            ALLOCATE (slave_status(0:ngroups - 1))
-            slave_status = slave_status_wait
+         ELSE ! captain
+            ALLOCATE (minion_status(0:ngroups - 1))
+            minion_status = minion_status_wait
             ijob_current = ijob_start - 1
 
             DO
-               IF (ALL(slave_status == slave_status_done)) EXIT
+               IF (ALL(minion_status == minion_status_done)) EXIT
 
-               ! who's the next slave waiting for work
+               ! who's the next minion waiting for work
                tag = 1
                source = mp_any_source
-               CALL mp_recv(todo, source, tag, para_env%group) ! updates source
+               CALL para_env%recv(todo, source, tag) ! updates source
                IF (todo > 0) THEN
                   farming_env%Job(todo)%status = job_finished
                   IF (output_unit > 0) THEN
@@ -708,20 +710,20 @@ CONTAINS
                CALL get_next_job(farming_env, ijob_start, ijob_end, ijob_current, todo)
                dest = source
                tag = 2
-               CALL mp_send(todo, dest, tag, para_env%group)
+               CALL para_env%send(todo, dest, tag)
 
                IF (todo > 0) THEN
                   farming_env%Job(todo)%status = job_running
                   IF (output_unit > 0) THEN
                      WRITE (output_unit, FMT=*) "Job: ", todo, " Dir: ", TRIM(farming_env%Job(todo)%cwd), &
-                        " assigned to group ", group_distribution(slave_distribution(dest))
+                        " assigned to group ", group_distribution(minion_distribution(dest))
                      CALL m_flush(output_unit)
                   END IF
                ELSE
                   IF (todo == do_nothing) THEN
-                     slave_status(group_distribution(slave_distribution(dest))) = slave_status_done
+                     minion_status(group_distribution(minion_distribution(dest))) = minion_status_done
                      IF (output_unit > 0) THEN
-                        WRITE (output_unit, FMT=*) "group done: ", group_distribution(slave_distribution(dest))
+                        WRITE (output_unit, FMT=*) "group done: ", group_distribution(minion_distribution(dest))
                         CALL m_flush(output_unit)
                      END IF
                   END IF
@@ -738,11 +740,11 @@ CONTAINS
 
             END DO
 
-            DEALLOCATE (slave_status)
+            DEALLOCATE (minion_status)
 
          END IF
       ELSE
-         ! this is the non-master-slave mode way of executing the jobs
+         ! this is the non-captain-minion mode way of executing the jobs
          ! the i-th job in the input is always executed by the MODULO(i-1,ngroups)-th group
          ! (needed for cyclic runs, we don't want two groups working on the same job)
          IF (output_unit > 0) THEN
@@ -760,7 +762,7 @@ CONTAINS
          DO ijob = ijob_start, ijob_end
             i = MODULO(ijob - 1, farming_env%njobs) + 1
             ! this farms out the jobs
-            IF (MODULO(i - 1, ngroups) == group_distribution(slave_rank)) THEN
+            IF (MODULO(i - 1, ngroups) == group_distribution(minion_rank)) THEN
                IF (output_unit > 0) THEN
                   WRITE (output_unit, FMT="(T2,A,I5.5,A)", ADVANCE="NO") " Running Job ", i, &
                      " in "//TRIM(farming_env%Job(i)%cwd)//"."
@@ -778,12 +780,12 @@ CONTAINS
       ! keep information about how long each process has to wait
       ! i.e. the load imbalance
       t1 = m_walltime()
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
       t2 = m_walltime()
       ALLOCATE (waittime(0:para_env%num_pe - 1))
       waittime = 0.0_dp
       waittime(para_env%mepos) = t2 - t1
-      CALL mp_sum(waittime, para_env%group)
+      CALL para_env%sum(waittime)
       IF (output_unit > 0) THEN
          WRITE (output_unit, '(T2,A)') "Process idle times [s] at the end of the run"
          DO i = 0, para_env%num_pe - 1
@@ -796,12 +798,12 @@ CONTAINS
       DEALLOCATE (waittime)
 
       ! give back the communicators of the split groups
-      IF (slave) CALL mp_comm_free(new_group)
-      CALL mp_comm_free(slave_group)
+      IF (minion) CALL new_group%free()
+      CALL minion_group%free()
 
       ! and message passing deallocate structures
       DEALLOCATE (group_distribution)
-      DEALLOCATE (slave_distribution)
+      DEALLOCATE (minion_distribution)
 
       ! clean the farming env
       CALL deallocate_farming_env(farming_env)
@@ -819,7 +821,7 @@ CONTAINS
       RECURSIVE SUBROUTINE execute_job(i)
       INTEGER                                            :: i
 
-! change to the new working directory
+         ! change to the new working directory
 
          CALL m_chdir(TRIM(farming_env%Job(i)%cwd), ierr)
          IF (ierr .NE. 0) &
@@ -971,19 +973,19 @@ CONTAINS
       CHARACTER(len=*), INTENT(in)                       :: input_file_path, output_file_path
       CHARACTER(len=default_path_length), &
          DIMENSION(:, :), INTENT(IN)                     :: initial_variables
-      INTEGER, INTENT(in), OPTIONAL                      :: mpi_comm
+      TYPE(mp_comm_type), INTENT(in), OPTIONAL           :: mpi_comm
 
       INTEGER                                            :: unit_nr
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       IF (PRESENT(mpi_comm)) THEN
-         NULLIFY (para_env)
-         CALL cp_para_env_create(para_env, group=mpi_comm, owns_group=.FALSE.)
+         ALLOCATE (para_env)
+         para_env = mpi_comm
       ELSE
          para_env => f77_default_para_env
-         CALL cp_para_env_retain(para_env)
+         CALL para_env%retain()
       END IF
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          IF (output_file_path == "__STD_OUT__") THEN
             unit_nr = default_output_unit
          ELSE
@@ -992,8 +994,8 @@ CONTAINS
       ELSE
          unit_nr = -1
       END IF
-      CALL cp2k_run(input_declaration, input_file_path, unit_nr, para_env%group, initial_variables)
-      CALL cp_para_env_release(para_env)
+      CALL cp2k_run(input_declaration, input_file_path, unit_nr, para_env, initial_variables)
+      CALL mp_para_env_release(para_env)
    END SUBROUTINE run_input
 
 END MODULE cp2k_runs

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -30,7 +30,6 @@ MODULE xas_tdp_integrals
                                               cp_eri_mme_set_params
    USE cp_files,                        ONLY: close_file,&
                                               open_file
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_distribution_get,&
                                               dbcsr_distribution_release,&
                                               dbcsr_distribution_type
@@ -63,8 +62,8 @@ MODULE xas_tdp_integrals
                                               cp_libint_set_contrdepth,&
                                               cp_libint_t
    USE mathlib,                         ONLY: invmat_symm
-   USE message_passing,                 ONLY: mp_sum,&
-                                              mp_sync
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE molecule_types,                  ONLY: molecule_type
    USE orbital_pointers,                ONLY: ncoset
    USE particle_methods,                ONLY: get_particle_set
@@ -136,9 +135,9 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'create_pqX_tensor'
 
-      INTEGER                                            :: A, b, group, handle, i, iatom, ikind, &
-                                                            jatom, katom, kkind, nblk, nblk_3, &
-                                                            nblk_per_thread, nkind
+      INTEGER                                            :: A, b, group_handle, handle, i, iatom, &
+                                                            ikind, jatom, katom, kkind, nblk, &
+                                                            nblk_3, nblk_per_thread, nkind
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: idx1, idx2, idx3
       INTEGER, DIMENSION(3)                              :: pdims
       INTEGER, DIMENSION(:), POINTER                     :: col_dist, row_dist
@@ -147,6 +146,7 @@ CONTAINS
       REAL(dp), DIMENSION(3)                             :: rab, rac, rbc
       TYPE(dbt_distribution_type)                        :: t_dist
       TYPE(dbt_pgrid_type)                               :: t_pgrid
+      TYPE(mp_comm_type)                                 :: group
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: ab_iter, ac_iter
 
@@ -161,8 +161,9 @@ CONTAINS
       CPASSERT(symmetric)
 
       !get 2D distribution info from matrix_dist
-      CALL dbcsr_distribution_get(matrix_dist, pgrid=mat_pgrid, group=group, &
+      CALL dbcsr_distribution_get(matrix_dist, pgrid=mat_pgrid, group=group_handle, &
                                   row_dist=row_dist, col_dist=col_dist)
+      CALL group%set_handle(group_handle)
 
       !create the corresponding tensor proc grid and dist
       pdims(1) = SIZE(mat_pgrid, 1); pdims(2) = SIZE(mat_pgrid, 2); pdims(3) = 1
@@ -306,10 +307,10 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: rpgf_a, rpgf_b, rpgf_c, zeta, zetb, zetc
       TYPE(cp_2d_r_p_type), DIMENSION(:, :), POINTER     :: spb, spc, tspa
       TYPE(cp_libint_t)                                  :: lib
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_list
       TYPE(gto_basis_set_type), POINTER                  :: basis_set, basis_set_a, basis_set_b, &
                                                             basis_set_c
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(o3c_container_type), POINTER                  :: o3c
       TYPE(o3c_iterator_type)                            :: o3c_iterator
 
@@ -460,7 +461,7 @@ CONTAINS
             IF (para_env%mepos == 0) THEN
                CALL open_file(unit_number=unit_id, file_name=potential_parameter%filename)
             END IF
-            CALL init(m_max, unit_id, para_env%mepos, para_env%group)
+            CALL init(m_max, unit_id, para_env%mepos, para_env)
             IF (para_env%mepos == 0) THEN
                CALL close_file(unit_id)
             END IF
@@ -913,7 +914,7 @@ CONTAINS
                                                             row_proc_cost
       TYPE(cp_1d_i_p_type), DIMENSION(:), POINTER        :: local_particle_col, local_particle_row
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: ab_iter, ac_iter
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -979,8 +980,8 @@ CONTAINS
       CALL neighbor_list_iterator_release(ab_iter)
       CALL neighbor_list_iterator_release(ac_iter)
 
-      CALL mp_sum(row_cost, para_env%group)
-      CALL mp_sum(col_cost, para_env%group)
+      CALL para_env%sum(row_cost)
+      CALL para_env%sum(col_cost)
 
       !Distribute the cost as evenly as possible
       ALLOCATE (col_proc_cost(npcol), row_proc_cost(nprow))
@@ -1065,9 +1066,9 @@ CONTAINS
 
       INTEGER                                            :: handle, natom, nkind
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: blk_size_orb, blk_size_ri
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_distribution_type)                      :: opt_dbcsr_dist
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_orb, basis_set_ri
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: ab_list, ac_list
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -1127,7 +1128,7 @@ CONTAINS
 
       !not strictly necessary but avoid having any load unbalance here being reported in the
       !timings for other routines
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
 
       CALL timestop(handle)
 
@@ -1150,10 +1151,10 @@ CONTAINS
 
       INTEGER                                            :: handle, natom, nkind
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: blk_size_orb, blk_size_ri
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_distribution_type)                      :: opt_dbcsr_dist
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_orb, basis_set_ri
       TYPE(libint_potential_type)                        :: pot
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: ab_list, ac_list
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -1217,7 +1218,7 @@ CONTAINS
 
       !not strictly necessary but avoid having any load unbalance here being reported in the
       !timings for other routines
-      CALL mp_sync(para_env%group)
+      CALL para_env%sync()
 
       CALL timestop(handle)
 
@@ -1251,8 +1252,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: metric, pq, work
       REAL(dp), DIMENSION(:, :), POINTER                 :: rpgf, sphi, zet
       TYPE(cp_libint_t)                                  :: lib
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(gto_basis_set_type), POINTER                  :: ri_basis
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
       NULLIFY (ri_basis, qs_kind_set, para_env, lmin, lmax, npgf_set, zet, rpgf, first_sgf)
@@ -1285,7 +1286,7 @@ CONTAINS
             IF (para_env%mepos == 0) THEN
                CALL open_file(unit_number=unit_id, file_name=xas_tdp_control%ri_m_potential%filename)
             END IF
-            CALL init(2*maxl + 1, unit_id, para_env%mepos, para_env%group)
+            CALL init(2*maxl + 1, unit_id, para_env%mepos, para_env)
             IF (para_env%mepos == 0) THEN
                CALL close_file(unit_id)
             END IF
@@ -1337,7 +1338,7 @@ CONTAINS
             IF (para_env%mepos == 0) THEN
                CALL open_file(unit_number=unit_id, file_name=xas_tdp_control%x_potential%filename)
             END IF
-            CALL init(2*maxl + 1, unit_id, para_env%mepos, para_env%group)
+            CALL init(2*maxl + 1, unit_id, para_env%mepos, para_env)
             IF (para_env%mepos == 0) THEN
                CALL close_file(unit_id)
             END IF
@@ -1455,7 +1456,7 @@ CONTAINS
       REAL(dp), DIMENSION(:, :), POINTER                 :: sphi, zet
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_eri_mme_param)                             :: mme_param
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
       NULLIFY (cell, qs_kind_set, lmin, lmax, nsgf, npgf, zet, sphi, first_sgf)

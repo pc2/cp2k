@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -18,7 +18,6 @@ MODULE qs_environment_methods
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_operations,             ONLY: cp_dbcsr_dist2d_to_dist
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_distribution_type
    USE distribution_2d_types,           ONLY: distribution_2d_release,&
                                               distribution_2d_type
@@ -28,6 +27,7 @@ MODULE qs_environment_methods
    USE ewald_pw_types,                  ONLY: ewald_pw_type
    USE input_constants,                 ONLY: do_ppl_grid
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: molecule_kind_type
    USE molecule_types,                  ONLY: molecule_type
    USE particle_types,                  ONLY: particle_type
@@ -96,12 +96,12 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_distribution_type), POINTER             :: dbcsr_dist
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(distribution_2d_type), POINTER                :: distribution_2d
       TYPE(molecule_kind_type), DIMENSION(:), POINTER    :: molecule_kind_set
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_charges_type), POINTER                     :: qs_charges
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -248,8 +248,7 @@ CONTAINS
                ALLOCATE (rho_core)
                CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
                CALL pw_pool_create_pw(auxbas_pw_pool, rho_core, &
-                                      use_data=COMPLEXDATA1D)
-               rho_core%in_space = RECIPROCALSPACE
+                                      use_data=COMPLEXDATA1D, in_space=RECIPROCALSPACE)
                CALL set_ks_env(ks_env, rho_core=rho_core)
             END IF
             CALL get_qs_env(qs_env=qs_env, rho0_mpole=rho0_mpole)
@@ -281,8 +280,7 @@ CONTAINS
             ALLOCATE (rho_core)
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
             CALL pw_pool_create_pw(auxbas_pw_pool, rho_core, &
-                                   use_data=COMPLEXDATA1D)
-            rho_core%in_space = RECIPROCALSPACE
+                                   use_data=COMPLEXDATA1D, in_space=RECIPROCALSPACE)
             CALL set_ks_env(ks_env, rho_core=rho_core)
          END IF
 
@@ -296,8 +294,7 @@ CONTAINS
                ALLOCATE (vppl)
             END IF
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
-            CALL pw_pool_create_pw(auxbas_pw_pool, vppl, use_data=REALDATA3D)
-            vppl%in_space = REALSPACE
+            CALL pw_pool_create_pw(auxbas_pw_pool, vppl, use_data=REALDATA3D, in_space=REALSPACE)
             CALL set_ks_env(ks_env, vppl=vppl)
          END IF
 
@@ -314,8 +311,7 @@ CONTAINS
                ALLOCATE (rho_nlcc)
             END IF
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
-            CALL pw_pool_create_pw(auxbas_pw_pool, rho_nlcc, use_data=REALDATA3D)
-            rho_nlcc%in_space = REALSPACE
+            CALL pw_pool_create_pw(auxbas_pw_pool, rho_nlcc, REALDATA3D, REALSPACE)
             CALL set_ks_env(ks_env, rho_nlcc=rho_nlcc)
             ! the g-space version
             NULLIFY (rho_nlcc_g)
@@ -326,8 +322,7 @@ CONTAINS
                ALLOCATE (rho_nlcc_g)
             END IF
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
-            CALL pw_pool_create_pw(auxbas_pw_pool, rho_nlcc_g, use_data=COMPLEXDATA1D)
-            rho_nlcc_g%in_space = RECIPROCALSPACE
+            CALL pw_pool_create_pw(auxbas_pw_pool, rho_nlcc_g, COMPLEXDATA1D, RECIPROCALSPACE)
             CALL set_ks_env(ks_env, rho_nlcc_g=rho_nlcc_g)
          END IF
 
@@ -341,8 +336,7 @@ CONTAINS
             END IF
             ALLOCATE (vee)
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
-            CALL pw_pool_create_pw(auxbas_pw_pool, vee, use_data=REALDATA3D)
-            vee%in_space = REALSPACE
+            CALL pw_pool_create_pw(auxbas_pw_pool, vee, REALDATA3D, REALSPACE)
             CALL set_ks_env(ks_env, vee=vee)
             dft_control%eval_external_potential = .TRUE.
          END IF
@@ -357,8 +351,7 @@ CONTAINS
                ALLOCATE (external_vxc)
             END IF
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
-            CALL pw_pool_create_pw(auxbas_pw_pool, external_vxc, use_data=REALDATA3D)
-            external_vxc%in_space = REALSPACE
+            CALL pw_pool_create_pw(auxbas_pw_pool, external_vxc, REALDATA3D, REALSPACE)
             CALL set_qs_env(qs_env, external_vxc=external_vxc)
             dft_control%read_external_vxc = .TRUE.
          END IF
@@ -373,8 +366,7 @@ CONTAINS
                ALLOCATE (embed_pot)
             END IF
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
-            CALL pw_pool_create_pw(auxbas_pw_pool, embed_pot, use_data=REALDATA3D)
-            embed_pot%in_space = REALSPACE
+            CALL pw_pool_create_pw(auxbas_pw_pool, embed_pot, REALDATA3D, REALSPACE)
             CALL set_qs_env(qs_env, embed_pot=embed_pot)
 
             NULLIFY (spin_embed_pot)
@@ -386,8 +378,7 @@ CONTAINS
                ALLOCATE (spin_embed_pot)
             END IF
             CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
-            CALL pw_pool_create_pw(auxbas_pw_pool, spin_embed_pot, use_data=REALDATA3D)
-            spin_embed_pot%in_space = REALSPACE
+            CALL pw_pool_create_pw(auxbas_pw_pool, spin_embed_pot, REALDATA3D, REALSPACE)
             CALL set_qs_env(qs_env, spin_embed_pot=spin_embed_pot)
          END IF
 
@@ -400,7 +391,7 @@ CONTAINS
          CALL pw_env_get(new_pw_env, auxbas_pw_pool=auxbas_pw_pool)
          ALLOCATE (v_hartree_rspace)
          CALL pw_pool_create_pw(auxbas_pw_pool, v_hartree_rspace, &
-                                use_data=REALDATA3D, in_space=REALSPACE)
+                                REALDATA3D, REALSPACE)
          CALL set_ks_env(ks_env, v_hartree_rspace=v_hartree_rspace)
       END IF
 

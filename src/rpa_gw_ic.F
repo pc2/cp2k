@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -11,7 +11,6 @@
 !>      06.2019 Moved from rpa_ri_gpw [Frederick Stein]
 ! **************************************************************************************************
 MODULE rpa_gw_ic
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_type
    USE dbt_api,                         ONLY: &
         dbt_contract, dbt_copy, dbt_copy_matrix_to_tensor, dbt_create, dbt_destroy, dbt_get_block, &
@@ -20,7 +19,7 @@ MODULE rpa_gw_ic
         dbt_pgrid_destroy, dbt_pgrid_type, dbt_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_dims_create,&
-                                              mp_sum
+                                              mp_para_env_type
    USE physcon,                         ONLY: evolt
    USE qs_tensors_types,                ONLY: create_2c_tensor
 #include "./base/base_uses.f90"
@@ -64,7 +63,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: gw_corr_lev_tot, gw_corr_lev_occ, &
                                                             gw_corr_lev_virt, homo, unit_nr
       LOGICAL, INTENT(IN)                                :: print_ic_values
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: do_alpha, do_beta
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_ic_correction'
@@ -109,7 +108,7 @@ CONTAINS
       CALL dbt_copy_matrix_to_tensor(mat_SinvVSinv, t_SinvVSinv_tmp)
       pdims = 0
       CALL mp_dims_create(para_env%num_pe, pdims)
-      CALL dbt_pgrid_create(para_env%group, pdims, pgrid_2d)
+      CALL dbt_pgrid_create(para_env, pdims, pgrid_2d)
       CALL create_2c_tensor(t_SinvVSinv, dist_1, dist_2, pgrid_2d, sizes_RI_split, sizes_RI_split, &
                             name="(RI|RI)")
       DEALLOCATE (dist_1, dist_2)
@@ -221,7 +220,7 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: t3c_1, t3c_2
       REAL(dp), DIMENSION(:), INTENT(INOUT)              :: Delta_Sigma_Neaton
       INTEGER, DIMENSION(2), INTENT(IN)                  :: mo_bounds
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'trace_ic_gw'
 
@@ -279,7 +278,7 @@ CONTAINS
 !$OMP END PARALLEL
 
       Delta_Sigma_Neaton = Delta_Sigma_Neaton + Delta_Sigma_Neaton_prv
-      CALL mp_sum(Delta_Sigma_Neaton, para_env%group)
+      CALL para_env%sum(Delta_Sigma_Neaton)
 
       CALL timestop(handle)
 

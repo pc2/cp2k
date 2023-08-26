@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,13 +15,13 @@ MODULE gaussian_gridlevels
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_release,&
                                               section_vals_retain,&
                                               section_vals_type
    USE kinds,                           ONLY: dp,&
                                               int_8
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -32,12 +32,12 @@ MODULE gaussian_gridlevels
 
 ! **************************************************************************************************
    TYPE gridlevel_info_type
-      INTEGER                         :: ngrid_levels
-      REAL(KIND=dp), POINTER, DIMENSION(:) :: cutoff
-      INTEGER(KIND=int_8), POINTER, DIMENSION(:) :: count
-      INTEGER(KIND=int_8)                         :: total_count
-      REAL(KIND=dp)                  :: rel_cutoff
-      TYPE(section_vals_type), POINTER :: print_section
+      INTEGER                         :: ngrid_levels = 0
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: cutoff => NULL()
+      INTEGER(KIND=int_8), POINTER, DIMENSION(:) :: count => NULL()
+      INTEGER(KIND=int_8)                         :: total_count = 0_int_8
+      REAL(KIND=dp)                  :: rel_cutoff = 0.0_dp
+      TYPE(section_vals_type), POINTER :: print_section => NULL()
    END TYPE gridlevel_info_type
 
    PUBLIC :: gridlevel_info_type
@@ -56,11 +56,11 @@ CONTAINS
 !> \param print_section ...
 ! **************************************************************************************************
    SUBROUTINE init_gaussian_gridlevel(gridlevel_info, ngrid_levels, cutoff, rel_cutoff, print_section)
-      TYPE(gridlevel_info_type)                          :: gridlevel_info
-      INTEGER                                            :: ngrid_levels
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: cutoff
-      REAL(KIND=dp)                                      :: rel_cutoff
-      TYPE(section_vals_type), POINTER                   :: print_section
+      TYPE(gridlevel_info_type), INTENT(OUT)             :: gridlevel_info
+      INTEGER, INTENT(IN)                                :: ngrid_levels
+      REAL(KIND=dp), DIMENSION(ngrid_levels), INTENT(IN) :: cutoff
+      REAL(KIND=dp), INTENT(IN)                          :: rel_cutoff
+      TYPE(section_vals_type), INTENT(IN), TARGET        :: print_section
 
       INTEGER                                            :: i
 
@@ -68,13 +68,12 @@ CONTAINS
       ALLOCATE (gridlevel_info%count(ngrid_levels))
       gridlevel_info%ngrid_levels = ngrid_levels
       gridlevel_info%rel_cutoff = rel_cutoff
-      gridlevel_info%total_count = 0
       DO i = 1, ngrid_levels
          gridlevel_info%cutoff(i) = cutoff(i)
          gridlevel_info%count(i) = 0
       END DO
       gridlevel_info%print_section => print_section
-      CALL section_vals_retain(print_section)
+      CALL section_vals_retain(gridlevel_info%print_section)
    END SUBROUTINE init_gaussian_gridlevel
 
 ! **************************************************************************************************
@@ -83,27 +82,28 @@ CONTAINS
 !> \param para_env ...
 ! **************************************************************************************************
    SUBROUTINE destroy_gaussian_gridlevel(gridlevel_info, para_env)
-      TYPE(gridlevel_info_type)                          :: gridlevel_info
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(gridlevel_info_type), INTENT(INOUT)           :: gridlevel_info
+      TYPE(mp_para_env_type), INTENT(IN), OPTIONAL       :: para_env
 
-      INTEGER                                            :: group, i, output_unit
+      INTEGER                                            :: i, output_unit
       LOGICAL                                            :: do_io
       TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(mp_comm_type)                                 :: group
 
       NULLIFY (logger)
       logger => cp_get_default_logger()
       IF (PRESENT(para_env)) THEN
-         group = para_env%group
+         group = para_env
          do_io = .FALSE. !subgroups completely mess up the output file
       ELSE
-         group = logger%para_env%group
+         group = logger%para_env
          do_io = .TRUE.
       END IF
 
       IF (do_io) THEN
 
-         CALL mp_sum(gridlevel_info%total_count, group)
-         CALL mp_sum(gridlevel_info%count, group)
+         CALL group%sum(gridlevel_info%total_count)
+         CALL group%sum(gridlevel_info%count)
 
          output_unit = cp_print_key_unit_nr(logger, gridlevel_info%print_section, &
                                             "", extension=".Log")
@@ -146,7 +146,7 @@ CONTAINS
 ! **************************************************************************************************
    FUNCTION gaussian_gridlevel(gridlevel_info, exponent) RESULT(gridlevel)
       TYPE(gridlevel_info_type), INTENT(INOUT)           :: gridlevel_info
-      REAL(KIND=dp)                                      :: exponent
+      REAL(KIND=dp), INTENT(IN)                          :: exponent
       INTEGER                                            :: gridlevel
 
       INTEGER                                            :: i
@@ -159,10 +159,10 @@ CONTAINS
             gridlevel = i
          END IF
       END DO
-      !$OMP CRITICAL(add_counts)
+!$OMP ATOMIC
       gridlevel_info%total_count = gridlevel_info%total_count + 1
+!$OMP ATOMIC
       gridlevel_info%count(gridlevel) = gridlevel_info%count(gridlevel) + 1
-      !$OMP END CRITICAL(add_counts)
 
    END FUNCTION gaussian_gridlevel
 

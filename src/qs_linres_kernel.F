@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -21,11 +21,10 @@ MODULE qs_linres_kernel
                                               dbcsr_allocate_matrix_set,&
                                               dbcsr_deallocate_matrix_set
    USE cp_fm_types,                     ONLY: cp_fm_get_info,&
-                                              cp_fm_p_type
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type,&
                                               cp_to_string
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_copy,&
                                               dbcsr_create,&
@@ -56,7 +55,7 @@ MODULE qs_linres_kernel
                                               lri_environment_type,&
                                               lri_kind_type
    USE lri_ks_methods,                  ONLY: calculate_lri_ks_matrix
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE mulliken,                        ONLY: ao_charges
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -139,7 +138,7 @@ CONTAINS
       !
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_p_env_type)                                :: p_env
-      TYPE(cp_fm_p_type), DIMENSION(:)                   :: c0, Av
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: c0, Av
 
       INTEGER                                            :: ispin, ncol
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -159,10 +158,10 @@ CONTAINS
       END IF
 
       DO ispin = 1, SIZE(c0)
-         CALL cp_fm_get_info(c0(ispin)%matrix, ncol_global=ncol)
+         CALL cp_fm_get_info(c0(ispin), ncol_global=ncol)
          CALL cp_dbcsr_sm_fm_multiply(p_env%kpp1(ispin)%matrix, &
-                                      c0(ispin)%matrix, &
-                                      Av(ispin)%matrix, &
+                                      c0(ispin), &
+                                      Av(ispin), &
                                       ncol=ncol, alpha=1.0_dp, beta=1.0_dp)
       END DO
 
@@ -187,7 +186,6 @@ CONTAINS
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: k1mat, matrix_s, rho1_ao, rho_ao
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ksmat, psmat
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -196,6 +194,7 @@ CONTAINS
       TYPE(lri_density_type), POINTER                    :: lri_density
       TYPE(lri_environment_type), POINTER                :: lri_env
       TYPE(lri_kind_type), DIMENSION(:), POINTER         :: lri_v_int
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -374,8 +373,8 @@ CONTAINS
             IF (nspins == 1) THEN
 
                IF (.NOT. (lr_triplet)) THEN
-                  v_rspace_new(1)%cr3d = 2.0_dp*v_rspace_new(1)%cr3d
-                  IF (ASSOCIATED(v_xc_tau)) v_xc_tau(1)%cr3d = 2.0_dp*v_xc_tau(1)%cr3d
+                  CALL pw_scale(v_rspace_new(1), 2.0_dp)
+                  IF (ASSOCIATED(v_xc_tau)) CALL pw_scale(v_xc_tau(1), 2.0_dp)
                END IF
                CALL qs_rho_get(rho1, rho_ao=rho1_ao)
                ! remove kpp1_env%v_ao and work directly on k_p_p1 ?
@@ -396,7 +395,7 @@ CONTAINS
 
                ! add hartree only for SINGLETS
                IF (.NOT. lr_triplet) THEN
-                  v_rspace_new(1)%cr3d = 2.0_dp*v_hartree_rspace%cr3d
+                  CALL pw_axpy(v_hartree_rspace, v_rspace_new(1), 2.0_dp, 0.0_dp)
 
                   CALL integrate_v_rspace(v_rspace=v_rspace_new(ispin), &
                                           pmat=rho_ao(ispin), &
@@ -421,7 +420,7 @@ CONTAINS
                                           calculate_forces=.FALSE., gapw=gapw_xc)
                END IF
 
-               v_rspace_new(ispin)%cr3d = v_hartree_rspace%cr3d
+               CALL pw_copy(v_hartree_rspace, v_rspace_new(ispin))
                CALL integrate_v_rspace(v_rspace=v_rspace_new(ispin), &
                                        pmat=rho_ao(ispin), &
                                        hmat=kpp1_env%v_ao(ispin), &
@@ -433,18 +432,16 @@ CONTAINS
 
             IF (nspins == 1) THEN
                IF (.NOT. (lr_triplet)) THEN
-                  v_rspace_new(1)%cr3d = 2.0_dp*v_rspace_new(1)%cr3d
-                  IF (ASSOCIATED(v_xc_tau)) v_xc_tau(1)%cr3d = 2.0_dp*v_xc_tau(1)%cr3d
+                  CALL pw_scale(v_rspace_new(1), 2.0_dp)
+                  IF (ASSOCIATED(v_xc_tau)) CALL pw_scale(v_xc_tau(1), 2.0_dp)
                END IF
                ! add hartree only for SINGLETS
                !IF (res_etype == tddfpt_singlet) THEN
                IF (.NOT. lr_triplet) THEN
-                  v_rspace_new(1)%cr3d = v_rspace_new(1)%cr3d + &
-                                         2.0_dp*v_hartree_rspace%cr3d
+                  CALL pw_axpy(v_hartree_rspace, v_rspace_new(1), 2.0_dp)
                END IF
             ELSE
-               v_rspace_new(ispin)%cr3d = v_rspace_new(ispin)%cr3d + &
-                                          v_hartree_rspace%cr3d
+               CALL pw_axpy(v_hartree_rspace, v_rspace_new(ispin), 1.0_dp)
             END IF
 
             IF (lrigpw) THEN
@@ -459,7 +456,7 @@ CONTAINS
                CALL integrate_v_rspace_one_center(v_rspace_new(ispin), qs_env, &
                                                   lri_v_int, .FALSE., "LRI_AUX")
                DO ikind = 1, nkind
-                  CALL mp_sum(lri_v_int(ikind)%v_int, para_env%group)
+                  CALL para_env%sum(lri_v_int(ikind)%v_int)
                END DO
                ALLOCATE (k1mat(1))
                k1mat(1)%matrix => kpp1_env%v_ao(ispin)%matrix
@@ -496,7 +493,7 @@ CONTAINS
             CALL Vh_1c_gg_integrals(qs_env, energy_hartree_1c, &
                                     p_env%hartree_local%ecoul_1c, &
                                     p_env%local_rho_set, &
-                                    para_env, tddft=.TRUE.)
+                                    para_env, tddft=.TRUE., core_2nd=.TRUE.)
 
             CALL integrate_vhg0_rspace(qs_env, v_hartree_rspace, para_env, &
                                        calculate_forces=.FALSE., &
@@ -574,11 +571,11 @@ CONTAINS
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: mcharge, mcharge1
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: aocg, aocg1, charges, charges1
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: rho_ao
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_p1, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(linres_control_type), POINTER                 :: linres_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -748,13 +745,17 @@ CONTAINS
 !> \param rho_ao ...
 !> \param qs_env ...
 !> \param hfx_sections ...
+!> \param external_x_data ...
+!> \param ex ...
 !> \note
 !>     Simplified version of subroutine hfx_ks_matrix()
 ! **************************************************************************************************
-   SUBROUTINE hfx_matrix(matrix_ks, rho_ao, qs_env, hfx_sections)
+   SUBROUTINE hfx_matrix(matrix_ks, rho_ao, qs_env, hfx_sections, external_x_data, ex)
       TYPE(dbcsr_p_type), DIMENSION(:), TARGET           :: matrix_ks, rho_ao
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: hfx_sections
+      TYPE(hfx_type), DIMENSION(:, :), OPTIONAL, TARGET  :: external_x_data
+      REAL(KIND=dp), OPTIONAL                            :: ex
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'hfx_matrix'
 
@@ -763,21 +764,23 @@ CONTAINS
       LOGICAL                                            :: distribute_fock_matrix, &
                                                             hfx_treat_lsd_in_core, &
                                                             s_mstruct_changed
-      REAL(KIND=dp)                                      :: eh1
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      REAL(KIND=dp)                                      :: eh1, ehfx
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks_kp, rho_ao_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (dft_control, para_env, matrix_ks_kp, rho_ao_kp)
+      NULLIFY (dft_control, para_env, matrix_ks_kp, rho_ao_kp, x_data)
 
       CALL get_qs_env(qs_env=qs_env, &
                       dft_control=dft_control, &
                       para_env=para_env, &
                       s_mstruct_changed=s_mstruct_changed, &
                       x_data=x_data)
+
+      IF (PRESENT(external_x_data)) x_data => external_x_data
 
       CPASSERT(dft_control%nimages == 1)
       nspins = dft_control%nspins
@@ -796,10 +799,10 @@ CONTAINS
       rho_ao_kp(1:nspins, 1:1) => rho_ao(1:nspins)
 
       DO irep = 1, n_rep_hf
-         eh1 = 0.0_dp
+         ehfx = 0.0_dp
 
          IF (x_data(irep, 1)%do_hfx_ri) THEN
-            CALL hfx_ri_update_ks(qs_env, x_data(irep, 1)%ri_data, matrix_ks_kp, eh1, &
+            CALL hfx_ri_update_ks(qs_env, x_data(irep, 1)%ri_data, matrix_ks_kp, ehfx, &
                                   rho_ao=rho_ao_kp, geometry_did_change=s_mstruct_changed, &
                                   nspins=nspins, hf_fraction=x_data(irep, 1)%general_parameter%fraction)
 
@@ -808,10 +811,14 @@ CONTAINS
             DO ispin = 1, mspin
                CALL integrate_four_center(qs_env, x_data, matrix_ks_kp, eh1, rho_ao_kp, hfx_sections, para_env, &
                                           s_mstruct_changed, irep, distribute_fock_matrix, ispin=ispin)
+               ehfx = ehfx + eh1
             END DO
 
          END IF
       END DO
+
+      ! Export energy
+      IF (PRESENT(ex)) ex = ehfx
 
       CALL timestop(handle)
 
@@ -834,12 +841,12 @@ CONTAINS
       LOGICAL                                            :: gapw, lsd
       REAL(KIND=dp)                                      :: alpha
       TYPE(admm_type), POINTER                           :: admm_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type)                                 :: xcmat
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ksmat, psmat
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(linres_control_type), POINTER                 :: linres_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_aux_fit
       TYPE(pw_env_type), POINTER                         :: pw_env
@@ -924,7 +931,7 @@ CONTAINS
             IF (nspins == 1) alpha = 2.0_dp
 
             DO ispin = 1, nspins
-               v_xc(ispin)%cr3d = v_xc(ispin)%cr3d*v_xc(ispin)%pw_grid%dvol
+               CALL pw_scale(v_xc(ispin), v_xc(ispin)%pw_grid%dvol)
                CALL dbcsr_copy(xcmat%matrix, matrix_s(1)%matrix)
                CALL dbcsr_set(xcmat%matrix, 0.0_dp)
                CALL integrate_v_rspace(v_rspace=v_xc(ispin), hmat=xcmat, qs_env=qs_env, &

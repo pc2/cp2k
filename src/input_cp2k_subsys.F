@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,6 +12,7 @@
 !> \author teo & fawzi
 ! **************************************************************************************************
 MODULE input_cp2k_subsys
+
    USE bibliography,                    ONLY: Goedecker1996,&
                                               Guidon2010,&
                                               Hartwigsen1998,&
@@ -19,10 +20,11 @@ MODULE input_cp2k_subsys
                                               VandeVondele2005a,&
                                               VandeVondele2007
    USE cell_types,                      ONLY: &
-        cell_sym_cubic, cell_sym_hexagonal, cell_sym_monoclinic, cell_sym_monoclinic_gamma_ab, &
-        cell_sym_none, cell_sym_orthorhombic, cell_sym_rhombohedral, cell_sym_tetragonal_ab, &
-        cell_sym_tetragonal_ac, cell_sym_tetragonal_bc, cell_sym_triclinic, use_perd_none, &
-        use_perd_x, use_perd_xy, use_perd_xyz, use_perd_xz, use_perd_y, use_perd_yz, use_perd_z
+        cell_sym_cubic, cell_sym_hexagonal_gamma_120, cell_sym_hexagonal_gamma_60, &
+        cell_sym_monoclinic, cell_sym_monoclinic_gamma_ab, cell_sym_none, cell_sym_orthorhombic, &
+        cell_sym_rhombohedral, cell_sym_tetragonal_ab, cell_sym_tetragonal_ac, &
+        cell_sym_tetragonal_bc, cell_sym_triclinic, use_perd_none, use_perd_x, use_perd_xy, &
+        use_perd_xyz, use_perd_xz, use_perd_y, use_perd_yz, use_perd_z
    USE cp_output_handling,              ONLY: cp_print_key_section_create,&
                                               debug_print_level,&
                                               high_print_level,&
@@ -65,7 +67,7 @@ MODULE input_cp2k_subsys
              create_structure_data_section, &
              create_rng_section, &
              create_basis_section
-!***
+
 CONTAINS
 
 ! **************************************************************************************************
@@ -82,14 +84,18 @@ CONTAINS
 
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, "CELL", &
-                          description="Input parameters needed to set up the simulation cell.")
+                          description="Input parameters needed to set up the simulation cell. "// &
+                          "Simple products and fractions combined with functions of a single "// &
+                          "number can be used like 2/3, 0.3*COS(60) or -SQRT(3)/2. The functions "// &
+                          "COS, EXP, LOG, LOG10, SIN, SQRT, and TAN are available.")
       CALL create_cell_section_low(section, periodic)
 
       NULLIFY (subsection)
       CALL section_create(subsection, __LOCATION__, "CELL_REF", &
                           description="Input parameters needed to set up the reference cell. "// &
                           "This option can be used to keep the FFT grid fixed while "// &
-                          "running a cell optimization or NpT molecular dynamics.")
+                          "running a cell optimization or NpT molecular dynamics. "// &
+                          "Check the &CELL section for further details.")
       CALL create_cell_section_low(subsection, periodic)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
@@ -211,7 +217,7 @@ CONTAINS
          usage="SYMMETRY monoclinic", &
          enum_desc=s2a("No cell symmetry", &
                        "Triclinic (a &ne; b &ne; c &ne; a, &alpha; &ne; &beta; &ne; &gamma; &ne; &alpha; &ne; 90&deg;)", &
-                       "Monoclinic (a &ne; b &ne; c &ne; a, &alpha; = &gamma; = 90&deg;, &beta; &ne; 90&deg;)", &
+                       "Monoclinic (a &ne; b &ne; c, &alpha; = &gamma; = 90&deg;, &beta; &ne; 90&deg;)", &
                        "Monoclinic (a = b &ne; c, &alpha; = &beta; = 90&deg;, &gamma; &ne; 90&deg;)", &
                        "Orthorhombic (a &ne; b &ne; c, &alpha; = &beta; = &gamma; = 90&deg;)", &
                        "Tetragonal (a = b &ne; c, &alpha; = &beta; = &gamma; = 90&deg;)", &
@@ -219,14 +225,17 @@ CONTAINS
                        "Tetragonal (a &ne; b = c, &alpha; = &beta; = &gamma; = 90&deg;)", &
                        "Tetragonal (alias for TETRAGONAL_AB)", &
                        "Rhombohedral (a = b = c, &alpha; = &beta; = &gamma; &ne; 90&deg;)", &
+                       "Hexagonal (alias for HEXAGONAL_GAMMA_60)", &
                        "Hexagonal (a = b &ne; c, &alpha; = &beta; = 90&deg;, &gamma; = 60&deg;)", &
+                       "Hexagonal (a = b &ne; c, &alpha; = &beta; = 90&deg;, &gamma; = 120&deg;)", &
                        "Cubic (a = b = c, &alpha; = &beta; = &gamma; = 90&deg;)"), &
          enum_c_vals=s2a("NONE", "TRICLINIC", "MONOCLINIC", "MONOCLINIC_GAMMA_AB", "ORTHORHOMBIC", &
                          "TETRAGONAL_AB", "TETRAGONAL_AC", "TETRAGONAL_BC", "TETRAGONAL", "RHOMBOHEDRAL", &
-                         "HEXAGONAL", "CUBIC"), &
+                         "HEXAGONAL", "HEXAGONAL_GAMMA_60", "HEXAGONAL_GAMMA_120", "CUBIC"), &
          enum_i_vals=(/cell_sym_none, cell_sym_triclinic, cell_sym_monoclinic, cell_sym_monoclinic_gamma_ab, &
                        cell_sym_orthorhombic, cell_sym_tetragonal_ab, cell_sym_tetragonal_ac, cell_sym_tetragonal_bc, &
-                       cell_sym_tetragonal_ab, cell_sym_rhombohedral, cell_sym_hexagonal, cell_sym_cubic/), &
+                       cell_sym_tetragonal_ab, cell_sym_rhombohedral, cell_sym_hexagonal_gamma_60, &
+                       cell_sym_hexagonal_gamma_60, cell_sym_hexagonal_gamma_120, cell_sym_cubic/), &
          default_i_val=cell_sym_none)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -328,7 +337,6 @@ CONTAINS
       CALL create_shell_vel_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
-
       CALL create_core_coord_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
@@ -899,10 +907,12 @@ CONTAINS
 
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, name="coord", &
-                          description="The coordinates for simple systems (like small QM cells)"// &
-                          " are specified here by default using explicit XYZ coordinates.  "// &
-                          " More complex systems should be given via an external coordinate "// &
-                          " file in the SUBSYS%TOPOLOGY section.", &
+                          description="The coordinates for simple systems (like small QM cells) "// &
+                          "are specified here by default using explicit XYZ coordinates. "// &
+                          "Simple products and fractions combined with functions of a single "// &
+                          "number can be used like 2/3, 0.3*COS(60) or -SQRT(3)/2. "// &
+                          "More complex systems should be given via an external coordinate "// &
+                          "file in the SUBSYS%TOPOLOGY section.", &
                           n_keywords=1, n_subsections=0, repeats=.FALSE.)
       NULLIFY (keyword)
       CALL keyword_create(keyword, __LOCATION__, name="UNIT", &
@@ -1043,7 +1053,7 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="BASIS_SET", &
                           description="The primary Gaussian basis set (NONE implies no basis used, meaningful with GHOST). "// &
                           "Defaults are set for TYPE {ORB} and FORM {GTO}. Possible values for TYPE are "// &
-                          "{ORB, AUX, RI_AUX, LRI, ...}. Possible values for "// &
+                          "{ORB, AUX, MIN, RI_AUX, LRI, ...}. Possible values for "// &
                           "FORM are {GTO, STO}. Where STO results in a GTO expansion of a Slater type basis."// &
                           "If a value for FORM is given, also TYPE has to be set explicitly.", &
                           usage="BASIS_SET [type] [form] DZVP", type_of_var=char_t, default_c_vals=(/" ", " ", " "/), &

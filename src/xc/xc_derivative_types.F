@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -43,7 +43,7 @@ MODULE xc_derivative_types
 !> \author fawzi
 ! **************************************************************************************************
    TYPE xc_derivative_p_type
-      TYPE(xc_derivative_type), POINTER :: deriv
+      TYPE(xc_derivative_type), POINTER :: deriv => NULL()
    END TYPE xc_derivative_p_type
 
 CONTAINS

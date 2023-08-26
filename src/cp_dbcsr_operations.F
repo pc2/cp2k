@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,8 +17,7 @@
 ! **************************************************************************************************
 MODULE cp_dbcsr_operations
    USE mathlib, ONLY: lcm, gcd
-   USE cp_blacs_env, ONLY: cp_blacs_env_type, &
-                           get_blacs_info
+   USE cp_blacs_env, ONLY: cp_blacs_env_type
    USE cp_cfm_types, ONLY: cp_cfm_type
    USE dbcsr_api, ONLY: dbcsr_distribution_get, &
                         dbcsr_convert_sizes_to_offsets, dbcsr_add, &
@@ -44,10 +43,11 @@ MODULE cp_dbcsr_operations
                           cp_fm_release, &
                           cp_fm_to_fm, &
                           cp_fm_type
-   USE cp_para_types, ONLY: cp_para_env_type
+   USE message_passing, ONLY: mp_para_env_type
    USE distribution_2d_types, ONLY: distribution_2d_get, &
                                     distribution_2d_type
    USE kinds, ONLY: dp, default_string_length
+   USE message_passing, ONLY: mp_comm_type
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 #include "base/base_uses.f90"
@@ -142,7 +142,7 @@ CONTAINS
 
          CHARACTER(LEN=*), PARAMETER :: routineN = 'copy_${fm}$_to_dbcsr_bc'
 
-         INTEGER :: col, group, handle, ncol_block, ncol_global, nrow_block, nrow_global, row
+         INTEGER :: col, handle, ncol_block, ncol_global, nrow_block, nrow_global, row
          INTEGER, ALLOCATABLE, DIMENSION(:)                  :: first_col, first_row, last_col, last_row
          INTEGER, DIMENSION(:), POINTER                      :: col_blk_size, row_blk_size
          ${type}$ (KIND=dp), DIMENSION(:, :), POINTER        :: fm_block, dbcsr_block
@@ -157,7 +157,6 @@ CONTAINS
          #:endif
 
          ! Create processor grid
-         group = fm%matrix_struct%para_env%group
          pgrid => fm%matrix_struct%context%blacs2mpi
 
          ! Create a block-cyclic distribution compatible with the FM matrix.
@@ -169,7 +168,7 @@ CONTAINS
          CALL dbcsr_create_dist_block_cyclic(bc_dist, &
                                              nrows=nrow_global, ncolumns=ncol_global, & ! Actual full matrix size
                                              nrow_block=nrow_block, ncol_block=ncol_block, & ! BLACS parameters
-                                             group=group, pgrid=pgrid, &
+                                             group_handle=fm%matrix_struct%para_env%get_handle(), pgrid=pgrid, &
                                              row_blk_sizes=row_blk_size, col_blk_sizes=col_blk_size) ! block-cyclic row/col sizes
 
          ! Create the block-cyclic DBCSR matrix
@@ -211,12 +210,11 @@ CONTAINS
          CHARACTER(LEN=*), PARAMETER :: routineN = 'copy_dbcsr_to_${fm}$'
 
          INTEGER, DIMENSION(:), POINTER                     :: col_blk_size, row_blk_size
-         INTEGER :: handle, ncol_block, nfullcols_total, &
+         INTEGER :: handle, ncol_block, nfullcols_total, group_handle, &
                     nfullrows_total, nrow_block
          TYPE(dbcsr_type)                                   :: bc_mat, matrix_nosym
          TYPE(dbcsr_distribution_type)                      :: dist, bc_dist
          CHARACTER(len=default_string_length)               :: name
-         INTEGER                                            :: group
          INTEGER, DIMENSION(:, :), POINTER                  :: pgrid
 
          CALL timeset(routineN, handle)
@@ -237,11 +235,11 @@ CONTAINS
 
          ! Convert DBCSR to a block-cyclic
          NULLIFY (col_blk_size, row_blk_size)
-         CALL dbcsr_distribution_get(dist, group=group, pgrid=pgrid)
+         CALL dbcsr_distribution_get(dist, group=group_handle, pgrid=pgrid)
          CALL dbcsr_create_dist_block_cyclic(bc_dist, &
                                              nrows=nfullrows_total, ncolumns=nfullcols_total, &
                                              nrow_block=nrow_block, ncol_block=ncol_block, &
-                                             group=group, pgrid=pgrid, &
+                                             group_handle=group_handle, pgrid=pgrid, &
                                              row_blk_sizes=row_blk_size, col_blk_sizes=col_blk_size)
 
          CALL dbcsr_create(bc_mat, "Block-cyclic"//name, bc_dist, &
@@ -373,7 +371,7 @@ CONTAINS
       TYPE(dbcsr_type), INTENT(INOUT)                 :: matrix_b
       TYPE(dbcsr_type), INTENT(IN)                    :: matrix_a
       INTEGER, INTENT(IN)                                :: ncol, source_start, target_start
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
 
       INTEGER                                            :: nfullcols_total, nfullrows_total
@@ -418,7 +416,7 @@ CONTAINS
 
       INTEGER, DIMENSION(:, :), POINTER                  :: pgrid, col_dist_data, row_dist_data
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(distribution_2d_type), POINTER                :: dist2d_p
       INTEGER, DIMENSION(:), POINTER         :: row_dist, col_dist
 
@@ -427,7 +425,7 @@ CONTAINS
                                row_distribution=row_dist_data, &
                                col_distribution=col_dist_data, &
                                blacs_env=blacs_env)
-      CALL get_blacs_info(blacs_env, para_env=para_env, blacs2mpi=pgrid)
+      CALL blacs_env%get(para_env=para_env, blacs2mpi=pgrid)
 
       ! map to 1D arrays
       row_dist => row_dist_data(:, 1)
@@ -436,7 +434,7 @@ CONTAINS
       !col_cluster => col_dist_data(:, 2)
 
       CALL dbcsr_distribution_new(dist, &
-                                  group=para_env%group, pgrid=pgrid, &
+                                  group=para_env%get_handle(), pgrid=pgrid, &
                                   row_dist=row_dist, &
                                   col_dist=col_dist)
 
@@ -1220,10 +1218,10 @@ CONTAINS
 !> \param[out] col_blk_sizes  column block sizes
 ! **************************************************************************************************
    SUBROUTINE dbcsr_create_dist_block_cyclic(dist, nrows, ncolumns, &
-                                             nrow_block, ncol_block, group, pgrid, row_blk_sizes, col_blk_sizes)
+                                             nrow_block, ncol_block, group_handle, pgrid, row_blk_sizes, col_blk_sizes)
       TYPE(dbcsr_distribution_type), INTENT(OUT)          :: dist
       INTEGER, INTENT(IN)                                :: nrows, ncolumns, nrow_block, ncol_block
-      INTEGER, INTENT(IN)                                :: group
+      INTEGER, INTENT(IN)                                :: group_handle
       INTEGER, DIMENSION(:, :), POINTER                  :: pgrid
       INTEGER, DIMENSION(:), INTENT(OUT), POINTER        :: row_blk_sizes, col_blk_sizes
 
@@ -1284,7 +1282,7 @@ CONTAINS
       END IF
       !
       CALL dbcsr_distribution_new(dist, &
-                                  group=group, pgrid=pgrid, &
+                                  group=group_handle, pgrid=pgrid, &
                                   row_dist=rd_data, &
                                   col_dist=cd_data, &
                                   reuse_arrays=.TRUE.)

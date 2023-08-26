@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -33,7 +33,7 @@ MODULE basis_set_container_types
                                                lri_aux_basis = 104, &
                                                aux_fit_basis = 105, &
                                                soft_basis = 106, &
-                                               hard_basis = 107, &
+                                               gapw_1c_basis = 107, &
                                                mao_basis = 108, &
                                                harris_basis = 109, &
                                                aux_gw_basis = 110, &
@@ -43,7 +43,8 @@ MODULE basis_set_container_types
                                                aux_fit_soft_basis = 114, &
                                                ri_hfx_basis = 115, &
                                                p_lri_aux_basis = 116, &
-                                               aux_opt_basis = 117
+                                               aux_opt_basis = 117, &
+                                               min_basis = 118
 ! **************************************************************************************************
    TYPE basis_set_container_type
       PRIVATE
@@ -97,6 +98,8 @@ CONTAINS
          basis_type_nr = orbital_basis
       CASE ("AUX")
          basis_type_nr = auxiliary_basis
+      CASE ("MIN")
+         basis_type_nr = min_basis
       CASE ("RI_AUX")
          basis_type_nr = ri_aux_basis
       CASE ("RI_HXC")
@@ -113,10 +116,10 @@ CONTAINS
          basis_type_nr = aux_fit_basis
       CASE ("AUX_FIT_SOFT")
          basis_type_nr = aux_fit_soft_basis
-      CASE ("SOFT")
+      CASE ("ORB_SOFT")
          basis_type_nr = soft_basis
-      CASE ("HARD")
-         basis_type_nr = hard_basis
+      CASE ("GAPW_1C")
+         basis_type_nr = gapw_1c_basis
       CASE ("MAO")
          basis_type_nr = mao_basis
       CASE ("HARRIS")
@@ -199,17 +202,17 @@ CONTAINS
          IF (ASSOCIATED(container(ibas)%basis_set)) THEN
             CALL deallocate_gto_basis_set(container(ibas)%basis_set)
          END IF
+         ! shift other basis sets
+         DO i = ibas + 1, SIZE(container)
+            IF (container(i)%basis_type_nr == 0) CYCLE
+            container(i - 1)%basis_type = container(i)%basis_type
+            container(i - 1)%basis_set => container(i)%basis_set
+            container(i - 1)%basis_type_nr = container(i)%basis_type_nr
+            container(i)%basis_type = ""
+            container(i)%basis_type_nr = 0
+            NULLIFY (container(i)%basis_set)
+         END DO
       END IF
-      ! shift other basis sets
-      DO i = ibas + 1, SIZE(container)
-         IF (container(i)%basis_type_nr == 0) CYCLE
-         container(i - 1)%basis_type = container(i)%basis_type
-         container(i - 1)%basis_set => container(i)%basis_set
-         container(i - 1)%basis_type_nr = container(i)%basis_type_nr
-         container(i)%basis_type = ""
-         container(i)%basis_type_nr = 0
-         NULLIFY (container(i)%basis_set)
-      END DO
 
    END SUBROUTINE remove_basis_from_container
 

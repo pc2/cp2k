@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -31,6 +31,7 @@ MODULE force_env_utils
    USE molecule_types,                  ONLY: global_constraint_type
    USE particle_list_types,             ONLY: particle_list_type
    USE particle_types,                  ONLY: update_particle_set
+   USE physcon,                         ONLY: angstrom
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -42,6 +43,7 @@ MODULE force_env_utils
    PUBLIC :: force_env_shake, &
              force_env_rattle, &
              rescale_forces, &
+             write_atener, &
              write_forces
 
 CONTAINS
@@ -152,7 +154,7 @@ CONTAINS
                          molecule_set=molecules%els, molecule_kind_set=molecule_kinds%els, &
                          particle_set=particles%els, pos=my_pos, vel=my_vel, dt=mydt, &
                          shake_tol=shake_tol, log_unit=my_log_unit, lagrange_mult=my_lagrange_mult, &
-                         dump_lm=my_dump_lm, cell=cell, group=force_env%para_env%group, &
+                         dump_lm=my_dump_lm, cell=cell, group=force_env%para_env, &
                          local_particles=local_particles)
 
       ! Possibly reset the lagrange multipliers
@@ -204,11 +206,11 @@ CONTAINS
       END IF
 
       IF (has_pos) THEN
-         CALL update_particle_set(particles%els, force_env%para_env%group, pos=my_pos)
+         CALL update_particle_set(particles%els, force_env%para_env, pos=my_pos)
          DEALLOCATE (my_pos)
       END IF
       IF (has_vel) THEN
-         CALL update_particle_set(particles%els, force_env%para_env%group, vel=my_vel)
+         CALL update_particle_set(particles%els, force_env%para_env, vel=my_vel)
          DEALLOCATE (my_vel)
       END IF
       CALL timestop(handle)
@@ -300,7 +302,7 @@ CONTAINS
                           molecule_set=molecules%els, molecule_kind_set=molecule_kinds%els, &
                           particle_set=particles%els, vel=my_vel, dt=mydt, &
                           rattle_tol=shake_tol, log_unit=my_log_unit, lagrange_mult=my_lagrange_mult, &
-                          dump_lm=my_dump_lm, cell=cell, group=force_env%para_env%group, &
+                          dump_lm=my_dump_lm, cell=cell, group=force_env%para_env, &
                           local_particles=local_particles)
 
       ! Possibly reset the lagrange multipliers
@@ -352,7 +354,7 @@ CONTAINS
       END IF
 
       IF (has_vel) THEN
-         CALL update_particle_set(particles%els, force_env%para_env%group, vel=my_vel)
+         CALL update_particle_set(particles%els, force_env%para_env, vel=my_vel)
       END IF
       DEALLOCATE (my_vel)
       CALL timestop(handle)
@@ -474,5 +476,39 @@ CONTAINS
       END IF
 
    END SUBROUTINE write_forces
+
+! **************************************************************************************************
+!> \brief Write the atomic coordinates, types, and energies
+!> \param iounit ...
+!> \param particles ...
+!> \param atener ...
+!> \param label ...
+!> \date    05.06.2023
+!> \author  JGH
+!> \version 1.0
+! **************************************************************************************************
+   SUBROUTINE write_atener(iounit, particles, atener, label)
+
+      INTEGER, INTENT(IN)                                :: iounit
+      TYPE(particle_list_type), POINTER                  :: particles
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: atener
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+
+      INTEGER                                            :: i, natom
+
+      IF (iounit > 0) THEN
+         WRITE (UNIT=iounit, FMT="(/,T2,A)") TRIM(label)
+         WRITE (UNIT=iounit, FMT="(T4,A,T30,A,T42,A,T54,A,T69,A)") &
+            "Atom  Element", "X", "Y", "Z", "Energy[a.u.]"
+         natom = particles%n_els
+         DO i = 1, natom
+            WRITE (iounit, "(I6,T12,A2,T24,3F12.6,F21.10)") i, &
+               TRIM(ADJUSTL(particles%els(i)%atomic_kind%element_symbol)), &
+               particles%els(i)%r(1:3)*angstrom, atener(i)
+         END DO
+         WRITE (iounit, "(A)") ""
+      END IF
+
+   END SUBROUTINE write_atener
 
 END MODULE force_env_utils

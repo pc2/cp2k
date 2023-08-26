@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -31,7 +31,6 @@ MODULE qs_scf_post_tb
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
                                               cp_fm_init_random,&
-                                              cp_fm_p_type,&
                                               cp_fm_release,&
                                               cp_fm_to_fm_submat,&
                                               cp_fm_type
@@ -42,7 +41,6 @@ MODULE qs_scf_post_tb
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_cube,          ONLY: cp_pw_to_cube
    USE cp_result_methods,               ONLY: cp_results_erase,&
                                               put_results
@@ -65,6 +63,7 @@ MODULE qs_scf_post_tb
    USE machine,                         ONLY: m_flush
    USE mathconstants,                   ONLY: twopi
    USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molden_utils,                    ONLY: write_mos_molden
    USE moments_utils,                   ONLY: get_reference_point
    USE mulliken,                        ONLY: mulliken_charges
@@ -187,16 +186,16 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: charges
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_1d_r_p_type), DIMENSION(:), POINTER        :: unoccupied_evals_stm
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: unoccupied_orbs_stm
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: unoccupied_orbs_stm
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_rmpv, mo_derivs
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s
       TYPE(dbcsr_type), POINTER                          :: mo_coeff_deriv
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_dftb_atom_type), POINTER                   :: dftb_kind
@@ -356,6 +355,15 @@ CONTAINS
       IF (explicit) THEN
          IF (BTEST(cp_print_key_should_output(logger%iter_info, print_key), cp_p_file)) THEN
             CPWARN("MAO analysis not available for TB methods.")
+         END IF
+      END IF
+
+      ! ED
+      print_key => section_vals_get_subs_vals(print_section, "ENERGY_DECOMPOSITION_ANALYSIS")
+      CALL section_vals_get(print_key, explicit=explicit)
+      IF (explicit) THEN
+         IF (BTEST(cp_print_key_should_output(logger%iter_info, print_key), cp_p_file)) THEN
+            CPWARN("ED analysis not available for TB methods.")
          END IF
       END IF
 
@@ -582,6 +590,7 @@ CONTAINS
                      homo_lumo(ispin, 1) = mo_eigenvalues(homo)
                   END DO
                   has_homo = .TRUE.
+                  NULLIFY (unoccupied_orbs_stm, unoccupied_evals_stm)
                   IF (nlumo_stm > 0) THEN
                      ALLOCATE (unoccupied_orbs_stm(dft_control%nspins))
                      ALLOCATE (unoccupied_evals_stm(dft_control%nspins))
@@ -597,11 +606,9 @@ CONTAINS
                   IF (nlumo_stm > 0) THEN
                      DO ispin = 1, dft_control%nspins
                         DEALLOCATE (unoccupied_evals_stm(ispin)%array)
-                        CALL cp_fm_release(unoccupied_orbs_stm(ispin)%matrix)
-                        DEALLOCATE (unoccupied_orbs_stm(ispin)%matrix)
                      END DO
                      DEALLOCATE (unoccupied_evals_stm)
-                     DEALLOCATE (unoccupied_orbs_stm)
+                     CALL cp_fm_release(unoccupied_orbs_stm)
                   END IF
                END IF
             END IF
@@ -801,9 +808,9 @@ CONTAINS
       INTEGER                                            :: iounit, ispin, nao, nmo
       REAL(dp), DIMENSION(:), POINTER                    :: mo_eigenvalues
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: lumos
       TYPE(cp_fm_struct_type), POINTER                   :: ao_ao_fmstruct, ao_lumo_struct
       TYPE(cp_fm_type)                                   :: KS_tmp, MO_tmp, S_tmp, work
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: lumos
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
@@ -837,14 +844,13 @@ CONTAINS
          CALL cp_fm_struct_create(fmstruct=ao_lumo_struct, nrow_global=nao, ncol_global=nao - nmo, &
                                   template_fmstruct=mo_coeff%matrix_struct)
 
-         ALLOCATE (lumos(ispin)%matrix)
-         CALL cp_fm_create(lumos(ispin)%matrix, matrix_struct=ao_lumo_struct)
+         CALL cp_fm_create(lumos(ispin), matrix_struct=ao_lumo_struct)
          CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, KS_tmp)
          CALL cp_fm_cholesky_reduce(KS_tmp, S_tmp)
          CALL choose_eigv_solver(KS_tmp, work, mo_eigenvalues)
          CALL cp_fm_cholesky_restore(work, nao, S_tmp, MO_tmp, "SOLVE")
          CALL cp_fm_to_fm_submat(MO_tmp, mo_coeff, nao, nmo, 1, 1, 1, 1)
-         CALL cp_fm_to_fm_submat(MO_tmp, lumos(ispin)%matrix, nao, nao - nmo, 1, nmo + 1, 1, 1)
+         CALL cp_fm_to_fm_submat(MO_tmp, lumos(ispin), nao, nao - nmo, 1, nmo + 1, 1, 1)
 
          CALL cp_fm_struct_release(ao_lumo_struct)
       END DO
@@ -853,11 +859,7 @@ CONTAINS
       CALL wfn_mix(mos, particle_set, dft_section, qs_kind_set, &
                    lumos, scf_env, matrix_s, iounit)
 
-      DO ispin = 1, SIZE(mos)
-         CALL cp_fm_release(lumos(ispin)%matrix)
-         DEALLOCATE (lumos(ispin)%matrix)
-      END DO
-      DEALLOCATE (lumos)
+      CALL cp_fm_release(lumos)
       CALL cp_fm_release(S_tmp)
       CALL cp_fm_release(MO_tmp)
       CALL cp_fm_release(KS_tmp)
@@ -879,8 +881,8 @@ CONTAINS
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER          :: unoccupied_orbs
-      TYPE(cp_1d_r_p_type), DIMENSION(:), POINTER        :: unoccupied_evals
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: unoccupied_orbs
+      TYPE(cp_1d_r_p_type), DIMENSION(:), INTENT(INOUT)  :: unoccupied_evals
       INTEGER                                            :: nlumo
       INTEGER, INTENT(OUT)                               :: nlumos
 
@@ -889,10 +891,10 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_rmpv, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(preconditioner_type), POINTER                 :: local_preconditioner
       TYPE(scf_control_type), POINTER                    :: scf_control
 
@@ -910,7 +912,6 @@ CONTAINS
       iounit = cp_logger_get_default_io_unit(logger)
 
       DO ispin = 1, dft_control%nspins
-         NULLIFY (unoccupied_orbs(ispin)%matrix)
          NULLIFY (unoccupied_evals(ispin)%array)
          ! Always write eigenvalues
          IF (iounit > 0) WRITE (iounit, *) " "
@@ -923,10 +924,9 @@ CONTAINS
          ALLOCATE (unoccupied_evals(ispin)%array(nlumos))
          CALL cp_fm_struct_create(fm_struct_tmp, para_env=para_env, context=blacs_env, &
                                   nrow_global=n, ncol_global=nlumos)
-         ALLOCATE (unoccupied_orbs(ispin)%matrix)
-         CALL cp_fm_create(unoccupied_orbs(ispin)%matrix, fm_struct_tmp, name="lumos")
+         CALL cp_fm_create(unoccupied_orbs(ispin), fm_struct_tmp, name="lumos")
          CALL cp_fm_struct_release(fm_struct_tmp)
-         CALL cp_fm_init_random(unoccupied_orbs(ispin)%matrix, nlumos)
+         CALL cp_fm_init_random(unoccupied_orbs(ispin), nlumos)
 
          ! the full_all preconditioner makes not much sense for lumos search
          NULLIFY (local_preconditioner)
@@ -939,14 +939,14 @@ CONTAINS
          END IF
 
          CALL ot_eigensolver(matrix_h=ks_rmpv(ispin)%matrix, matrix_s=matrix_s(1)%matrix, &
-                             matrix_c_fm=unoccupied_orbs(ispin)%matrix, &
+                             matrix_c_fm=unoccupied_orbs(ispin), &
                              matrix_orthogonal_space_fm=mo_coeff, &
                              eps_gradient=scf_control%eps_lumos, &
                              preconditioner=local_preconditioner, &
                              iter_max=scf_control%max_iter_lumos, &
                              size_ortho_space=nmo)
 
-         CALL calculate_subspace_eigenvalues(unoccupied_orbs(ispin)%matrix, ks_rmpv(ispin)%matrix, &
+         CALL calculate_subspace_eigenvalues(unoccupied_orbs(ispin), ks_rmpv(ispin)%matrix, &
                                              unoccupied_evals(ispin)%array, scr=iounit, &
                                              ionode=iounit > 0)
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -26,9 +26,11 @@ MODULE hfx_admm_utils
    USE basis_set_types,                 ONLY: copy_gto_basis_set,&
                                               get_gto_basis_set,&
                                               gto_basis_set_type
-   USE cell_types,                      ONLY: cell_type
+   USE cell_types,                      ONLY: cell_type,&
+                                              plane_distance
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type
+   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: cp_dbcsr_m_by_n_from_row_template,&
                                               dbcsr_allocate_matrix_set,&
                                               dbcsr_deallocate_matrix_set
@@ -42,7 +44,6 @@ MODULE hfx_admm_utils
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type,&
                                               cp_to_string
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_copy,&
                                               dbcsr_create,&
@@ -77,6 +78,7 @@ MODULE hfx_admm_utils
                                               section_vals_val_set
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_type
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_types,                  ONLY: molecule_type
    USE particle_types,                  ONLY: particle_type
    USE paw_proj_set_types,              ONLY: get_paw_proj_set,&
@@ -150,23 +152,24 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin, n_rep_hf, nao_aux_fit, &
                                                             natoms, nelectron, nmo
-      LOGICAL                                            :: s_mstruct_changed
+      LOGICAL                                            :: s_mstruct_changed, use_virial
       REAL(dp)                                           :: maxocc
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: aux_fit_fm_struct
       TYPE(cp_fm_type), POINTER                          :: mo_coeff_aux_fit
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_type), POINTER                          :: mo_coeff_b
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_aux_fit
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(section_vals_type), POINTER                   :: hfx_sections, input, xc_section
+      TYPE(virial_type), POINTER                         :: virial
 
       CALL timeset(routineN, handle)
-      NULLIFY (admm_env, hfx_sections, mos, mos_aux_fit, para_env, &
+      NULLIFY (admm_env, hfx_sections, mos, mos_aux_fit, para_env, virial, &
                mo_coeff_aux_fit, xc_section, rho, ks_env, dft_control, input, &
                qs_kind_set, mo_coeff_b, aux_fit_fm_struct, blacs_env)
 
@@ -179,7 +182,8 @@ CONTAINS
                       rho=rho, &
                       ks_env=ks_env, &
                       dft_control=dft_control, &
-                      input=input)
+                      input=input, &
+                      virial=virial)
 
       hfx_sections => section_vals_get_subs_vals(input, "DFT%XC%HF")
 
@@ -268,8 +272,14 @@ CONTAINS
          CPABORT("GAPW ADMM not implemented for MCWEENY or NONE_DM purification.")
       END IF
 
-      IF (admm_env%do_gapw .AND. qs_env%run_rtp) THEN
-         CPABORT("GAPW ADMM not implemented for real-time propagation.")
+      !ADMMS and ADMMP stress tensors only available for close-shell systesms, because virial cannot
+      !be scaled by gsi spin component wise
+      use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
+      IF (use_virial .AND. admm_env%do_admms .AND. dft_control%nspins == 2) THEN
+         CPABORT("ADMMS stress tensor is only available for closed-shell systems")
+      END IF
+      IF (use_virial .AND. admm_env%do_admmp .AND. dft_control%nspins == 2) THEN
+         CPABORT("ADMMP stress tensor is only available for closed-shell systems")
       END IF
 
       IF (dft_control%do_admm_dm .AND. .NOT. ASSOCIATED(admm_env%admm_dm)) THEN
@@ -292,10 +302,10 @@ CONTAINS
       TYPE(admm_gapw_type), POINTER                      :: admm_gapw_env
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: aux_fit_basis, aux_fit_soft_basis, &
                                                             orb_basis, soft_basis
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: admm_kind_set, qs_kind_set
       TYPE(section_vals_type), POINTER                   :: input
 
@@ -368,7 +378,7 @@ CONTAINS
       !Need to have access to the soft AUX_FIT basis from the qs_env => add it to the qs_kinds
       DO ikind = 1, nkind
          NULLIFY (aux_fit_soft_basis)
-         CALL get_qs_kind(admm_kind_set(ikind), soft_basis_set=soft_basis)
+         CALL get_qs_kind(admm_kind_set(ikind), basis_set=soft_basis, basis_type="ORB_SOFT")
          CALL copy_gto_basis_set(soft_basis, aux_fit_soft_basis)
          CALL add_basis_set_to_container(qs_kind_set(ikind)%basis_sets, aux_fit_soft_basis, "AUX_FIT_SOFT")
       END DO
@@ -390,12 +400,11 @@ CONTAINS
       INTEGER                                            :: handle, ikind, nkind
       LOGICAL                                            :: mic, molecule_only
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: aux_fit_present, orb_present
-      REAL(dp)                                           :: subcells
+      REAL(dp)                                           :: pdist, subcells
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: aux_fit_radius, orb_radius
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: pair_radius
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(distribution_1d_type), POINTER                :: distribution_1d
       TYPE(distribution_2d_type), POINTER                :: distribution_2d
@@ -403,6 +412,7 @@ CONTAINS
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(local_atoms_type), ALLOCATABLE, DIMENSION(:)  :: atom2d
       TYPE(molecule_type), DIMENSION(:), POINTER         :: molecule_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -431,6 +441,8 @@ CONTAINS
          mic = .TRUE.
       END IF
 
+      pdist = dft_control%qs_control%pairlist_radius
+
       CALL section_vals_val_get(qs_env%input, "DFT%SUBCELLS", r_val=subcells)
       neighbor_list_section => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%NEIGHBOR_LISTS")
 
@@ -456,7 +468,12 @@ CONTAINS
          END IF
       END DO
 
-      CALL pair_radius_setup(aux_fit_present, aux_fit_present, aux_fit_radius, aux_fit_radius, pair_radius)
+      IF (pdist < 0.0_dp) THEN
+         pdist = MAX(plane_distance(1, 0, 0, cell), &
+                     plane_distance(0, 1, 0, cell), &
+                     plane_distance(0, 0, 1, cell))
+      END IF
+      CALL pair_radius_setup(aux_fit_present, aux_fit_present, aux_fit_radius, aux_fit_radius, pair_radius, pdist)
       CALL build_neighbor_lists(admm_env%sab_aux_fit, particle_set, atom2d, cell, pair_radius, &
                                 mic=mic, molecular=molecule_only, subcells=subcells, nlname="sab_aux_fit")
       CALL build_neighbor_lists(admm_env%sab_aux_fit_asymm, particle_set, atom2d, cell, pair_radius, &
@@ -671,7 +688,7 @@ CONTAINS
          ALLOCATE (admm_env%matrix_ks_aux_fit(ispin)%matrix)
          CALL dbcsr_create(admm_env%matrix_ks_aux_fit(ispin)%matrix, template=matrix_s_aux_fit(1)%matrix, &
                            name="KOHN-SHAM_MATRIX for ADMM")
-         CALL dbcsr_copy(admm_env%matrix_ks_aux_fit(ispin)%matrix, matrix_s_aux_fit(1)%matrix)
+         CALL cp_dbcsr_alloc_block_from_nbl(admm_env%matrix_ks_aux_fit(ispin)%matrix, admm_env%sab_aux_fit)
          CALL dbcsr_set(admm_env%matrix_ks_aux_fit(ispin)%matrix, 0.0_dp)
       END DO
 
@@ -681,7 +698,7 @@ CONTAINS
          ALLOCATE (admm_env%matrix_ks_aux_fit_dft(ispin)%matrix)
          CALL dbcsr_create(admm_env%matrix_ks_aux_fit_dft(ispin)%matrix, template=matrix_s_aux_fit(1)%matrix, &
                            name="KOHN-SHAM_MATRIX for ADMM")
-         CALL dbcsr_copy(admm_env%matrix_ks_aux_fit_dft(ispin)%matrix, matrix_s_aux_fit(1)%matrix)
+         CALL cp_dbcsr_alloc_block_from_nbl(admm_env%matrix_ks_aux_fit_dft(ispin)%matrix, admm_env%sab_aux_fit)
          CALL dbcsr_set(admm_env%matrix_ks_aux_fit_dft(ispin)%matrix, 0.0_dp)
       END DO
 
@@ -691,7 +708,7 @@ CONTAINS
          ALLOCATE (admm_env%matrix_ks_aux_fit_hfx(ispin)%matrix)
          CALL dbcsr_create(admm_env%matrix_ks_aux_fit_hfx(ispin)%matrix, template=matrix_s_aux_fit(1)%matrix, &
                            name="KOHN-SHAM_MATRIX for ADMM")
-         CALL dbcsr_copy(admm_env%matrix_ks_aux_fit_hfx(ispin)%matrix, matrix_s_aux_fit(1)%matrix)
+         CALL cp_dbcsr_alloc_block_from_nbl(admm_env%matrix_ks_aux_fit_hfx(ispin)%matrix, admm_env%sab_aux_fit)
          CALL dbcsr_set(admm_env%matrix_ks_aux_fit_hfx(ispin)%matrix, 0.0_dp)
       END DO
 
@@ -734,7 +751,6 @@ CONTAINS
                                                             s_mstruct_changed, use_virial
       REAL(dp)                                           :: eh1, ehfx, ehfxrt, eold
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: hf_energy
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: matrix_ks_1d, matrix_ks_aux_fit, &
          matrix_ks_aux_fit_hfx, matrix_ks_aux_fit_im, matrix_ks_im, rho_ao_1d, rho_ao_resp
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_h, matrix_h_im, matrix_ks_orb, &
@@ -742,6 +758,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mo_array
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -1044,7 +1061,9 @@ CONTAINS
       TYPE(admm_type), POINTER                           :: admm_env
 
       LOGICAL, PARAMETER                                 :: debug_functional = .FALSE.
+#if defined (__LIBXC)
       REAL(KIND=dp), PARAMETER :: x_factor_c = 0.930525736349100025_dp
+#endif
 
       CHARACTER(LEN=20)                                  :: name_x_func
       INTEGER                                            :: hfx_potential_type, ifun, iounit, nfun
@@ -2069,10 +2088,10 @@ CONTAINS
                                                             hfx_treat_lsd_in_core, &
                                                             my_update_energy, s_mstruct_changed
       REAL(KIND=dp)                                      :: eh1, ehfx
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks_kp, rho_ao_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(section_vals_type), POINTER                   :: hfx_sections, input
 

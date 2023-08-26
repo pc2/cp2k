@@ -1,11 +1,12 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
 
 MODULE input_restart_force_eval
+
    USE atomic_kind_list_types,          ONLY: atomic_kind_list_type
    USE atomic_kind_types,               ONLY: get_atomic_kind
    USE cell_types,                      ONLY: cell_type,&
@@ -16,7 +17,6 @@ MODULE input_restart_force_eval
    USE cp_linked_list_input,            ONLY: cp_sll_val_create,&
                                               cp_sll_val_get_length,&
                                               cp_sll_val_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
@@ -46,7 +46,7 @@ MODULE input_restart_force_eval
                                               val_type
    USE kinds,                           ONLY: default_string_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: get_molecule_kind
    USE molecule_list_types,             ONLY: molecule_list_type
    USE molecule_types,                  ONLY: get_molecule,&
@@ -83,6 +83,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE update_force_eval(force_env, root_section, &
                                 write_binary_restart_file, respa)
+
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(section_vals_type), POINTER                   :: root_section
       LOGICAL, INTENT(IN)                                :: write_binary_restart_file
@@ -201,6 +202,7 @@ CONTAINS
 !> \author Teodoro Laino
 ! **************************************************************************************************
    SUBROUTINE update_qmmm(qmmm_section, force_env)
+
       TYPE(section_vals_type), POINTER                   :: qmmm_section
       TYPE(force_env_type), POINTER                      :: force_env
 
@@ -239,9 +241,9 @@ CONTAINS
                                                             nparticle_kind, nparticle_local
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: ascii
       TYPE(atomic_kind_list_type), POINTER               :: atomic_kinds
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(distribution_1d_type), POINTER                :: local_particles
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
 
       CALL force_env_get(force_env, subsys=subsys, para_env=para_env)
@@ -268,7 +270,7 @@ CONTAINS
             END DO
          END DO
 
-         CALL mp_sum(ascii, para_env%group)
+         CALL para_env%sum(ascii)
 
          CALL section_rng_val_set(rng_section=rng_section, nsize=nparticle, ascii=ascii)
 
@@ -289,6 +291,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE update_subsys(subsys_section, force_env, skip_vel_section, &
                             write_binary_restart_file)
+
       TYPE(section_vals_type), POINTER                   :: subsys_section
       TYPE(force_env_type), POINTER                      :: force_env
       LOGICAL, INTENT(IN)                                :: skip_vel_section, &
@@ -302,9 +305,9 @@ CONTAINS
       LOGICAL                                            :: scale, use_ref_cell
       REAL(KIND=dp)                                      :: conv_factor
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(molecule_list_type), POINTER                  :: molecules
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(multipole_type), POINTER                      :: multipoles
       TYPE(particle_list_type), POINTER                  :: core_particles, particles, &
                                                             shell_particles
@@ -338,7 +341,7 @@ CONTAINS
             CALL section_vals_val_get(subsys_section, "TOPOLOGY%COORD_FILE_NAME", &
                                       c_val=coord_file_name)
             output_unit = 0
-            IF (para_env%ionode) THEN
+            IF (para_env%is_source()) THEN
                CALL open_file(file_name=TRIM(ADJUSTL(coord_file_name)), &
                               file_action="READWRITE", &
                               file_form="FORMATTED", &
@@ -430,7 +433,9 @@ CONTAINS
             CALL update_quadrupoles_section(multipoles%quadrupoles, work_section)
          END IF
       END IF
+
       CALL timestop(handle)
+
    END SUBROUTINE update_subsys
 
 ! **************************************************************************************************
@@ -440,6 +445,7 @@ CONTAINS
 !> \author Ole Schuett
 ! **************************************************************************************************
    SUBROUTINE update_cell_section(cell, cell_section)
+
       TYPE(cell_type), POINTER                           :: cell
       TYPE(section_vals_type), POINTER                   :: cell_section
 
@@ -477,6 +483,7 @@ CONTAINS
       CALL section_vals_val_unset(cell_section, "ALPHA_BETA_GAMMA")
 
       CALL timestop(handle)
+
    END SUBROUTINE update_cell_section
 
 ! **************************************************************************************************
@@ -494,6 +501,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE section_coord_val_set(coord_section, particles, molecules, conv_factor, &
                                     scale, cell, shell)
+
       TYPE(section_vals_type), POINTER                   :: coord_section
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(molecule_list_type), POINTER                  :: molecules
@@ -549,8 +557,8 @@ CONTAINS
             ELSE
                s = s*conv_factor
             END IF
-            WRITE (UNIT=line, FMT="(A,3(1X,ES25.16),1X,I0)") &
-               TRIM(name), s(1:3), particles%els(irk)%atom_index
+            WRITE (UNIT=line, FMT="(T7,A,3ES25.16E3,1X,I0)") &
+               TRIM(ADJUSTL(name)), s(1:3), particles%els(irk)%atom_index
             CALL val_create(my_val, lc_val=line)
             IF (Nlist /= 0) THEN
                IF (irk == 1) THEN
@@ -592,11 +600,11 @@ CONTAINS
                s = s*conv_factor
             END IF
             IF (LEN_TRIM(my_tag) > 0) THEN
-               WRITE (UNIT=line, FMT="(A,3(1X,ES25.16),1X,A,1X,I0)") &
-                  TRIM(name), s(1:3), TRIM(my_tag), imol
+               WRITE (UNIT=line, FMT="(T7,A,3ES25.16E3,1X,A,1X,I0)") &
+                  TRIM(ADJUSTL(name)), s(1:3), TRIM(my_tag), imol
             ELSE
-               WRITE (UNIT=line, FMT="(A,3(1X,ES25.16))") &
-                  TRIM(name), s(1:3)
+               WRITE (UNIT=line, FMT="(T7,A,3ES25.16E3)") &
+                  TRIM(ADJUSTL(name)), s(1:3)
             END IF
             CALL val_create(my_val, lc_val=line)
 
@@ -623,9 +631,11 @@ CONTAINS
             NULLIFY (my_val)
          END IF
       END DO
+
       coord_section%values(ik, 1)%list => vals
 
       CALL timestop(handle)
+
    END SUBROUTINE section_coord_val_set
 
 ! **************************************************************************************************
@@ -702,6 +712,7 @@ CONTAINS
       dipoles_section%values(ik, 1)%list => vals
 
       CALL timestop(handle)
+
    END SUBROUTINE update_dipoles_section
 
 ! **************************************************************************************************
@@ -781,9 +792,11 @@ CONTAINS
          END IF
          NULLIFY (my_val)
       END DO
+
       quadrupoles_section%values(ik, 1)%list => vals
 
       CALL timestop(handle)
+
    END SUBROUTINE update_quadrupoles_section
 
 ! **************************************************************************************************
@@ -856,14 +869,14 @@ CONTAINS
             r(1:3) = particles%els(iparticle)%r(1:3)*conv_factor
          END IF
          IF (core_or_shell) THEN
-            WRITE (UNIT=output_unit, FMT="(A,3(1X,ES25.16),1X,I0)") &
+            WRITE (UNIT=output_unit, FMT="(A,3ES25.16E3,1X,I0)") &
                TRIM(ADJUSTL(kind_name)), r(1:3), particles%els(iparticle)%atom_index
          ELSE
             IF (LEN_TRIM(tag) > 0) THEN
-               WRITE (UNIT=output_unit, FMT="(A,3(1X,ES25.16),1X,A,1X,I0)") &
+               WRITE (UNIT=output_unit, FMT="(A,3ES25.16E3,1X,A,1X,I0)") &
                   TRIM(ADJUSTL(kind_name)), r(1:3), TRIM(tag), imolecule
             ELSE
-               WRITE (UNIT=output_unit, FMT="(A,3(1X,ES25.16))") &
+               WRITE (UNIT=output_unit, FMT="(A,3ES25.16E3)") &
                   TRIM(ADJUSTL(kind_name)), r(1:3)
             END IF
          END IF

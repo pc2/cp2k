@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -115,6 +115,17 @@ CONTAINS
                           "(3) the basis set labeled in Kind section (HARRIS)", &
                           usage="HARRIS_BASIS ORBITAL", &
                           type_of_var=char_t, default_c_val="ORBITAL", n_var=-1)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="DEBUG_FORCES", &
+                          description="Additional output to debug energy correction forces.", &
+                          usage="DEBUG_FORCES T", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="DEBUG_STRESS", &
+                          description="Additional output to debug energy correction forces.", &
+                          usage="DEBUG_STRESS T", default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -333,6 +344,19 @@ CONTAINS
                           enum_desc=s2a("Generate an atomic density using the atomic code", &
                                         "Using the ground-state density."), &
                           enum_i_vals=(/ec_ot_atomic, ec_ot_gs/))
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, &
+         name="ADMM", &
+         description="Decide whether to perform ADMM in the exact exchange calc. for DC-DFT. "// &
+         "The ADMM XC correction is governed by the AUXILIARY_DENSITY_MATRIX_METHOD section in &DFT. "// &
+         "In most cases, the Hartree-Fock exchange is not too expensive and there is no need for ADMM, "// &
+         "ADMM can however provide significant speedup and memory savings in case of diffuse basis sets. ", &
+         usage="ADMM", &
+         default_l_val=.FALSE., &
+         lone_keyword_l_val=.TRUE.)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

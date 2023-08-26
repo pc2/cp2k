@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -16,10 +16,6 @@ MODULE embed_types
    USE cp_fm_types,                     ONLY: cp_fm_type
    USE cp_log_handling,                 ONLY: cp_logger_p_type,&
                                               cp_logger_release
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_p_type,&
-                                              cp_para_env_type
    USE cp_result_types,                 ONLY: cp_result_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_release,&
@@ -31,6 +27,9 @@ MODULE embed_types
                                               section_vals_type
    USE kinds,                           ONLY: dp
    USE lri_environment_types,           ONLY: lri_kind_type
+   USE message_passing,                 ONLY: mp_para_env_p_type,&
+                                              mp_para_env_release,&
+                                              mp_para_env_type
    USE molecule_kind_list_types,        ONLY: molecule_kind_list_create,&
                                               molecule_kind_list_release,&
                                               molecule_kind_list_type
@@ -72,20 +71,27 @@ MODULE embed_types
                                                    prev_embed_pot_hess => NULL(), kinetic_mat => NULL()
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)  :: w_func, max_diff, int_diff, int_diff_square, &
                                                    max_grid_step, max_subsys_dens_diff
-      INTEGER                                   :: n_iter, i_iter, dimen_aux, last_accepted, dimen_var_aux
-      REAL(KIND=dp)                             :: lambda, allowed_decrease, max_trad, min_trad, &
-                                                   grad_norm, vw_cutoff, vw_smooth_cutoff_range, eta
+      INTEGER                                   :: n_iter = -1, i_iter = -1, dimen_aux = -1, &
+                                                   last_accepted = -1, dimen_var_aux = -1
+      REAL(KIND=dp)                             :: lambda = 0.0_dp, allowed_decrease = 0.0_dp, &
+                                                   max_trad = 0.0_dp, min_trad = 0.0_dp, &
+                                                   grad_norm = 0.0_dp, vw_cutoff = 0.0_dp, &
+                                                   vw_smooth_cutoff_range = 0.0_dp, eta = 0.0_dp
       TYPE(pw_type), POINTER                  :: const_pot => NULL(), prev_embed_pot => NULL(), &
                                                  prev_spin_embed_pot => NULL(), pot_diff => NULL()
       TYPE(pw_type), DIMENSION(:), POINTER    :: prev_grid_grad => NULL(), prev_grid_pot => NULL(), &
                                                  prev_subsys_dens => NULL(), v_w => NULL()
-      REAL(KIND=dp)                             :: reg_term, trust_rad, conv_max, conv_int, &
-                                                   conv_max_spin, conv_int_spin, step_len
-      LOGICAL                                   :: accept_step, newton_step, level_shift, steep_desc, &
-                                                   add_const_pot, converged, read_embed_pot, &
-                                                   read_embed_pot_cube, change_spin, open_shell_embed, &
-                                                   grid_opt, leeuwen, fab, coulomb_guess, fermi_amaldi, &
-                                                   diff_guess
+      REAL(KIND=dp)                             :: reg_term = 0.0_dp, trust_rad = 0.0_dp, &
+                                                   conv_max = 0.0_dp, conv_int = 0.0_dp, &
+                                                   conv_max_spin = 0.0_dp, conv_int_spin = 0.0_dp, step_len = 0.0_dp
+      LOGICAL                                   :: accept_step = .FALSE., newton_step = .FALSE., &
+                                                   level_shift = .FALSE., steep_desc = .FALSE., &
+                                                   add_const_pot = .FALSE., converged = .FALSE., read_embed_pot = .FALSE., &
+                                                   read_embed_pot_cube = .FALSE., change_spin = .FALSE., &
+                                                   open_shell_embed = .FALSE., &
+                                                   grid_opt = .FALSE., leeuwen = .FALSE., fab = .FALSE., &
+                                                   coulomb_guess = .FALSE., fermi_amaldi = .FALSE., &
+                                                   diff_guess = .FALSE.
       INTEGER, ALLOCATABLE, DIMENSION(:)        :: all_nspins
       TYPE(lri_kind_type), DIMENSION(:), POINTER :: lri => NULL() ! Needed to store integrals
 
@@ -97,15 +103,18 @@ MODULE embed_types
 ! **************************************************************************************************
 
    TYPE opt_dmfet_pot_type
-      TYPE(cp_fm_type), POINTER                 :: dmfet_pot, dm_1, dm_2, dm_total, dm_diff, &
-                                                   dmfet_pot_beta, dm_total_beta, &
-                                                   dm_diff_beta, dm_subsys, dm_subsys_beta
-      REAL(KIND=dp)                             :: trust_rad, conv_max, conv_int, conv_max_beta, &
-                                                   conv_int_beta
-      LOGICAL                                   :: accept_step, converged, read_dmfet_pot, &
-                                                   change_spin, open_shell_embed
+      TYPE(cp_fm_type), POINTER                 :: dmfet_pot => NULL(), dm_1 => NULL(), dm_2 => NULL(), &
+                                                   dm_total => NULL(), dm_diff => NULL(), &
+                                                   dmfet_pot_beta => NULL(), dm_total_beta => NULL(), &
+                                                   dm_diff_beta => NULL(), dm_subsys => NULL(), dm_subsys_beta => NULL()
+      REAL(KIND=dp)                             :: trust_rad = 0.0_dp, conv_max = 0.0_dp, &
+                                                   conv_int = 0.0_dp, conv_max_beta = 0.0_dp, &
+                                                   conv_int_beta = 0.0_dp
+      LOGICAL                                   :: accept_step = .FALSE., converged = .FALSE., &
+                                                   read_dmfet_pot = .FALSE., &
+                                                   change_spin = .FALSE., open_shell_embed = .FALSE.
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)  :: w_func, max_diff, int_diff
-      INTEGER                                   :: n_iter, i_iter, last_accepted
+      INTEGER                                   :: n_iter = -1, i_iter = -1, last_accepted = -1
       INTEGER, ALLOCATABLE, DIMENSION(:)        :: all_nspins
 
    END TYPE opt_dmfet_pot_type
@@ -116,18 +125,18 @@ MODULE embed_types
 ! **************************************************************************************************
 
    TYPE embed_env_type
-      TYPE(cell_type), POINTER                         :: cell_ref
-      TYPE(cp_para_env_type), POINTER                  :: para_env
-      TYPE(cp_subsys_type), POINTER                    :: subsys
-      TYPE(section_vals_type), POINTER                 :: input
-      REAL(KIND=dp), DIMENSION(:), POINTER             :: energies
+      TYPE(cell_type), POINTER                         :: cell_ref => NULL()
+      TYPE(mp_para_env_type), POINTER                  :: para_env => NULL()
+      TYPE(cp_subsys_type), POINTER                    :: subsys => NULL()
+      TYPE(section_vals_type), POINTER                 :: input => NULL()
+      REAL(KIND=dp), DIMENSION(:), POINTER             :: energies => NULL()
       ! Parallelization of multiple force_eval
-      INTEGER                                          :: new_group, ngroups
-      INTEGER, DIMENSION(:), POINTER                   :: group_distribution
-      TYPE(cp_para_env_p_type), DIMENSION(:), POINTER  :: sub_para_env
-      TYPE(cp_logger_p_type), DIMENSION(:), POINTER    :: sub_logger
+      INTEGER                                          :: ngroups = -1
+      INTEGER, DIMENSION(:), POINTER                   :: group_distribution => NULL()
+      TYPE(mp_para_env_p_type), DIMENSION(:), POINTER  :: sub_para_env => NULL()
+      TYPE(cp_logger_p_type), DIMENSION(:), POINTER    :: sub_logger => NULL()
       ! Densities from sunbsystem
-      REAL(KIND=dp)                                    :: pot_energy
+      REAL(KIND=dp)                                    :: pot_energy = 0.0_dp
    END TYPE embed_env_type
 
 CONTAINS
@@ -163,8 +172,8 @@ CONTAINS
       TYPE(molecule_kind_type), OPTIONAL, POINTER        :: molecule_kind_set(:)
       TYPE(molecule_type), OPTIONAL, POINTER             :: molecule_set(:)
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell, cell_ref
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
-      TYPE(cp_para_env_p_type), DIMENSION(:), OPTIONAL, &
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: sub_para_env
       TYPE(cp_subsys_type), OPTIONAL, POINTER            :: subsys
       TYPE(section_vals_type), OPTIONAL, POINTER         :: input
@@ -202,28 +211,6 @@ CONTAINS
    END SUBROUTINE get_embed_env
 
 ! **************************************************************************************************
-!> \brief Initialise the embed environment.
-!> \param embed_env ...
-!> \param para_env ...
-! **************************************************************************************************
-   SUBROUTINE init_embed_env(embed_env, para_env)
-
-      TYPE(embed_env_type), INTENT(OUT)                  :: embed_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
-
-      NULLIFY (embed_env%input)
-      NULLIFY (embed_env%cell_ref)
-      NULLIFY (embed_env%subsys)
-      NULLIFY (embed_env%sub_para_env)
-      NULLIFY (embed_env%sub_logger)
-      NULLIFY (embed_env%energies)
-      NULLIFY (embed_env%subsys)
-      CALL cp_para_env_retain(para_env)
-      embed_env%para_env => para_env
-
-   END SUBROUTINE init_embed_env
-
-! **************************************************************************************************
 !> \brief ...
 !> \param embed_env ...
 !> \param atomic_kind_set ...
@@ -251,7 +238,7 @@ CONTAINS
       TYPE(cell_type), OPTIONAL, POINTER                 :: cell_ref
       TYPE(cp_subsys_type), OPTIONAL, POINTER            :: subsys
       TYPE(section_vals_type), OPTIONAL, POINTER         :: input
-      TYPE(cp_para_env_p_type), DIMENSION(:), OPTIONAL, &
+      TYPE(mp_para_env_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: sub_para_env
 
       TYPE(atomic_kind_list_type), POINTER               :: atomic_kinds
@@ -271,9 +258,9 @@ CONTAINS
       END IF
       IF (PRESENT(subsys)) THEN
          IF (ASSOCIATED(embed_env%subsys)) THEN
-         IF (.NOT. ASSOCIATED(embed_env%subsys, subsys)) THEN
-            CALL cp_subsys_release(embed_env%subsys)
-         END IF
+            IF (.NOT. ASSOCIATED(embed_env%subsys, subsys)) THEN
+               CALL cp_subsys_release(embed_env%subsys)
+            END IF
          END IF
          embed_env%subsys => subsys
       END IF
@@ -323,9 +310,11 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE embed_env_create(embed_env, para_env)
       TYPE(embed_env_type), INTENT(OUT)                  :: embed_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), INTENT(IN), TARGET         :: para_env
 
-      CALL init_embed_env(embed_env, para_env=para_env)
+      embed_env%para_env => para_env
+      CALL embed_env%para_env%retain()
+
    END SUBROUTINE embed_env_create
 
 ! **************************************************************************************************
@@ -338,18 +327,18 @@ CONTAINS
 
       INTEGER                                            :: i, ngroups
 
-      ngroups = SIZE(embed_env%sub_para_env)
+      ngroups = embed_env%ngroups
       DO i = 1, ngroups
          IF (ASSOCIATED(embed_env%sub_para_env(i)%para_env)) THEN
             CALL cp_logger_release(embed_env%sub_logger(i)%p)
-            CALL cp_para_env_release(embed_env%sub_para_env(i)%para_env)
+            CALL mp_para_env_release(embed_env%sub_para_env(i)%para_env)
          END IF
       END DO
       DEALLOCATE (embed_env%sub_para_env)
       DEALLOCATE (embed_env%sub_logger)
       DEALLOCATE (embed_env%energies)
       CALL cell_release(embed_env%cell_ref)
-      CALL cp_para_env_release(embed_env%para_env)
+      CALL mp_para_env_release(embed_env%para_env)
       CALL cp_subsys_release(embed_env%subsys)
       CALL section_vals_release(embed_env%input)
       IF (ASSOCIATED(embed_env%group_distribution)) THEN

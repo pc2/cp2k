@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -33,9 +33,8 @@ MODULE pw_gpu
         cube_transpose_1, cube_transpose_2, fft_scratch_sizes, fft_scratch_type, get_fft_scratch, &
         release_fft_scratch, x_to_yz, xz_to_yz, yz_to_x, yz_to_xz
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_comm_compare,&
-                                              mp_environ,&
-                                              mp_rank_compare
+   USE message_passing,                 ONLY: mp_cart_type,&
+                                              mp_comm_type
    USE pw_grid_types,                   ONLY: FULLSPACE
    USE pw_types,                        ONLY: REALSPACE,&
                                               RECIPROCALSPACE,&
@@ -231,21 +230,17 @@ CONTAINS
 
       COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: grays, pbuf, qbuf, rbuf, sbuf
       COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: tbuf
-      INTEGER                                            :: g_pos, gs_group, handle, iout, lg, lmax, &
-                                                            mg, mmax, mx2, mz2, n1, n2, ngpts, &
-                                                            nmax, numtask, numtask_g, numtask_r, &
-                                                            rp, rs_group
+      INTEGER                                            :: g_pos, handle, lg, lmax, mg, mmax, mx2, &
+                                                            mz2, n1, n2, ngpts, nmax, numtask, &
+                                                            numtask_g, numtask_r, rp
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: p2p
       INTEGER, DIMENSION(2)                              :: r_dim, r_pos
       INTEGER, DIMENSION(:), POINTER                     :: n, nloc, nyzray
-      INTEGER, DIMENSION(:, :, :), POINTER               :: yzp
       INTEGER, DIMENSION(:, :, :, :), POINTER            :: bo
       TYPE(fft_scratch_sizes)                            :: fft_scratch_size
       TYPE(fft_scratch_type), POINTER                    :: fft_scratch
-
-!nyzray(0:)
-!yzp(:,:,0:)
-!bo(:,:,0:,:)
+      TYPE(mp_cart_type)                                 :: rs_group
+      TYPE(mp_comm_type)                                 :: gs_group
 
       CALL timeset(routineN, handle)
 
@@ -259,20 +254,18 @@ CONTAINS
       IF (pw1%pw_grid%para%ray_distribution) THEN
          gs_group = pw1%pw_grid%para%group
          rs_group = pw1%pw_grid%para%rs_group
-         yzp => pw1%pw_grid%para%yzp
          nyzray => pw1%pw_grid%para%nyzray
          bo => pw1%pw_grid%para%bo
 
-         CALL mp_environ(numtask_g, g_pos, gs_group)
-         CALL mp_environ(numtask_r, r_dim, r_pos, rs_group)
+         numtask_g = gs_group%num_pe
+         g_pos = gs_group%mepos
+         numtask_r = rs_group%num_pe
+         r_dim = rs_group%num_pe_cart
+         r_pos = rs_group%mepos_cart
          IF (numtask_g /= numtask_r) THEN
             CPABORT("Real space and G space groups are different.")
          END IF
          numtask = numtask_r
-         CALL mp_comm_compare(rs_group, gs_group, iout)
-         IF (iout > 3) THEN
-            CPABORT("Real space and G space groups are different.")
-         END IF
 
          lg = SIZE(grays, 1)
          mg = SIZE(grays, 2)
@@ -281,7 +274,7 @@ CONTAINS
 
          ALLOCATE (p2p(0:numtask - 1))
 
-         CALL mp_rank_compare(gs_group, rs_group, p2p)
+         CALL gs_group%rank_compare(rs_group, p2p)
 
          rp = p2p(g_pos)
          mx2 = bo(2, 1, rp, 2) - bo(1, 1, rp, 2) + 1
@@ -346,7 +339,7 @@ CONTAINS
             CALL pw_gpu_f(rbuf, pbuf, +1, n(2), mx2*mz2)
 
             ! Exchange data ( transpose of matrix ) and sort
-            CALL xz_to_yz(pbuf, rs_group, r_dim, g_pos, p2p, yzp, nyzray, &
+            CALL xz_to_yz(pbuf, rs_group, r_dim, g_pos, p2p, pw1%pw_grid%para%yzp, nyzray, &
                           bo(:, :, :, 2), sbuf, fft_scratch)
 
             ! FFT along x
@@ -371,7 +364,7 @@ CONTAINS
             CALL pw_gpu_cff(pw1, tbuf)
 
             ! Exchange data ( transpose of matrix ) and sort
-            CALL yz_to_x(tbuf, gs_group, g_pos, p2p, yzp, nyzray, &
+            CALL yz_to_x(tbuf, gs_group, g_pos, p2p, pw1%pw_grid%para%yzp, nyzray, &
                          bo(:, :, :, 2), sbuf, fft_scratch)
 
             ! FFT along x
@@ -411,21 +404,17 @@ CONTAINS
 
       COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: grays, pbuf, qbuf, rbuf, sbuf
       COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: tbuf
-      INTEGER                                            :: g_pos, gs_group, handle, iout, lg, lmax, &
-                                                            mg, mmax, mx2, mz2, n1, n2, ngpts, &
-                                                            nmax, numtask, numtask_g, numtask_r, &
-                                                            rp, rs_group
+      INTEGER                                            :: g_pos, handle, lg, lmax, mg, mmax, mx2, &
+                                                            mz2, n1, n2, ngpts, nmax, numtask, &
+                                                            numtask_g, numtask_r, rp
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: p2p
       INTEGER, DIMENSION(2)                              :: r_dim, r_pos
       INTEGER, DIMENSION(:), POINTER                     :: n, nloc, nyzray
-      INTEGER, DIMENSION(:, :, :), POINTER               :: yzp
       INTEGER, DIMENSION(:, :, :, :), POINTER            :: bo
       TYPE(fft_scratch_sizes)                            :: fft_scratch_size
       TYPE(fft_scratch_type), POINTER                    :: fft_scratch
-
-!nyzray(0:)
-!yzp(:,:,0:)
-!bo(:,:,0:,:)
+      TYPE(mp_cart_type)                                 :: rs_group
+      TYPE(mp_comm_type)                                 :: gs_group
 
       CALL timeset(routineN, handle)
 
@@ -439,20 +428,18 @@ CONTAINS
       IF (pw1%pw_grid%para%ray_distribution) THEN
          gs_group = pw1%pw_grid%para%group
          rs_group = pw1%pw_grid%para%rs_group
-         yzp => pw1%pw_grid%para%yzp
          nyzray => pw1%pw_grid%para%nyzray
          bo => pw1%pw_grid%para%bo
 
-         CALL mp_environ(numtask_g, g_pos, gs_group)
-         CALL mp_environ(numtask_r, r_dim, r_pos, rs_group)
+         numtask_g = gs_group%num_pe
+         g_pos = gs_group%mepos
+         numtask_r = rs_group%num_pe
+         r_dim = rs_group%num_pe_cart
+         r_pos = rs_group%mepos_cart
          IF (numtask_g /= numtask_r) THEN
             CPABORT("Real space and G space groups are different.")
          END IF
          numtask = numtask_r
-         CALL mp_comm_compare(rs_group, gs_group, iout)
-         IF (iout > 3) THEN
-            CPABORT("Real space and G space groups are different.")
-         END IF
 
          lg = SIZE(grays, 1)
          mg = SIZE(grays, 2)
@@ -461,7 +448,7 @@ CONTAINS
 
          ALLOCATE (p2p(0:numtask - 1))
 
-         CALL mp_rank_compare(gs_group, rs_group, p2p)
+         CALL gs_group%rank_compare(rs_group, p2p)
 
          rp = p2p(g_pos)
          mx2 = bo(2, 1, rp, 2) - bo(1, 1, rp, 2) + 1
@@ -518,7 +505,7 @@ CONTAINS
 
             ! Exchange data ( transpose of matrix ) and sort
             IF (pw1%pw_grid%grid_span /= FULLSPACE) CALL zero_c(qbuf)
-            CALL yz_to_xz(pbuf, rs_group, r_dim, g_pos, p2p, yzp, nyzray, &
+            CALL yz_to_xz(pbuf, rs_group, r_dim, g_pos, p2p, pw1%pw_grid%para%yzp, nyzray, &
                           bo(:, :, :, 2), qbuf, fft_scratch)
 
             ! FFT along y
@@ -555,7 +542,7 @@ CONTAINS
 
             ! Exchange data ( transpose of matrix ) and sort
             IF (pw1%pw_grid%grid_span /= FULLSPACE) CALL zero_c(tbuf)
-            CALL x_to_yz(sbuf, gs_group, g_pos, p2p, yzp, nyzray, &
+            CALL x_to_yz(sbuf, gs_group, g_pos, p2p, pw1%pw_grid%para%yzp, nyzray, &
                          bo(:, :, :, 2), tbuf, fft_scratch)
 
             ! FFT along y and z

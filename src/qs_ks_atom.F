@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -15,19 +15,17 @@ MODULE qs_ks_atom
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind,&
                                               get_atomic_kind_set
-   USE basis_set_types,                 ONLY: get_gto_basis_set,&
-                                              gto_basis_set_p_type,&
+   USE basis_set_types,                 ONLY: gto_basis_set_p_type,&
                                               gto_basis_set_type
    USE cp_array_utils,                  ONLY: cp_2d_r_p_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_get_block_p,&
                                               dbcsr_p_type
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_type
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_force_types,                  ONLY: qs_force_type
@@ -96,6 +94,9 @@ CONTAINS
 !> \param oce_external ...
 !> \param sab_external ...
 !> \param kscale ...
+!> \param kintegral ...
+!> \param kforce ...
+!> \param fscale ...
 !> \par History
 !>      created [MI]
 !>      the loop over the spins is done internally [03-05,MI]
@@ -104,7 +105,8 @@ CONTAINS
 !>      Allow for external kind_set, rho_atom_set, oce, sab 12.2019 (A. Bussy)
 ! **************************************************************************************************
    SUBROUTINE update_ks_atom(qs_env, ksmat, pmat, forces, tddft, rho_atom_external, &
-                             kind_set_external, oce_external, sab_external, kscale)
+                             kind_set_external, oce_external, sab_external, kscale, &
+                             kintegral, kforce, fscale)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(dbcsr_p_type), DIMENSION(*), INTENT(INOUT)    :: ksmat, pmat
@@ -117,14 +119,14 @@ CONTAINS
       TYPE(oce_matrix_type), OPTIONAL, POINTER           :: oce_external
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          OPTIONAL, POINTER                               :: sab_external
-      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: kscale
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: kscale, kintegral, kforce
+      REAL(KIND=dp), DIMENSION(2), INTENT(IN), OPTIONAL  :: fscale
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'update_ks_atom'
 
       INTEGER :: bo(2), handle, ia_kind, iac, iat, iatom, ibc, ikind, img, ip, ispin, ja_kind, &
-         jatom, jkind, ka_kind, kac, katom, kbc, kkind, ldCPC, max_gau, max_nsgf, maxsoc, mepos, &
-         n_cont_a, n_cont_b, nat, natom, nimages, nkind, nl_table_num_slots, nsetc, nsoctot, &
-         nspins, num_pe, slot_num
+         jatom, jkind, ka_kind, kac, katom, kbc, kkind, ldCPC, max_gau, max_nsgf, n_cont_a, &
+         n_cont_b, nat, natom, nimages, nkind, nl_table_num_slots, nsoctot, nspins, slot_num
       INTEGER(KIND=int_8)                                :: nl_table_key
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind
       INTEGER, DIMENSION(3)                              :: cell_b
@@ -140,17 +142,18 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: C_int_h, C_int_s, coc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dCPC_h, dCPC_s
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: PC_h, PC_s
+      REAL(KIND=dp), DIMENSION(2)                        :: force_fac
       REAL(KIND=dp), DIMENSION(3, 3)                     :: pv_virial_thread
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: C_coeff_hh_a, C_coeff_hh_b, &
                                                             C_coeff_ss_a, C_coeff_ss_b
       TYPE(alist_type), POINTER                          :: alist_ac, alist_bc
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_2d_r_p_type), DIMENSION(:), POINTER        :: mat_h, mat_p
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_list
-      TYPE(gto_basis_set_type), POINTER                  :: basis_set_a, basis_set_b, orb_basis
+      TYPE(gto_basis_set_type), POINTER                  :: basis_set_a, basis_set_b
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -160,6 +163,7 @@ CONTAINS
       TYPE(oce_matrix_type), POINTER                     :: my_oce
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: my_kind_set
+      TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_local_h, int_local_s
       TYPE(rho_atom_type), DIMENSION(:), POINTER         :: my_rho_atom
       TYPE(rho_atom_type), POINTER                       :: rho_at
       TYPE(virial_type), POINTER                         :: virial
@@ -170,7 +174,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       NULLIFY (my_kind_set, atomic_kind_set, force, my_oce, para_env, my_rho_atom, my_sab)
-      NULLIFY (mat_h, mat_p, orb_basis, dft_control)
+      NULLIFY (mat_h, mat_p, dft_control)
 
       CALL get_qs_env(qs_env=qs_env, &
                       qs_kind_set=my_kind_set, &
@@ -186,11 +190,12 @@ CONTAINS
       nspins = dft_control%nspins
       nimages = dft_control%nimages
 
+      factor1 = 1.0_dp
+      factor2 = 1.0_dp
+
       !deal with externals
       my_tddft = .FALSE.
       IF (PRESENT(tddft)) my_tddft = tddft
-      factor1 = 1.0_dp
-      factor2 = 1.0_dp
       IF (my_tddft) THEN
          IF (nspins == 1) factor1 = 2.0_dp
          CPASSERT(nimages == 1)
@@ -199,6 +204,10 @@ CONTAINS
          factor1 = factor1*kscale
          factor2 = factor2*kscale
       END IF
+      IF (PRESENT(kintegral)) factor1 = kintegral
+      IF (PRESENT(kforce)) factor2 = kforce
+      force_fac = 1.0_dp
+      IF (PRESENT(fscale)) force_fac(:) = fscale(:)
 
       IF (PRESENT(rho_atom_external)) my_rho_atom => rho_atom_external
       IF (PRESENT(kind_set_external)) my_kind_set => kind_set_external
@@ -215,10 +224,9 @@ CONTAINS
       eps_cpc = dft_control%qs_control%gapw_control%eps_cpc
 
       CALL get_atomic_kind_set(atomic_kind_set, natom=natom)
-      CALL get_qs_kind_set(my_kind_set, maxsgf=max_nsgf, maxgtops=max_gau)
+      CALL get_qs_kind_set(my_kind_set, maxsgf=max_nsgf, maxgtops=max_gau, basis_type="GAPW_1C")
 
       IF (forces) THEN
-         ALLOCATE (atom_of_kind(natom))
          CALL get_atomic_kind_set(atomic_kind_set, atom_of_kind=atom_of_kind)
          ldCPC = max_gau
          use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
@@ -230,8 +238,7 @@ CONTAINS
 
       nkind = SIZE(my_kind_set, 1)
       ! Collect the local potential contributions from all the processors
-      mepos = para_env%mepos
-      num_pe = para_env%num_pe
+      ASSOCIATE (mepos => para_env%mepos, num_pe => para_env%num_pe)
       DO ikind = 1, nkind
          NULLIFY (atom_list)
          CALL get_atomic_kind(atomic_kind_set(ikind), atom_list=atom_list, natom=nat)
@@ -243,9 +250,9 @@ CONTAINS
                iatom = atom_list(iat)
                DO ispin = 1, nspins
                   CALL prj_gather(my_rho_atom(iatom)%ga_Vlocal_gb_h(ispin)%r_coef, &
-                                  my_rho_atom(iatom)%cpc_h(ispin)%r_coef, my_kind_set(ikind))
+                                  my_rho_atom(iatom)%int_scr_h(ispin)%r_coef, my_kind_set(ikind))
                   CALL prj_gather(my_rho_atom(iatom)%ga_Vlocal_gb_s(ispin)%r_coef, &
-                                  my_rho_atom(iatom)%cpc_s(ispin)%r_coef, my_kind_set(ikind))
+                                  my_rho_atom(iatom)%int_scr_s(ispin)%r_coef, my_kind_set(ikind))
                END DO
             END DO
             ! broadcast the CPC arrays to all processors (replicated data)
@@ -254,13 +261,14 @@ CONTAINS
                DO iat = bo(1), bo(2)
                   iatom = atom_list(iat)
                   DO ispin = 1, nspins
-                     CALL mp_bcast(my_rho_atom(iatom)%cpc_h(ispin)%r_coef, ip, para_env%group)
-                     CALL mp_bcast(my_rho_atom(iatom)%cpc_s(ispin)%r_coef, ip, para_env%group)
+                     CALL para_env%bcast(my_rho_atom(iatom)%int_scr_h(ispin)%r_coef, ip)
+                     CALL para_env%bcast(my_rho_atom(iatom)%int_scr_s(ispin)%r_coef, ip)
                   END DO
                END DO
             END DO
          END IF
       END DO
+      END ASSOCIATE
 
       ALLOCATE (basis_set_list(nkind))
       DO ikind = 1, nkind
@@ -300,15 +308,16 @@ CONTAINS
 !$OMP                 , basis_set_list, nimages, cell_to_index       &
 !$OMP                 , ksmat, pmat, natom, nkind, my_kind_set, my_oce &
 !$OMP                 , my_rho_atom, factor1, factor2, use_virial    &
-!$OMP                 , atom_of_kind, ldCPC, force, locks            &
+!$OMP                 , atom_of_kind, ldCPC, force, locks, force_fac &
 !$OMP                 )                                              &
 !$OMP          PRIVATE( slot_num, is_entry_null, TASK, is_task_valid &
 !$OMP                 , C_int_h, C_int_s, coc, a_matrix, p_matrix    &
 !$OMP                 , mat_h, mat_p, dCPC_h, dCPC_s, PC_h, PC_s     &
+!$OMP                 , int_local_h, int_local_s                     &
 !$OMP                 , ikind, jkind, iatom, jatom, cell_b           &
 !$OMP                 , basis_set_a, basis_set_b, img                &
 !$OMP                 , found, next_task                             &
-!$OMP                 , kkind, orb_basis, paw_atom, nsetc, maxsoc    &
+!$OMP                 , kkind, paw_atom                              &
 !$OMP                 , iac, alist_ac, kac, n_cont_a, list_a         &
 !$OMP                 , ibc, alist_bc, kbc, n_cont_b, list_b         &
 !$OMP                 , katom, rho_at, nsoctot                       &
@@ -374,6 +383,7 @@ CONTAINS
                DO ispin = 1, nspins
                   NULLIFY (mat_h(ispin)%array, mat_p(ispin)%array)
 
+                  found = .FALSE.
                   IF (iatom <= jatom) THEN
                      CALL dbcsr_get_block_p(matrix=ksmat(nspins*(img - 1) + ispin)%matrix, &
                                             row=iatom, col=jatom, &
@@ -383,8 +393,10 @@ CONTAINS
                                             row=jatom, col=iatom, &
                                             BLOCK=mat_h(ispin)%array, found=found)
                   END IF
+                  CPASSERT(found)
 
                   IF (forces) THEN
+                     found = .FALSE.
                      IF (iatom <= jatom) THEN
                         CALL dbcsr_get_block_p(matrix=pmat(nspins*(img - 1) + ispin)%matrix, &
                                                row=iatom, col=jatom, &
@@ -394,15 +406,14 @@ CONTAINS
                                                row=jatom, col=iatom, &
                                                BLOCK=mat_p(ispin)%array, found=found)
                      END IF
+                     CPASSERT(found)
                   END IF
                END DO
 
                DO kkind = 1, nkind
-                  CALL get_qs_kind(my_kind_set(kkind), basis_set=orb_basis, paw_atom=paw_atom)
+                  CALL get_qs_kind(my_kind_set(kkind), paw_atom=paw_atom)
 
                   IF (.NOT. paw_atom) CYCLE
-
-                  CALL get_gto_basis_set(gto_basis_set=orb_basis, nset=nsetc, maxso=maxsoc)
 
                   iac = ikind + nkind*(kkind - 1)
                   ibc = jkind + nkind*(kkind - 1)
@@ -451,8 +462,9 @@ CONTAINS
                            rho_at => my_rho_atom(katom)
                            nsoctot = SIZE(C_coeff_ss_a, 2)
 
+                           CALL get_rho_atom(rho_atom=rho_at, int_scr_h=int_local_h, int_scr_s=int_local_s)
                            CALL add_vhxca_to_ks(mat_h, C_coeff_hh_a, C_coeff_hh_b, C_coeff_ss_a, C_coeff_ss_b, &
-                                                rho_at, nspins, iatom, jatom, nsoctot, factor1, &
+                                                int_local_h, int_local_s, nspins, iatom, jatom, nsoctot, factor1, &
                                                 list_a, n_cont_a, list_b, n_cont_b, C_int_h, C_int_s, a_matrix, dista, distb, coc)
 
                            IF (forces) THEN
@@ -466,11 +478,12 @@ CONTAINS
                               rho_at => my_rho_atom(katom)
                               force_tmp(1:3, 1:3) = 0.0_dp
 
+                              CALL get_rho_atom(rho_atom=rho_at, int_scr_h=int_local_h, int_scr_s=int_local_s)
                               IF (iatom <= jatom) THEN
                                  CALL add_vhxca_forces(mat_p, C_coeff_hh_a, C_coeff_hh_b, C_coeff_ss_a, C_coeff_ss_b, &
-                                                       rho_at, force_tmp, nspins, iatom, jatom, nsoctot, &
+                                                       int_local_h, int_local_s, force_tmp, nspins, iatom, jatom, nsoctot, &
                                                        list_a, n_cont_a, list_b, n_cont_b, dCPC_h, dCPC_s, ldCPC, &
-                                                       PC_h, PC_s, p_matrix)
+                                                       PC_h, PC_s, p_matrix, force_fac)
                                  force_tmp = factor2*force_tmp
 !$                               CALL omp_set_lock(locks((ka_kind - 1)*nkind + kkind))
                                  force(kkind)%vhxc_atom(1:3, ka_kind) = force(kkind)%vhxc_atom(1:3, ka_kind) + force_tmp(1:3, 3)
@@ -487,9 +500,9 @@ CONTAINS
                                  END IF
                               ELSE
                                  CALL add_vhxca_forces(mat_p, C_coeff_hh_b, C_coeff_hh_a, C_coeff_ss_b, C_coeff_ss_a, &
-                                                       rho_at, force_tmp, nspins, jatom, iatom, nsoctot, &
+                                                       int_local_h, int_local_s, force_tmp, nspins, jatom, iatom, nsoctot, &
                                                        list_b, n_cont_b, list_a, n_cont_a, dCPC_h, dCPC_s, ldCPC, &
-                                                       PC_h, PC_s, p_matrix)
+                                                       PC_h, PC_s, p_matrix, force_fac)
                                  force_tmp = factor2*force_tmp
 !$                               CALL omp_set_lock(locks((ka_kind - 1)*nkind + kkind))
                                  force(kkind)%vhxc_atom(1:3, ka_kind) = force(kkind)%vhxc_atom(1:3, ka_kind) + force_tmp(1:3, 3)
@@ -558,9 +571,6 @@ CONTAINS
       CALL nl_hash_table_release(nl_hash_table)
 
       DEALLOCATE (basis_set_list)
-      IF (forces) THEN
-         DEALLOCATE (atom_of_kind)
-      END IF
 
       CALL timestop(handle)
 
@@ -573,7 +583,8 @@ CONTAINS
 !> \param C_hh_b ...
 !> \param C_ss_a ...
 !> \param C_ss_b ...
-!> \param rho_atom ...
+!> \param int_local_h ...
+!> \param int_local_s ...
 !> \param nspins ...
 !> \param ia ...
 !> \param ja ...
@@ -591,11 +602,12 @@ CONTAINS
 !> \param coc ...
 ! **************************************************************************************************
    SUBROUTINE add_vhxca_to_ks(mat_h, C_hh_a, C_hh_b, C_ss_a, C_ss_b, &
-                              rho_atom, nspins, ia, ja, nsp, factor, lista, nconta, listb, ncontb, &
+                              int_local_h, int_local_s, &
+                              nspins, ia, ja, nsp, factor, lista, nconta, listb, ncontb, &
                               C_int_h, C_int_s, a_matrix, dista, distb, coc)
       TYPE(cp_2d_r_p_type), DIMENSION(:), POINTER        :: mat_h
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: C_hh_a, C_hh_b, C_ss_a, C_ss_b
-      TYPE(rho_atom_type), INTENT(IN), POINTER           :: rho_atom
+      TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_local_h, int_local_s
       INTEGER, INTENT(IN)                                :: nspins, ia, ja, nsp
       REAL(KIND=dp), INTENT(IN)                          :: factor
       INTEGER, DIMENSION(:), INTENT(IN)                  :: lista
@@ -609,10 +621,8 @@ CONTAINS
 
       INTEGER                                            :: i, ispin, j, k
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: h_block, int_hard, int_soft
-      TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_local_h, int_local_s
 
-      NULLIFY (int_local_h, int_local_s, int_hard, int_soft)
-      CALL get_rho_atom(rho_atom=rho_atom, cpc_h=int_local_h, cpc_s=int_local_s)
+      NULLIFY (int_hard, int_soft)
 
       DO ispin = 1, nspins
          h_block => mat_h(ispin)%array
@@ -719,7 +729,8 @@ CONTAINS
 !> \param C_hh_b ...
 !> \param C_ss_a ...
 !> \param C_ss_b ...
-!> \param rho_atom ...
+!> \param int_local_h ...
+!> \param int_local_s ...
 !> \param force ...
 !> \param nspins ...
 !> \param ia ...
@@ -735,14 +746,16 @@ CONTAINS
 !> \param PC_h ...
 !> \param PC_s ...
 !> \param p_matrix ...
+!> \param force_scaling ...
 ! **************************************************************************************************
    SUBROUTINE add_vhxca_forces(mat_p, C_hh_a, C_hh_b, C_ss_a, C_ss_b, &
-                               rho_atom, force, nspins, ia, ja, nsp, lista, nconta, listb, ncontb, &
-                               dCPC_h, dCPC_s, ldCPC, PC_h, PC_s, p_matrix)
+                               int_local_h, int_local_s, &
+                               force, nspins, ia, ja, nsp, lista, nconta, listb, ncontb, &
+                               dCPC_h, dCPC_s, ldCPC, PC_h, PC_s, p_matrix, force_scaling)
       TYPE(cp_2d_r_p_type), DIMENSION(:), INTENT(IN), &
          POINTER                                         :: mat_p
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: C_hh_a, C_hh_b, C_ss_a, C_ss_b
-      TYPE(rho_atom_type), INTENT(IN), POINTER           :: rho_atom
+      TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_local_h, int_local_s
       REAL(dp), DIMENSION(3, 3), INTENT(INOUT)           :: force
       INTEGER, INTENT(IN)                                :: nspins, ia, ja, nsp
       INTEGER, DIMENSION(:), INTENT(IN)                  :: lista
@@ -753,12 +766,12 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: ldCPC
       REAL(KIND=dp), DIMENSION(:, :, :)                  :: PC_h, PC_s
       REAL(KIND=dp), DIMENSION(:, :)                     :: p_matrix
+      REAL(KIND=dp), DIMENSION(2), INTENT(IN)            :: force_scaling
 
       INTEGER                                            :: dir, ispin
       REAL(dp), DIMENSION(:, :), POINTER                 :: int_hard, int_soft
       REAL(KIND=dp)                                      :: ieqj, trace
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: p_block
-      TYPE(rho_atom_coeff), DIMENSION(:), POINTER        :: int_local_h, int_local_s
 
 !   if(dista.and.distb) we could also here use ChPCh = CsPCs
 !   *** factor 2 because only half of the pairs with ia =/ ja are considered
@@ -766,8 +779,7 @@ CONTAINS
       ieqj = 2.0_dp
       IF (ia == ja) ieqj = 1.0_dp
 
-      NULLIFY (int_local_h, int_local_s, int_hard, int_soft)
-      CALL get_rho_atom(rho_atom=rho_atom, cpc_h=int_local_h, cpc_s=int_local_s)
+      NULLIFY (int_hard, int_soft)
 
       DO ispin = 1, nspins
          p_block => mat_p(ispin)%array
@@ -790,15 +802,15 @@ CONTAINS
                        C_hh_a(:, :, dir), SIZE(C_hh_a, 1), &
                        0.0_dp, dCPC_h, SIZE(dCPC_h, 1))
             trace = trace_r_AxB(dCPC_h, ldCPC, int_hard, nsp, nsp, nsp)
-            force(dir - 1, 3) = force(dir - 1, 3) + ieqj*trace
-            force(dir - 1, 1) = force(dir - 1, 1) - ieqj*trace
+            force(dir - 1, 3) = force(dir - 1, 3) + ieqj*trace*force_scaling(ispin)
+            force(dir - 1, 1) = force(dir - 1, 1) - ieqj*trace*force_scaling(ispin)
 
             CALL DGEMM('T', 'N', nsp, nsp, nconta, 1.0_dp, PC_s(:, :, ispin), SIZE(PC_s, 1), &
                        C_ss_a(:, :, dir), SIZE(C_ss_a, 1), &
                        0.0_dp, dCPC_s, SIZE(dCPC_s, 1))
             trace = trace_r_AxB(dCPC_s, ldCPC, int_soft, nsp, nsp, nsp)
-            force(dir - 1, 3) = force(dir - 1, 3) - ieqj*trace
-            force(dir - 1, 1) = force(dir - 1, 1) + ieqj*trace
+            force(dir - 1, 3) = force(dir - 1, 3) - ieqj*trace*force_scaling(ispin)
+            force(dir - 1, 1) = force(dir - 1, 1) + ieqj*trace*force_scaling(ispin)
          END DO
 
          ! j-k contributions
@@ -814,15 +826,15 @@ CONTAINS
                        C_hh_b(:, :, dir), SIZE(C_hh_b, 1), &
                        0.0_dp, dCPC_h, SIZE(dCPC_h, 1))
             trace = trace_r_AxB(dCPC_h, ldCPC, int_hard, nsp, nsp, nsp)
-            force(dir - 1, 3) = force(dir - 1, 3) + ieqj*trace
-            force(dir - 1, 2) = force(dir - 1, 2) - ieqj*trace
+            force(dir - 1, 3) = force(dir - 1, 3) + ieqj*trace*force_scaling(ispin)
+            force(dir - 1, 2) = force(dir - 1, 2) - ieqj*trace*force_scaling(ispin)
 
             CALL DGEMM('T', 'N', nsp, nsp, ncontb, 1.0_dp, PC_s(:, :, ispin), SIZE(PC_s, 1), &
                        C_ss_b(:, :, dir), SIZE(C_ss_b, 1), &
                        0.0_dp, dCPC_s, SIZE(dCPC_s, 1))
             trace = trace_r_AxB(dCPC_s, ldCPC, int_soft, nsp, nsp, nsp)
-            force(dir - 1, 3) = force(dir - 1, 3) - ieqj*trace
-            force(dir - 1, 2) = force(dir - 1, 2) + ieqj*trace
+            force(dir - 1, 3) = force(dir - 1, 3) - ieqj*trace*force_scaling(ispin)
+            force(dir - 1, 2) = force(dir - 1, 2) + ieqj*trace*force_scaling(ispin)
          END DO
 
       END DO !ispin

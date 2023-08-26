@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -21,22 +21,15 @@ MODULE swarm_mpi
                                               cp_logger_release,&
                                               cp_logger_type,&
                                               cp_rm_default_logger
-   USE cp_para_env,                     ONLY: cp_para_env_create,&
-                                              cp_para_env_release
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_set
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length
    USE machine,                         ONLY: default_output_unit
    USE message_passing,                 ONLY: mp_any_source,&
-                                              mp_bcast,&
-                                              mp_comm_free,&
-                                              mp_comm_split,&
-                                              mp_comm_split_direct,&
-                                              mp_environ,&
-                                              mp_sum,&
-                                              mp_sync
+                                              mp_comm_type,&
+                                              mp_para_env_release,&
+                                              mp_para_env_type
    USE swarm_message,                   ONLY: swarm_message_get,&
                                               swarm_message_mpi_bcast,&
                                               swarm_message_mpi_recv,&
@@ -54,9 +47,9 @@ MODULE swarm_mpi
    PUBLIC :: swarm_mpi_send_command, swarm_mpi_recv_command
 
    TYPE swarm_mpi_type
-      TYPE(cp_para_env_type), POINTER          :: world => Null()
-      TYPE(cp_para_env_type), POINTER          :: worker => Null()
-      TYPE(cp_para_env_type), POINTER          :: master => Null()
+      TYPE(mp_para_env_type), POINTER          :: world => Null()
+      TYPE(mp_para_env_type), POINTER          :: worker => Null()
+      TYPE(mp_para_env_type), POINTER          :: master => Null()
       INTEGER, DIMENSION(:), ALLOCATABLE       :: wid2group
       CHARACTER(LEN=default_path_length)       :: master_output_path = ""
    END TYPE swarm_mpi_type
@@ -75,15 +68,15 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE swarm_mpi_init(swarm_mpi, world_para_env, root_section, n_workers, worker_id, iw)
       TYPE(swarm_mpi_type)                               :: swarm_mpi
-      TYPE(cp_para_env_type), POINTER                    :: world_para_env
+      TYPE(mp_para_env_type), POINTER                    :: world_para_env
       TYPE(section_vals_type), POINTER                   :: root_section
       INTEGER, INTENT(IN)                                :: n_workers
       INTEGER, INTENT(OUT)                               :: worker_id
       INTEGER, INTENT(IN)                                :: iw
 
       INTEGER                                            :: n_groups_created, pe_per_worker, &
-                                                            subgroup, subgroup_rank, &
-                                                            subgroup_size, worker_group
+                                                            subgroup_rank, subgroup_size
+      TYPE(mp_comm_type)                                 :: subgroup
       LOGICAL                                            :: im_the_master
       INTEGER, DIMENSION(:), POINTER                     :: group_distribution_p
       INTEGER, DIMENSION(0:world_para_env%num_pe-2), &
@@ -111,17 +104,17 @@ CONTAINS
       ! the last task becomes the master. Preseves node-alignment of other tasks.
       im_the_master = (swarm_mpi%world%mepos == swarm_mpi%world%num_pe - 1)
 
-      ! First split split para_env%group into a master- and a workers-groups...
+      ! First split split para_env into a master- and a workers-groups...
       IF (im_the_master) THEN
-         CALL mp_comm_split_direct(swarm_mpi%world%group, subgroup, 1)
-         CALL mp_environ(subgroup_size, subgroup_rank, subgroup)
-         IF (subgroup_size /= 1) CPABORT("mp_comm_split_direct failed (master)")
-         CALL cp_para_env_create(swarm_mpi%master, group=subgroup)
-         !WRITE (*,*) "this is a master ", swarm_mpi%master%mepos, swarm_mpi%master%num_pe
+         ALLOCATE (swarm_mpi%master)
+         CALL swarm_mpi%master%from_split(swarm_mpi%world, 1)
+         subgroup_size = swarm_mpi%master%num_pe
+         subgroup_rank = swarm_mpi%master%mepos
+         IF (swarm_mpi%master%num_pe /= 1) CPABORT("mp_comm_split_direct failed (master)")
       ELSE
-         CALL mp_comm_split_direct(swarm_mpi%world%group, subgroup, 2)
-         CALL mp_environ(subgroup_size, subgroup_rank, subgroup)
-         !WRITE (*,*) "Hello, this is a Worker - there are ",subgroup_size, " of us."
+         CALL subgroup%from_split(swarm_mpi%world, 2)
+         subgroup_size = subgroup%num_pe
+         subgroup_rank = subgroup%mepos
          IF (subgroup_size /= swarm_mpi%world%num_pe - 1) CPABORT("mp_comm_split_direct failed (worker)")
       END IF
 
@@ -131,11 +124,11 @@ CONTAINS
       IF (.NOT. im_the_master) THEN
          ! ...then split workers-group into n_workers groups - one for each worker.
          group_distribution_p => group_distribution
-         CALL mp_comm_split(subgroup, worker_group, n_groups_created, group_distribution_p, n_subgroups=n_workers)
+         ALLOCATE (swarm_mpi%worker)
+         CALL swarm_mpi%worker%from_split(subgroup, n_groups_created, group_distribution_p, n_subgroups=n_workers)
          worker_id = group_distribution(subgroup_rank) + 1 ! shall start by 1
          IF (n_groups_created /= n_workers) CPABORT("mp_comm_split failed.")
-         CALL cp_para_env_create(swarm_mpi%worker, group=worker_group)
-         CALL mp_comm_free(subgroup)
+         CALL subgroup%free()
 
          !WRITE (*,*) "this is worker ", worker_id, swarm_mpi%worker%mepos, swarm_mpi%worker%num_pe
 
@@ -145,7 +138,7 @@ CONTAINS
 
       END IF
 
-      CALL mp_sum(swarm_mpi%wid2group, swarm_mpi%world%group)
+      CALL swarm_mpi%world%sum(swarm_mpi%wid2group)
       !WRITE (*,*), "wid2group table: ",swarm_mpi%wid2group
 
       CALL logger_init_master(swarm_mpi)
@@ -165,7 +158,7 @@ CONTAINS
 
 ! broadcast master_output_path to all ranks
 
-      IF (swarm_mpi%world%ionode) THEN
+      IF (swarm_mpi%world%is_source()) THEN
          logger => cp_get_default_logger()
          output_unit = logger%default_local_unit_nr
          swarm_mpi%master_output_path = output_unit2path(output_unit)
@@ -173,7 +166,7 @@ CONTAINS
             CLOSE (output_unit)
       END IF
 
-      CALL mp_bcast(swarm_mpi%master_output_path, swarm_mpi%world%source, swarm_mpi%world%group)
+      CALL swarm_mpi%world%bcast(swarm_mpi%master_output_path)
 
       IF (ASSOCIATED(swarm_mpi%master)) &
          CALL error_add_new_logger(swarm_mpi%master, swarm_mpi%master_output_path)
@@ -240,7 +233,7 @@ CONTAINS
 !> \author Ole Schuett
 ! **************************************************************************************************
    SUBROUTINE error_add_new_logger(para_env, output_path, iter_info)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       CHARACTER(LEN=default_path_length)                 :: output_path
       TYPE(cp_iteration_info_type), OPTIONAL, POINTER    :: iter_info
 
@@ -249,7 +242,7 @@ CONTAINS
 
       NULLIFY (new_logger, old_logger)
       output_unit = -1
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          ! open output_unit according to output_path
          output_unit = default_output_unit
          IF (output_path /= "__STD_OUT__") &
@@ -276,11 +269,11 @@ CONTAINS
       TYPE(swarm_mpi_type)                               :: swarm_mpi
       TYPE(section_vals_type), POINTER                   :: root_section
 
-      CALL mp_sync(swarm_mpi%world%group)
+      CALL swarm_mpi%world%sync()
       CALL logger_finalize(swarm_mpi, root_section)
 
-      IF (ASSOCIATED(swarm_mpi%worker)) CALL cp_para_env_release(swarm_mpi%worker)
-      IF (ASSOCIATED(swarm_mpi%master)) CALL cp_para_env_release(swarm_mpi%master)
+      IF (ASSOCIATED(swarm_mpi%worker)) CALL mp_para_env_release(swarm_mpi%worker)
+      IF (ASSOCIATED(swarm_mpi%master)) CALL mp_para_env_release(swarm_mpi%master)
       NULLIFY (swarm_mpi%worker, swarm_mpi%master)
       DEALLOCATE (swarm_mpi%wid2group)
    END SUBROUTINE swarm_mpi_finalize
@@ -296,7 +289,6 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: root_section
 
       INTEGER                                            :: output_unit
-      LOGICAL                                            :: I_am_rank0
       TYPE(cp_logger_type), POINTER                      :: logger, old_logger
 
       NULLIFY (logger, old_logger)
@@ -312,11 +304,10 @@ CONTAINS
       CALL section_vals_val_set(root_section, "GLOBAL%PROJECT_NAME", &
                                 c_val=old_logger%iter_info%project_name)
 
-      CALL mp_sync(swarm_mpi%world%group)
+      CALL swarm_mpi%world%sync()
 
       ! do this only on master's rank 0
-      I_am_rank0 = swarm_mpi%world%mepos == swarm_mpi%world%source
-      IF (I_am_rank0 .AND. output_unit /= default_output_unit) THEN
+      IF (swarm_mpi%world%is_source() .AND. output_unit /= default_output_unit) THEN
          output_unit = old_logger%default_local_unit_nr
          OPEN (unit=output_unit, file=swarm_mpi%master_output_path, &
                status="UNKNOWN", action="WRITE", position="APPEND")
@@ -337,11 +328,11 @@ CONTAINS
 
 ! Only rank-0 of worker group sends its report
 
-      IF (swarm_mpi%worker%source /= swarm_mpi%worker%mepos) RETURN
-
-      dest = swarm_mpi%world%num_pe - 1
-      tag = 42
-      CALL swarm_message_mpi_send(report, group=swarm_mpi%world%group, dest=dest, tag=tag)
+      IF (swarm_mpi%worker%is_source()) THEN
+         dest = swarm_mpi%world%num_pe - 1
+         tag = 42
+         CALL swarm_message_mpi_send(report, group=swarm_mpi%world, dest=dest, tag=tag)
+      END IF
 
    END SUBROUTINE swarm_mpi_send_report
 
@@ -360,7 +351,7 @@ CONTAINS
       tag = 42
       src = mp_any_source
 
-      CALL swarm_message_mpi_recv(report, group=swarm_mpi%world%group, src=src, tag=tag)
+      CALL swarm_message_mpi_recv(report, group=swarm_mpi%world, src=src, tag=tag)
 
    END SUBROUTINE swarm_mpi_recv_report
 
@@ -380,7 +371,7 @@ CONTAINS
       tag = 42
       dest = swarm_mpi%wid2group(worker_id)
 
-      CALL swarm_message_mpi_send(cmd, group=swarm_mpi%world%group, dest=dest, tag=tag)
+      CALL swarm_message_mpi_send(cmd, group=swarm_mpi%world, dest=dest, tag=tag)
 
    END SUBROUTINE swarm_mpi_send_command
 
@@ -399,15 +390,15 @@ CONTAINS
 ! This is a two step communication schema.
 ! First: The rank-0 of the worker groups receives the command from the master.
 
-      IF (swarm_mpi%worker%ionode) THEN
+      IF (swarm_mpi%worker%is_source()) THEN
          src = swarm_mpi%world%num_pe - 1 !
          tag = 42
-         CALL swarm_message_mpi_recv(cmd, group=swarm_mpi%world%group, src=src, tag=tag)
+         CALL swarm_message_mpi_recv(cmd, group=swarm_mpi%world, src=src, tag=tag)
 
       END IF
 
 !     ! Second: The command is broadcasted within the worker group.
-      CALL swarm_message_mpi_bcast(cmd, src=swarm_mpi%worker%source, group=swarm_mpi%worker%group)
+      CALL swarm_message_mpi_bcast(cmd, src=swarm_mpi%worker%source, group=swarm_mpi%worker)
 
    END SUBROUTINE swarm_mpi_recv_command
 

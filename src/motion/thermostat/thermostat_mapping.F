@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,7 +17,6 @@ MODULE thermostat_mapping
                                               use_perd_y,&
                                               use_perd_yz,&
                                               use_perd_z
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE distribution_1d_types,           ONLY: distribution_1d_type
    USE extended_system_types,           ONLY: map_info_type
    USE input_constants,                 ONLY: do_region_defined,&
@@ -28,9 +27,7 @@ MODULE thermostat_mapping
                                               do_thermo_no_communication
    USE kinds,                           ONLY: dp
    USE memory_utilities,                ONLY: reallocate
-   USE message_passing,                 ONLY: mp_allgather,&
-                                              mp_bcast,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: colvar_constraint_type,&
                                               fixd_constraint_type,&
                                               g3x3_constraint_type,&
@@ -83,7 +80,7 @@ CONTAINS
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_molecules
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(OUT)                               :: natoms_local
       TYPE(simpar_type), POINTER                         :: simpar
       INTEGER, INTENT(INOUT)                             :: number
@@ -138,7 +135,7 @@ CONTAINS
 
       number = number_of_thermostats
       sum_of_thermostats = number
-      CALL mp_sum(sum_of_thermostats, para_env%group)
+      CALL para_env%sum(sum_of_thermostats)
 
 !    check = (number==number_of_thermostats)
 !    CPPrecondition(check,cp_fatal_level,routineP,failure)
@@ -538,7 +535,7 @@ CONTAINS
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_molecules
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(OUT)                               :: natoms_local
       TYPE(simpar_type), POINTER                         :: simpar
       INTEGER, INTENT(IN)                                :: number, region
@@ -823,7 +820,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: shell
       INTEGER, DIMENSION(:), POINTER                     :: map_loc_thermo_gen
       INTEGER, INTENT(IN)                                :: sum_of_thermostats
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'mapping_region_evaluate'
 
@@ -1041,7 +1038,7 @@ CONTAINS
                   atm_offset = atm_offset + natom
                END DO
             END DO
-            CALL mp_sum(tot_const, para_env%group)
+            CALL para_env%sum(tot_const)
          ELSE
             ALLOCATE (const_mol(nkind))
             ALLOCATE (tot_const(nkind))
@@ -1092,7 +1089,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(molecule_kind_type), POINTER                  :: molecule_kind_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_molecules
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, POINTER                                   :: massive_atom_list(:)
       INTEGER, INTENT(IN)                                :: region
       LOGICAL, INTENT(IN)                                :: shell
@@ -1138,7 +1135,7 @@ CONTAINS
       END DO
 
       ALLOCATE (array_num_massive_atm(para_env%num_pe))
-      CALL mp_allgather(num_massive_atm_local, array_num_massive_atm, para_env%group)
+      CALL para_env%allgather(num_massive_atm_local, array_num_massive_atm)
 
       num_massive_atm = SUM(array_num_massive_atm)
       ALLOCATE (massive_atom_list(num_massive_atm))
@@ -1154,7 +1151,7 @@ CONTAINS
          ELSE
             work(:) = 0
          END IF
-         CALL mp_bcast(work, iproc - 1, para_env%group)
+         CALL para_env%bcast(work, iproc - 1)
          DO i = 1, ncount
             massive_atom_list(offset + i) = work(i)
          END DO

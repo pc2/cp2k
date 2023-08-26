@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -45,7 +45,6 @@ MODULE dft_plus_u
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr,&
                                               low_print_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: &
         dbcsr_deallocate_matrix, dbcsr_get_block_diag, dbcsr_get_block_p, &
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
@@ -57,7 +56,7 @@ MODULE dft_plus_u
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE mathlib,                         ONLY: jacobi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_symbols,                 ONLY: sgf_symbol
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE particle_methods,                ONLY: get_particle_set
@@ -235,11 +234,11 @@ CONTAINS
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fmstruct
       TYPE(cp_fm_type), POINTER                          :: fm_s_half, fm_work1, fm_work2
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_p, matrix_s
       TYPE(dbcsr_type), POINTER                          :: sm_h, sm_p, sm_q, sm_s, sm_v, sm_w
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -351,8 +350,8 @@ CONTAINS
       fm_work2_local_alloc = .FALSE.
 
       IF (ASSOCIATED(scf_env%scf_work1)) THEN
-         IF (ASSOCIATED(scf_env%scf_work1(1)%matrix)) THEN
-            fm_work1 => scf_env%scf_work1(1)%matrix
+         IF (ASSOCIATED(scf_env%scf_work1(1)%matrix_struct)) THEN
+            fm_work1 => scf_env%scf_work1(1)
          END IF
       END IF
 
@@ -697,7 +696,7 @@ CONTAINS
                ! Consider print requests
 
                IF (should_output .AND. (print_level > low_print_level)) THEN
-                  CALL mp_sum(q_matrix, para_env%group)
+                  CALL para_env%sum(q_matrix)
                   IF (output_unit > 0) THEN
                      ALLOCATE (q_work(nsb, nsbsize))
                      q_work(:, :) = 0.0_dp
@@ -743,7 +742,7 @@ CONTAINS
                      ALLOCATE (q_work(nsgf_kind, nsgf_kind))
                      q_work(:, :) = 0.0_dp
                      IF (ASSOCIATED(q_block)) q_work(:, :) = q_block(:, :)
-                     CALL mp_sum(q_work, para_env%group)
+                     CALL para_env%sum(q_work)
                      IF (output_unit > 0) THEN
                         norb = SIZE(q_work, 1)
                         WRITE (UNIT=output_unit, FMT="(/,T9,200I10)") (i, i=1, norb)
@@ -801,7 +800,7 @@ CONTAINS
 
       ! Collect the energy contributions from all processes
 
-      CALL mp_sum(energy%dft_plus_u, para_env%group)
+      CALL para_env%sum(energy%dft_plus_u)
 
       IF (energy%dft_plus_u < 0.0_dp) &
          CALL cp_warn(__LOCATION__, &
@@ -893,11 +892,11 @@ CONTAINS
                                                             v_block
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(atomic_kind_type), POINTER                    :: kind_a
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_p, matrix_s
       TYPE(dbcsr_type), POINTER                          :: sm_h, sm_p, sm_q, sm_s, sm_v
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -1325,7 +1324,7 @@ CONTAINS
                ! Consider print requests
 
                IF (should_output .AND. (print_level > low_print_level)) THEN
-                  CALL mp_sum(q_matrix, para_env%group)
+                  CALL para_env%sum(q_matrix)
                   IF (output_unit > 0) THEN
                      ALLOCATE (q_work(nsb, nsbsize))
                      q_work(:, :) = 0.0_dp
@@ -1371,7 +1370,7 @@ CONTAINS
                      ALLOCATE (q_work(nsgf_kind, nsgf_kind))
                      q_work(:, :) = 0.0_dp
                      IF (ASSOCIATED(q_block)) q_work(:, :) = q_block(:, :)
-                     CALL mp_sum(q_work, para_env%group)
+                     CALL para_env%sum(q_work)
                      IF (output_unit > 0) THEN
                         norb = SIZE(q_work, 1)
                         WRITE (UNIT=output_unit, FMT="(/,T9,200I10)") (i, i=1, norb)
@@ -1465,7 +1464,7 @@ CONTAINS
 
       ! Collect the energy contributions from all processes
 
-      CALL mp_sum(energy%dft_plus_u, para_env%group)
+      CALL para_env%sum(energy%dft_plus_u)
 
       IF (energy%dft_plus_u < 0.0_dp) THEN
          IF (.NOT. occupation_enforced) THEN
@@ -1545,12 +1544,12 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: q_ii
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: h_block, p_block, s_block, w_block
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_p, matrix_s
       TYPE(dbcsr_type), POINTER                          :: sm_h, sm_p, sm_s, sm_w
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -1721,7 +1720,7 @@ CONTAINS
 
          CALL dbcsr_iterator_stop(iter)
 
-         CALL mp_sum(trps, para_env%group)
+         CALL para_env%sum(trps)
 
          ! q <- Trace(PS)
 
@@ -1864,7 +1863,7 @@ CONTAINS
                ! Consider print requests
 
                IF (should_output .AND. (print_level > low_print_level)) THEN
-                  CALL mp_sum(q_ii, para_env%group)
+                  CALL para_env%sum(q_ii)
                   IF (output_unit > 0) THEN
                      DO isb = 1, nsb
                         WRITE (UNIT=output_unit, FMT="(T3,I6,2X,I6,2X,10F8.3)") &
@@ -1885,7 +1884,7 @@ CONTAINS
          END DO ! next atomic kind "ikind"
 
          IF (.NOT. just_energy) THEN
-            CALL mp_sum(dEdq, para_env%group)
+            CALL para_env%sum(dEdq)
          END IF
 
          ! Add V(i,j)[U] to V(i,j)[DFT]
@@ -2016,7 +2015,7 @@ CONTAINS
 
       ! Collect the energy contributions from all processes
 
-      CALL mp_sum(energy%dft_plus_u, para_env%group)
+      CALL para_env%sum(energy%dft_plus_u)
 
       IF (energy%dft_plus_u < 0.0_dp) &
          CALL cp_warn(__LOCATION__, &

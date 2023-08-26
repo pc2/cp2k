@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -19,7 +19,6 @@ MODULE qs_cdft_scf_utils
    USE cp_log_handling,                 ONLY: cp_logger_create,&
                                               cp_logger_type,&
                                               cp_to_string
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_constants,                 ONLY: &
         broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
         broyden_type_2, broyden_type_2_explicit, broyden_type_2_explicit_ls, broyden_type_2_ls, &
@@ -29,6 +28,7 @@ MODULE qs_cdft_scf_utils
    USE kinds,                           ONLY: default_path_length,&
                                               dp
    USE mathlib,                         ONLY: invert_matrix
+   USE message_passing,                 ONLY: mp_para_env_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_scf_types,                    ONLY: qs_scf_env_type
@@ -361,14 +361,14 @@ CONTAINS
 !>      03.2018 created [Nico Holmberg]
 ! **************************************************************************************************
    SUBROUTINE create_tmp_logger(para_env, project_name, suffix, output_unit, tmp_logger)
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       CHARACTER(len=*)                                   :: project_name, suffix
       INTEGER, INTENT(OUT)                               :: output_unit
       TYPE(cp_logger_type), INTENT(OUT), POINTER         :: tmp_logger
 
       INTEGER                                            :: lp
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          lp = LEN_TRIM(project_name)
          project_name(lp + 1:LEN(project_name)) = suffix
          CALL open_file(file_name=project_name, file_status="UNKNOWN", &

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -40,18 +40,15 @@ MODULE qs_p_env_methods
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
-                                              cp_fm_p_type,&
                                               cp_fm_release,&
                                               cp_fm_set_all,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
-   USE cp_fm_vect,                      ONLY: cp_fm_vect_dealloc
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type,&
                                               cp_to_string
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_copy,&
                                               dbcsr_p_type,&
@@ -68,6 +65,7 @@ MODULE qs_p_env_methods
                                               section_vals_type
    USE kinds,                           ONLY: default_string_length,&
                                               dp
+   USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE preconditioner_types,            ONLY: init_preconditioner
    USE pw_env_types,                    ONLY: pw_env_type
@@ -148,9 +146,9 @@ CONTAINS
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_mo_fm_pools, mo_mo_fm_pools
       TYPE(cp_fm_type), POINTER                          :: qs_env_c
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s, matrix_s_aux_fit
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -264,7 +262,8 @@ CONTAINS
          CALL allocate_rho_atom_internals(p_env%local_rho_set%rho_atom_set, atomic_kind_set, &
                                           qs_kind_set, dft_control, para_env)
 
-         CALL init_rho0(p_env%local_rho_set, qs_env, dft_control%qs_control%gapw_control, .TRUE.)
+         CALL init_rho0(p_env%local_rho_set, qs_env, dft_control%qs_control%gapw_control, &
+                        zcore=0.0_dp)
          CALL rho0_s_grid_create(pw_env, p_env%local_rho_set%rho0_mpole)
          CALL hartree_local_create(p_env%hartree_local)
          CALL init_coulomb_local(p_env%hartree_local, natom)
@@ -403,9 +402,9 @@ CONTAINS
       CHARACTER(LEN=default_string_length)               :: basis_type
       INTEGER                                            :: handle, ispin
       TYPE(admm_type), POINTER                           :: admm_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: rho1_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_aux_fit
       TYPE(pw_type), DIMENSION(:), POINTER               :: rho_g_aux, rho_r_aux
@@ -491,10 +490,10 @@ CONTAINS
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: psi0
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s, rho_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
@@ -533,7 +532,7 @@ CONTAINS
       ! def psi0d
       IF (p_env%orthogonal_orbitals) THEN
          IF (ASSOCIATED(p_env%psi0d)) THEN
-            CALL cp_fm_vect_dealloc(p_env%psi0d)
+            CALL cp_fm_release(p_env%psi0d)
          END IF
          p_env%psi0d => psi0
       ELSE
@@ -655,7 +654,7 @@ CONTAINS
       IF (p_env%orthogonal_orbitals) THEN
          NULLIFY (psi0)
       ELSE
-         CALL cp_fm_vect_dealloc(psi0)
+         CALL cp_fm_release(psi0)
       END IF
 
       ! tells kpp1_env about the change of psi0
@@ -680,8 +679,8 @@ CONTAINS
       ! argument
       TYPE(qs_p_env_type)                                :: p_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_fm_p_type), DIMENSION(:), INTENT(in)       :: v
-      TYPE(cp_fm_p_type), DIMENSION(:), INTENT(inout)    :: res
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(in)         :: v
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(inout)      :: res
 
       INTEGER                                            :: n_spins, spin
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -691,8 +690,8 @@ CONTAINS
 
       n_spins = dft_control%nspins
       DO spin = 1, n_spins
-         CALL p_op_l1_spin(p_env, qs_env, spin, v(spin)%matrix, &
-                           res(spin)%matrix)
+         CALL p_op_l1_spin(p_env, qs_env, spin, v(spin), &
+                           res(spin))
       END DO
 
    END SUBROUTINE p_op_l1
@@ -723,10 +722,10 @@ CONTAINS
 
       INTEGER                                            :: handle, ncol
       TYPE(cp_fm_type)                                   :: tmp
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
       TYPE(dbcsr_type), POINTER                          :: k_p
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
       NULLIFY (matrix_ks, matrix_s, dft_control)
@@ -785,7 +784,7 @@ CONTAINS
       TYPE(qs_p_env_type)                                :: p_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: p1
-      TYPE(cp_fm_p_type), DIMENSION(:), INTENT(INOUT)    :: res
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: res
       REAL(KIND=dp), INTENT(in), OPTIONAL                :: alpha, beta
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'p_op_l2'
@@ -841,7 +840,7 @@ CONTAINS
 
       DO ispin = 1, n_spins
          CALL cp_dbcsr_sm_fm_multiply(p_env%kpp1(ispin)%matrix, &
-                                      p_env%psi0d(ispin), res(ispin)%matrix, &
+                                      p_env%psi0d(ispin), res(ispin), &
                                       ncol=p_env%n_mo(ispin), &
                                       alpha=my_alpha, beta=my_beta)
       END DO
@@ -865,7 +864,7 @@ CONTAINS
 
       TYPE(qs_p_env_type)                                :: p_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_fm_p_type), DIMENSION(:), INTENT(inout)    :: v
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(inout)      :: v
       INTEGER, DIMENSION(:), INTENT(in), OPTIONAL        :: n_cols
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'p_preortho'
@@ -894,7 +893,7 @@ CONTAINS
       ELSE
          max_cols = 0
          DO spin = 1, n_spins
-            CALL cp_fm_get_info(v(spin)%matrix, ncol_global=v_cols)
+            CALL cp_fm_get_info(v(spin), ncol_global=v_cols)
             max_cols = MAX(max_cols, v_cols)
          END DO
       END IF
@@ -909,7 +908,7 @@ CONTAINS
 
       DO spin = 1, n_spins
 
-         CALL cp_fm_get_info(v(spin)%matrix, &
+         CALL cp_fm_get_info(v(spin), &
                              nrow_global=v_rows, ncol_global=v_cols)
          CPASSERT(v_rows >= p_env%n_ao(spin))
          cols = v_cols
@@ -921,14 +920,14 @@ CONTAINS
 
          ! tmp_matrix = v^T (S psi0)
          CALL parallel_gemm(transa='T', transb='N', m=cols, n=p_env%n_mo(spin), &
-                            k=p_env%n_ao(spin), alpha=1.0_dp, matrix_a=v(spin)%matrix, &
+                            k=p_env%n_ao(spin), alpha=1.0_dp, matrix_a=v(spin), &
                             matrix_b=p_env%S_psi0(spin), beta=0.0_dp, &
                             matrix_c=tmp_matrix)
          ! v = v - psi0d tmp_matrix^T = v - psi0d psi0^T S v
          CALL parallel_gemm(transa='N', transb='T', m=p_env%n_ao(spin), n=cols, &
                             k=p_env%n_mo(spin), alpha=-1.0_dp, &
                             matrix_a=p_env%psi0d(spin), matrix_b=tmp_matrix, &
-                            beta=1.0_dp, matrix_c=v(spin)%matrix)
+                            beta=1.0_dp, matrix_c=v(spin))
 
       END DO
 
@@ -957,7 +956,7 @@ CONTAINS
 
       TYPE(qs_p_env_type)                                :: p_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_fm_p_type), DIMENSION(:), INTENT(inout)    :: v
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(inout)      :: v
       INTEGER, DIMENSION(:), INTENT(in), OPTIONAL        :: n_cols
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'p_postortho'
@@ -986,7 +985,7 @@ CONTAINS
       ELSE
          max_cols = 0
          DO spin = 1, n_spins
-            CALL cp_fm_get_info(v(spin)%matrix, ncol_global=v_cols)
+            CALL cp_fm_get_info(v(spin), ncol_global=v_cols)
             max_cols = MAX(max_cols, v_cols)
          END DO
       END IF
@@ -1001,7 +1000,7 @@ CONTAINS
 
       DO spin = 1, n_spins
 
-         CALL cp_fm_get_info(v(spin)%matrix, &
+         CALL cp_fm_get_info(v(spin), &
                              nrow_global=v_rows, ncol_global=v_cols)
          CPASSERT(v_rows >= p_env%n_ao(spin))
          cols = v_cols
@@ -1013,14 +1012,14 @@ CONTAINS
 
          ! tmp_matrix = v^T psi0d
          CALL parallel_gemm(transa='T', transb='N', m=cols, n=p_env%n_mo(spin), &
-                            k=p_env%n_ao(spin), alpha=1.0_dp, matrix_a=v(spin)%matrix, &
+                            k=p_env%n_ao(spin), alpha=1.0_dp, matrix_a=v(spin), &
                             matrix_b=p_env%psi0d(spin), beta=0.0_dp, &
                             matrix_c=tmp_matrix)
          ! v = v - (S psi0) tmp_matrix^T = v - S psi0 psi0d^T v
          CALL parallel_gemm(transa='N', transb='T', m=p_env%n_ao(spin), n=cols, &
                             k=p_env%n_mo(spin), alpha=-1.0_dp, &
                             matrix_a=p_env%S_psi0(spin), matrix_b=tmp_matrix, &
-                            beta=1.0_dp, matrix_c=v(spin)%matrix)
+                            beta=1.0_dp, matrix_c=v(spin))
 
       END DO
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -22,7 +22,6 @@ MODULE thermostat_methods
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k
@@ -59,6 +58,8 @@ MODULE thermostat_methods
                                               section_vals_val_set
    USE kinds,                           ONLY: default_path_length,&
                                               dp
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE molecule_kind_list_types,        ONLY: molecule_kind_list_type
    USE molecule_kind_types,             ONLY: molecule_kind_type
    USE molecule_list_types,             ONLY: molecule_list_type
@@ -113,7 +114,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: md_section
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(simpar_type), POINTER                         :: simpar
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(global_environment_type), POINTER             :: globenv
       TYPE(section_vals_type), POINTER                   :: global_section
 
@@ -466,7 +467,7 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       TYPE(section_vals_type), POINTER                   :: section
       TYPE(simpar_type), POINTER                         :: simpar
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       INTEGER                                            :: iw
       REAL(KIND=dp)                                      :: kin_energy, pot_energy, tmp
@@ -533,7 +534,8 @@ CONTAINS
    SUBROUTINE apply_thermostat_baro(thermostat, npt, group)
       TYPE(thermostat_type), POINTER                     :: thermostat
       TYPE(npt_info_type), DIMENSION(:, :), POINTER      :: npt
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
 
       IF (ASSOCIATED(thermostat)) THEN
          IF (thermostat%type_of_thermostat == do_thermo_nose) THEN
@@ -579,7 +581,8 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(particle_type), POINTER                       :: particle_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_molecules, local_particles
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
       LOGICAL, INTENT(IN), OPTIONAL                      :: shell_adiabatic
       TYPE(particle_type), OPTIONAL, POINTER             :: shell_particle_set(:), &
                                                             core_particle_set(:)
@@ -638,7 +641,8 @@ CONTAINS
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind_set(:)
       TYPE(particle_type), POINTER                       :: particle_set(:)
       TYPE(distribution_1d_type), POINTER                :: local_particles
-      INTEGER, INTENT(IN)                                :: group
+
+      CLASS(mp_comm_type), INTENT(IN)                     :: group
       TYPE(particle_type), OPTIONAL, POINTER             :: shell_particle_set(:), &
                                                             core_particle_set(:)
       REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: vel(:, :), shell_vel(:, :), &

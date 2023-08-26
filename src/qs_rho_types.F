@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -24,6 +24,8 @@ MODULE qs_rho_types
                                               kpoint_transitional_type,&
                                               set_1d_pointer,&
                                               set_2d_pointer
+   USE pw_pool_types,                   ONLY: pw_pool_give_back_pw,&
+                                              pw_pool_type
    USE pw_types,                        ONLY: pw_release,&
                                               pw_type
 #include "./base/base_uses.f90"
@@ -35,7 +37,7 @@ MODULE qs_rho_types
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_rho_types'
 
    PUBLIC :: qs_rho_p_type, qs_rho_type
-   PUBLIC :: qs_rho_release, &
+   PUBLIC :: qs_rho_release, qs_rho_clear_pwpool, &
              qs_rho_get, qs_rho_set, qs_rho_clear, qs_rho_create, qs_rho_unset_rho_ao
 
 ! **************************************************************************************************
@@ -75,7 +77,8 @@ MODULE qs_rho_types
                                                         drho_g_valid = .FALSE., &
                                                         tau_r_valid = .FALSE., &
                                                         tau_g_valid = .FALSE., &
-                                                        soft_valid = .FALSE.
+                                                        soft_valid = .FALSE., &
+                                                        complex_rho_ao = .FALSE.
       REAL(KIND=dp), DIMENSION(:), POINTER           :: tot_rho_r => Null(), &
                                                         tot_rho_g => Null()
    END TYPE qs_rho_type
@@ -214,6 +217,7 @@ CONTAINS
 !> \param tot_rho_g ...
 !> \param rho_r_sccs ...
 !> \param soft_valid ...
+!> \param complex_rho_ao ...
 !> \par History
 !>      08.2002 created [fawzi]
 !> \author Fawzi Mohamed
@@ -221,7 +225,7 @@ CONTAINS
    SUBROUTINE qs_rho_get(rho_struct, rho_ao, rho_ao_im, rho_ao_kp, rho_ao_im_kp, rho_r, drho_r, &
                          rho_g, drho_g, tau_r, tau_g, rho_r_valid, drho_r_valid, rho_g_valid, &
                          drho_g_valid, tau_r_valid, tau_g_valid, tot_rho_r, tot_rho_g, &
-                         rho_r_sccs, soft_valid)
+                         rho_r_sccs, soft_valid, complex_rho_ao)
       TYPE(qs_rho_type), INTENT(IN)                      :: rho_struct
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: rho_ao, rho_ao_im
@@ -236,7 +240,7 @@ CONTAINS
                                                             drho_g_valid, tau_r_valid, tau_g_valid
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: tot_rho_r, tot_rho_g
       TYPE(pw_type), OPTIONAL, POINTER                   :: rho_r_sccs
-      LOGICAL, INTENT(out), OPTIONAL                     :: soft_valid
+      LOGICAL, INTENT(out), OPTIONAL                     :: soft_valid, complex_rho_ao
 
       IF (PRESENT(rho_ao)) rho_ao => get_1d_pointer(rho_struct%rho_ao)
       IF (PRESENT(rho_ao_kp)) rho_ao_kp => get_2d_pointer(rho_struct%rho_ao)
@@ -260,6 +264,7 @@ CONTAINS
       IF (PRESENT(tot_rho_r)) tot_rho_r => rho_struct%tot_rho_r
       IF (PRESENT(tot_rho_g)) tot_rho_g => rho_struct%tot_rho_g
       IF (PRESENT(rho_r_sccs)) rho_r_sccs => rho_struct%rho_r_sccs
+      IF (PRESENT(complex_rho_ao)) complex_rho_ao = rho_struct%complex_rho_ao
 
    END SUBROUTINE qs_rho_get
 
@@ -286,12 +291,13 @@ CONTAINS
 !> \param tot_rho_g ...
 !> \param rho_r_sccs ...
 !> \param soft_valid ...
+!> \param complex_rho_ao ...
 !> \author Ole Schuett
 ! **************************************************************************************************
    SUBROUTINE qs_rho_set(rho_struct, rho_ao, rho_ao_im, rho_ao_kp, rho_ao_im_kp, rho_r, drho_r, &
                          rho_g, drho_g, tau_r, tau_g, rho_r_valid, drho_r_valid, rho_g_valid, &
                          drho_g_valid, tau_r_valid, tau_g_valid, tot_rho_r, tot_rho_g, &
-                         rho_r_sccs, soft_valid)
+                         rho_r_sccs, soft_valid, complex_rho_ao)
       TYPE(qs_rho_type), INTENT(INOUT)                   :: rho_struct
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: rho_ao, rho_ao_im
@@ -306,7 +312,7 @@ CONTAINS
                                                             drho_g_valid, tau_r_valid, tau_g_valid
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: tot_rho_r, tot_rho_g
       TYPE(pw_type), OPTIONAL, POINTER                   :: rho_r_sccs
-      LOGICAL, INTENT(in), OPTIONAL                      :: soft_valid
+      LOGICAL, INTENT(in), OPTIONAL                      :: soft_valid, complex_rho_ao
 
       IF (PRESENT(rho_ao)) CALL set_1d_pointer(rho_struct%rho_ao, rho_ao)
       IF (PRESENT(rho_ao_kp)) CALL set_2d_pointer(rho_struct%rho_ao, rho_ao_kp)
@@ -330,7 +336,35 @@ CONTAINS
       IF (PRESENT(tot_rho_r)) rho_struct%tot_rho_r => tot_rho_r
       IF (PRESENT(tot_rho_g)) rho_struct%tot_rho_g => tot_rho_g
       IF (PRESENT(rho_r_sccs)) rho_struct%rho_r_sccs => rho_r_sccs
+      IF (PRESENT(complex_rho_ao)) rho_struct%complex_rho_ao = complex_rho_ao
 
    END SUBROUTINE qs_rho_set
+! **************************************************************************************************
+!> \brief ...
+!> \param rho_struct ...
+!> \param auxbas_pw_pool ...
+! **************************************************************************************************
+   SUBROUTINE qs_rho_clear_pwpool(rho_struct, auxbas_pw_pool)
+      TYPE(qs_rho_type), INTENT(INOUT)                   :: rho_struct
+      TYPE(pw_pool_type), INTENT(IN), POINTER            :: auxbas_pw_pool
+
+      INTEGER                                            :: i
+
+      IF (ASSOCIATED(rho_struct%rho_r)) THEN
+         DO i = 1, SIZE(rho_struct%rho_r)
+            CALL pw_pool_give_back_pw(auxbas_pw_pool, rho_struct%rho_r(i))
+         END DO
+         DEALLOCATE (rho_struct%rho_r)
+         NULLIFY (rho_struct%rho_r)
+      END IF
+      IF (ASSOCIATED(rho_struct%rho_g)) THEN
+         DO i = 1, SIZE(rho_struct%rho_g)
+            CALL pw_pool_give_back_pw(auxbas_pw_pool, rho_struct%rho_g(i))
+         END DO
+         DEALLOCATE (rho_struct%rho_g)
+         NULLIFY (rho_struct%rho_g)
+      END IF
+
+   END SUBROUTINE qs_rho_clear_pwpool
 
 END MODULE qs_rho_types

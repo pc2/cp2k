@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -19,7 +19,6 @@ MODULE hirshfeld_methods
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_result_methods,               ONLY: cp_results_erase,&
                                               put_results
    USE cp_result_types,                 ONLY: cp_result_type
@@ -40,7 +39,7 @@ MODULE hirshfeld_methods
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: pi
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE periodic_table,                  ONLY: get_ptable_info
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -59,12 +58,11 @@ MODULE hirshfeld_methods
                                               qs_kind_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE realspace_grid_types,            ONLY: pw2rs,&
-                                              realspace_grid_desc_type,&
+   USE realspace_grid_types,            ONLY: realspace_grid_desc_type,&
                                               realspace_grid_type,&
-                                              rs2pw,&
                                               rs_grid_zero,&
-                                              rs_pw_transfer
+                                              transfer_pw2rs,&
+                                              transfer_rs2pw
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -297,7 +295,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env, rho=rho)
       CALL qs_rho_get(rho, rho_r=rho_r, rho_r_valid=rho_r_valid)
       CALL pw_env_get(pw_env=pw_env, auxbas_pw_pool=auxbas_pw_pool)
-      CALL pw_pool_create_pw(auxbas_pw_pool, rhonorm, use_data=REALDATA3D)
+      CALL pw_pool_create_pw(auxbas_pw_pool, rhonorm, use_data=REALDATA3D, in_space=REALSPACE)
       ! loop over spins
       DO is = 1, SIZE(rho_r)
          IF (rho_r_valid) THEN
@@ -385,7 +383,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env, rho=rho)
       CALL qs_rho_get(rho, rho_r=rho_r, rho_r_valid=rho_r_valid)
       CALL pw_env_get(pw_env=pw_env, auxbas_pw_pool=auxbas_pw_pool)
-      CALL pw_pool_create_pw(auxbas_pw_pool, rhonorm, use_data=REALDATA3D)
+      CALL pw_pool_create_pw(auxbas_pw_pool, rhonorm, use_data=REALDATA3D, in_space=REALSPACE)
       !
       DO iloop = 1, maxloop
 
@@ -526,11 +524,10 @@ CONTAINS
          DEALLOCATE (fnorm)
       END IF
       ALLOCATE (fnorm)
-      CALL pw_pool_create_pw(auxbas_pw_pool, fnorm, use_data=REALDATA3D)
-      fnorm%in_space = REALSPACE
+      CALL pw_pool_create_pw(auxbas_pw_pool, fnorm, use_data=REALDATA3D, in_space=REALSPACE)
       CALL set_hirshfeld_info(hirshfeld_env, fnorm=fnorm)
 
-      CALL rs_pw_transfer(rs_rho, fnorm, rs2pw)
+      CALL transfer_rs2pw(rs_rho, fnorm)
 
       CALL timestop(handle)
 
@@ -566,8 +563,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: hab, pab
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(realspace_grid_desc_type), POINTER            :: auxbas_rs_desc
@@ -583,7 +580,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, pw_env=pw_env)
       CALL pw_env_get(pw_env=pw_env, auxbas_rs_desc=auxbas_rs_desc, &
                       auxbas_rs_grid=rs_v)
-      CALL rs_pw_transfer(rs_v, rfun, pw2rs)
+      CALL transfer_pw2rs(rs_v, rfun)
 
       CALL get_qs_env(qs_env=qs_env, atomic_kind_set=atomic_kind_set, cell=cell, &
                       dft_control=dft_control, particle_set=particle_set)
@@ -654,7 +651,7 @@ CONTAINS
       DEALLOCATE (hab, pab)
 
       CALL get_qs_env(qs_env=qs_env, para_env=para_env)
-      CALL mp_sum(fval, para_env%group)
+      CALL para_env%sum(fval)
 
       CALL timestop(handle)
 

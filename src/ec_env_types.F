@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,12 +13,13 @@
 ! **************************************************************************************************
 MODULE ec_env_types
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
-   USE cp_fm_types,                     ONLY: cp_fm_p_type,&
-                                              cp_fm_release
    USE dbcsr_api,                       ONLY: dbcsr_p_type
    USE dm_ls_scf_types,                 ONLY: ls_scf_env_type,&
                                               ls_scf_release
-   USE input_section_types,             ONLY: section_vals_type
+   USE hfx_types,                       ONLY: hfx_release,&
+                                              hfx_type
+   USE input_section_types,             ONLY: section_vals_release,&
+                                              section_vals_type
    USE kinds,                           ONLY: dp
    USE pw_types,                        ONLY: pw_release,&
                                               pw_type
@@ -51,61 +52,74 @@ MODULE ec_env_types
 !> \author JGH
 ! *****************************************************************************
    TYPE energy_correction_type
-      CHARACTER(len=20)                                :: ec_name
-      INTEGER                                          :: energy_functional
-      INTEGER                                          :: ks_solver
-      INTEGER                                          :: factorization
-      INTEGER                                          :: ec_initial_guess
-      REAL(KIND=dp)                                    :: eps_default
-      LOGICAL                                          :: should_update
-      LOGICAL                                          :: use_ls_solver
+      CHARACTER(len=20)                                :: ec_name = ""
+      INTEGER                                          :: energy_functional = 0
+      INTEGER                                          :: ks_solver = 0
+      INTEGER                                          :: factorization = 0
+      INTEGER                                          :: ec_initial_guess = 0
+      REAL(KIND=dp)                                    :: eps_default = 0.0_dp
+      LOGICAL                                          :: do_ec_admm = .FALSE.
+      LOGICAL                                          :: do_ec_hfx = .FALSE.
+      LOGICAL                                          :: should_update = .FALSE.
+      LOGICAL                                          :: use_ls_solver = .FALSE.
+      LOGICAL                                          :: reuse_hfx = .FALSE.
+      LOGICAL                                          :: basis_inconsistent = .FALSE.
+      ! debug
+      LOGICAL                                          :: debug_forces = .FALSE.
+      LOGICAL                                          :: debug_stress = .FALSE.
       ! basis set
-      CHARACTER(len=20)                                :: basis
-      LOGICAL                                          :: mao
+      CHARACTER(len=20)                                :: basis = ""
+      LOGICAL                                          :: mao = .FALSE.
       ! Skip EC calculation if ground-state didnt converge
-      LOGICAL                                          :: do_skip, skip_ec
-      INTEGER                                          :: mao_max_iter
-      REAL(KIND=dp)                                    :: mao_eps_grad
-      REAL(KIND=dp)                                    :: mao_eps1
-      INTEGER                                          :: mao_iolevel
+      LOGICAL                                          :: do_skip = .FALSE., skip_ec = .FALSE.
+      INTEGER                                          :: mao_max_iter = 0
+      REAL(KIND=dp)                                    :: mao_eps_grad = 0.0_dp
+      REAL(KIND=dp)                                    :: mao_eps1 = 0.0_dp
+      INTEGER                                          :: mao_iolevel = 0
       ! energy components
-      REAL(KIND=dp)                                    :: etotal
-      REAL(KIND=dp)                                    :: eband, ecore, exc, ehartree, vhxc
-      REAL(KIND=dp)                                    :: edispersion, efield_elec, &
-                                                          efield_nuclear, exc_aux_fit
+      REAL(KIND=dp)                                    :: etotal = 0.0_dp, old_etotal = 0.0_dp
+      REAL(KIND=dp)                                    :: eband = 0.0_dp, ecore = 0.0_dp, exc = 0.0_dp, &
+                                                          ehartree = 0.0_dp, vhxc = 0.0_dp
+      REAL(KIND=dp)                                    :: edispersion = 0.0_dp, efield_elec = 0.0_dp, &
+                                                          efield_nuclear = 0.0_dp, ex = 0.0_dp, exc_aux_fit = 0.0_dp
       ! forces
       TYPE(qs_force_type), DIMENSION(:), POINTER       :: force => Null()
       ! full neighbor lists and corresponding task list
       TYPE(neighbor_list_set_p_type), &
-         DIMENSION(:), POINTER                         :: sab_orb, sac_ppl, sap_ppnl
-      TYPE(task_list_type), POINTER                    :: task_list
+         DIMENSION(:), POINTER                         :: sab_orb => Null(), sac_ppl => Null(), sap_ppnl => Null()
+      TYPE(task_list_type), POINTER                    :: task_list => Null()
       ! the XC function to be used for the correction, dispersion info
-      TYPE(section_vals_type), POINTER                 :: xc_section
-      TYPE(qs_dispersion_type), POINTER                :: dispersion_env
+      TYPE(section_vals_type), POINTER                 :: xc_section => Null()
+      TYPE(qs_dispersion_type), POINTER                :: dispersion_env => Null()
       ! matrices in complete basis
       ! KS: Kohn-Sham; H: Core; S: overlap; T: kinetic energy;
       ! P: Harris density, W: Harris energy weighted density
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER     :: matrix_ks, &
-                                                          matrix_h, &
-                                                          matrix_s, &
-                                                          matrix_t, &
-                                                          matrix_p, &
-                                                          matrix_w
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER     :: matrix_ks => Null(), &
+                                                          matrix_h => Null(), &
+                                                          matrix_s => Null(), &
+                                                          matrix_t => Null(), &
+                                                          matrix_p => Null(), &
+                                                          matrix_w => Null()
       ! reduce basis
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER        :: mao_coef
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER        :: mao_coef => Null()
       ! CP equations
-      TYPE(qs_p_env_type), POINTER                     :: p_env
-      TYPE(cp_fm_p_type), DIMENSION(:), POINTER        :: cpmos
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER        :: matrix_hz, matrix_z, matrix_wz, z_admm
+      TYPE(qs_p_env_type), POINTER                     :: p_env => Null()
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER        :: matrix_hz => Null(), matrix_wz => Null(), &
+                                                          matrix_z => Null(), z_admm => Null()
       ! Harris (rhoout), and response density (rhoz) on grid
-      TYPE(pw_type), DIMENSION(:), POINTER           :: rhoout_r, rhoz_r
+      TYPE(pw_type), DIMENSION(:), POINTER             :: rhoout_r => Null(), rhoz_r => Null()
       ! potentials from input density
-      TYPE(pw_type)                                    :: vh_rspace
-      TYPE(pw_type), DIMENSION(:), POINTER           :: vxc_rspace, vtau_rspace, vadmm_rspace
+      TYPE(pw_type)                                    :: vh_rspace = pw_type()
+      TYPE(pw_type), DIMENSION(:), POINTER             :: vxc_rspace => Null(), vtau_rspace => Null(), vadmm_rspace => Null()
       ! efield
       TYPE(efield_berry_type), POINTER                 :: efield => NULL()
       ! LS matrices and types
-      TYPE(ls_scf_env_type), POINTER                   :: ls_env
+      TYPE(ls_scf_env_type), POINTER                   :: ls_env => Null()
+      ! Environment for Hartree-Fock exchange
+      TYPE(hfx_type), DIMENSION(:, :), POINTER         :: x_data => Null()
+      ! ADMM XC environments
+      TYPE(section_vals_type), POINTER         :: xc_section_primary => Null(), &
+                                                  xc_section_aux => Null()
    END TYPE energy_correction_type
 
 CONTAINS
@@ -146,19 +160,10 @@ CONTAINS
          IF (ASSOCIATED(ec_env%dispersion_env)) THEN
             CALL qs_dispersion_release(ec_env%dispersion_env)
          END IF
-         ! CP env
-         IF (ASSOCIATED(ec_env%cpmos)) THEN
-            DO iab = 1, SIZE(ec_env%cpmos)
-               CALL cp_fm_release(ec_env%cpmos(iab)%matrix)
-               DEALLOCATE (ec_env%cpmos(iab)%matrix)
-            END DO
-            DEALLOCATE (ec_env%cpmos)
-            NULLIFY (ec_env%cpmos)
-         END IF
 
-         IF (ASSOCIATED(ec_env%matrix_z)) CALL dbcsr_deallocate_matrix_set(ec_env%matrix_z)
          IF (ASSOCIATED(ec_env%matrix_hz)) CALL dbcsr_deallocate_matrix_set(ec_env%matrix_hz)
          IF (ASSOCIATED(ec_env%matrix_wz)) CALL dbcsr_deallocate_matrix_set(ec_env%matrix_wz)
+         IF (ASSOCIATED(ec_env%matrix_z)) CALL dbcsr_deallocate_matrix_set(ec_env%matrix_z)
          IF (ASSOCIATED(ec_env%z_admm)) CALL dbcsr_deallocate_matrix_set(ec_env%z_admm)
          NULLIFY (ec_env%matrix_z, ec_env%matrix_hz, ec_env%matrix_wz)
          NULLIFY (ec_env%z_admm)
@@ -194,6 +199,13 @@ CONTAINS
          IF (ASSOCIATED(ec_env%ls_env)) THEN
             CALL ls_scf_release(ec_env%ls_env)
          END IF
+
+         IF (.NOT. ec_env%reuse_hfx) THEN
+            IF (ASSOCIATED(ec_env%x_data)) CALL hfx_release(ec_env%x_data)
+         END IF
+
+         IF (ASSOCIATED(ec_env%xc_section_aux)) CALL section_vals_release(ec_env%xc_section_aux)
+         IF (ASSOCIATED(ec_env%xc_section_primary)) CALL section_vals_release(ec_env%xc_section_primary)
 
          DEALLOCATE (ec_env)
 

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -37,7 +37,6 @@ MODULE qs_sccs
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr,&
                                               low_print_level
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_cube,          ONLY: cp_pw_to_cube
    USE cp_realspace_grid_init,          ONLY: init_input_type
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
@@ -53,15 +52,13 @@ MODULE qs_sccs
                                               section_get_lval,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type
-   USE kahan_sum,                       ONLY: accurate_sum
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp,&
                                               int_8
    USE mathconstants,                   ONLY: fourpi,&
                                               twopi
-   USE message_passing,                 ONLY: mp_max,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_list_types,             ONLY: particle_list_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
@@ -69,6 +66,7 @@ MODULE qs_sccs
                                               pw_copy,&
                                               pw_derive,&
                                               pw_integral_ab,&
+                                              pw_integrate_function,&
                                               pw_transfer,&
                                               pw_zero
    USE pw_poisson_methods,              ONLY: pw_poisson_solve
@@ -150,9 +148,9 @@ CONTAINS
          rho_iter_new, tot_rho_elec, tot_rho_solute
       REAL(KIND=dp), DIMENSION(3)                        :: abc
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(cp_subsys_type), POINTER                      :: cp_subsys
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
@@ -290,8 +288,7 @@ CONTAINS
          DO ispin = 2, nspin
             CALL pw_axpy(rho_pw_r(ispin), rho_elec)
          END DO
-         tot_rho_elec = accurate_sum(rho_elec%cr3d)*dvol
-         CALL mp_sum(tot_rho_elec, para_env%group)
+         tot_rho_elec = pw_integrate_function(rho_elec)
 
          ! Calculate the dielectric (smoothed) function of rho_elec in r-space
          CALL pw_pool_create_pw(auxbas_pw_pool, &
@@ -372,8 +369,7 @@ CONTAINS
                   END DO
                END DO
 !$OMP    END PARALLEL DO
-               cavity_volume = accurate_sum(theta%cr3d)*dvol
-               CALL mp_sum(cavity_volume, para_env%group)
+               cavity_volume = pw_integrate_function(theta)
 
                ! Calculate the derivative of the electronic density in r-space
                ! TODO: Could be retrieved from the QS environment
@@ -450,8 +446,7 @@ CONTAINS
                CASE DEFAULT
                   CPABORT("Invalid method specified for SCCS model")
                END SELECT
-               cavity_surface = accurate_sum(theta%cr3d)*dvol
-               CALL mp_sum(cavity_surface, para_env%group)
+               cavity_surface = pw_integrate_function(theta)
 
                ! Release storage
                CALL pw_pool_give_back_pw(auxbas_pw_pool, theta)
@@ -475,8 +470,7 @@ CONTAINS
                                 in_space=REALSPACE)
          CALL pw_zero(rho_solute)
          CALL pw_transfer(rho_tot_gspace, rho_solute)
-         tot_rho_solute = accurate_sum(rho_solute%cr3d)*dvol
-         CALL mp_sum(tot_rho_solute, para_env%group)
+         tot_rho_solute = pw_integrate_function(rho_solute)
 
          ! Check total charge
          IF (ABS(tot_rho_solute) >= 1.0E-6_dp) THEN
@@ -634,9 +628,9 @@ CONTAINS
             END DO
 !$OMP    END PARALLEL DO
 
-            CALL mp_sum(rho_delta_avg, para_env%group)
+            CALL para_env%sum(rho_delta_avg)
             rho_delta_avg = rho_delta_avg/REAL(ngpts, KIND=dp)
-            CALL mp_max(rho_delta_max, para_env%group)
+            CALL para_env%max(rho_delta_max)
 
             IF (should_output .AND. (output_unit > 0)) THEN
                IF (print_level > low_print_level) THEN
@@ -765,8 +759,7 @@ CONTAINS
          ! Calculate the polarisation charge (store it in rho_tot)
          ! rho_pol = rho_tot - rho_solute
          CALL pw_axpy(rho_solute, rho_tot, alpha=-1.0_dp)
-         polarisation_charge = accurate_sum(rho_tot%cr3d)*dvol
-         CALL mp_sum(polarisation_charge, para_env%group)
+         polarisation_charge = pw_integrate_function(rho_tot)
 
          ! Optional output of the SCCS polarisation charge in cube file format
          filename = "POLARISATION_CHARGE_DENSITY"

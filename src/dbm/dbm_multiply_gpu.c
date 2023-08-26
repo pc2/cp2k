@@ -1,6 +1,6 @@
 /*----------------------------------------------------------------------------*/
 /*  CP2K: A general program to perform molecular dynamics simulations         */
-/*  Copyright 2000-2022 CP2K developers group <https://cp2k.org>              */
+/*  Copyright 2000-2023 CP2K developers group <https://cp2k.org>              */
 /*                                                                            */
 /*  SPDX-License-Identifier: BSD-3-Clause                                     */
 /*----------------------------------------------------------------------------*/
@@ -40,14 +40,16 @@ void dbm_multiply_gpu_start(const int max_batch_size, const int nshards,
   ctx->shards_c_dev =
       (dbm_shard_gpu_t *)malloc(nshards * sizeof(dbm_shard_gpu_t));
   for (int i = 0; i < nshards; i++) {
-    offloadStreamCreate(&ctx->shards_c_dev[i].stream);
-    ctx->shards_c_dev[i].data_size = ctx->shards_c_host[i].data_size;
-    ctx->shards_c_dev[i].data_allocated = ctx->shards_c_dev[i].data_size;
-    const size_t size = ctx->shards_c_dev[i].data_allocated * sizeof(double);
-    ctx->shards_c_dev[i].data = (double *)dbm_mempool_device_malloc(size);
-    offloadMemcpyAsyncHtoD(ctx->shards_c_dev[i].data,
-                           ctx->shards_c_host[i].data, size,
-                           ctx->shards_c_dev[i].stream);
+    const dbm_shard_t *shard_c_host = &ctx->shards_c_host[i];
+    dbm_shard_gpu_t *shard_c_dev = &ctx->shards_c_dev[i];
+    offloadStreamCreate(&shard_c_dev->stream);
+    shard_c_dev->data_size = shard_c_host->data_size;
+    shard_c_dev->data_allocated = shard_c_host->data_allocated;
+    shard_c_dev->data = (double *)dbm_mempool_device_malloc(
+        shard_c_dev->data_allocated * sizeof(double));
+    offloadMemcpyAsyncHtoD(shard_c_dev->data, shard_c_host->data,
+                           shard_c_dev->data_size * sizeof(double),
+                           shard_c_dev->stream);
   }
 }
 

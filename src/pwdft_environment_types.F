@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -14,7 +14,7 @@
 MODULE pwdft_environment_types
    USE ISO_C_BINDING, ONLY: C_NULL_PTR, &
                             C_PTR
-   USE cp_para_types, ONLY: cp_para_env_type
+   USE message_passing, ONLY: mp_para_env_type
    USE cp_subsys_types, ONLY: cp_subsys_type
    USE input_section_types, ONLY: section_vals_type
    USE kinds, ONLY: dp
@@ -53,7 +53,7 @@ MODULE pwdft_environment_types
 !> \author JHU
 ! **************************************************************************************************
    TYPE pwdft_energy_type
-      REAL(KIND=dp)                                    :: etotal
+      REAL(KIND=dp)                                    :: etotal = 0.0_dp
    END TYPE pwdft_energy_type
 
 ! **************************************************************************************************
@@ -63,24 +63,24 @@ MODULE pwdft_environment_types
 !> \author JHU
 ! **************************************************************************************************
    TYPE pwdft_environment_type
-      TYPE(cp_para_env_type), POINTER                  :: para_env => NULL()
+      TYPE(mp_para_env_type), POINTER                  :: para_env => NULL()
       TYPE(qs_subsys_type), POINTER                    :: qs_subsys => NULL()
       TYPE(section_vals_type), POINTER                 :: pwdft_input => NULL()
       TYPE(section_vals_type), POINTER                 :: force_env_input => NULL()
       TYPE(section_vals_type), POINTER                 :: xc_input => NULL()
       TYPE(pwdft_energy_type), POINTER                 :: energy => NULL()
       REAL(KIND=dp), DIMENSION(:, :), POINTER          :: forces => NULL()
-      REAL(KIND=dp), DIMENSION(3, 3)                   :: stress
+      REAL(KIND=dp), DIMENSION(3, 3)                   :: stress = 0.0_dp
 !     16 different functionals should be enough
-      CHARACTER(len=80)                                :: xc_func(16)
+      CHARACTER(len=80), DIMENSION(16)                 :: xc_func = ""
 #if defined(__SIRIUS)
       TYPE(sirius_context_handler)                     :: sctx
       TYPE(sirius_ground_state_handler)                :: gs_handler
       TYPE(sirius_kpoint_set_handler)                  :: ks_handler
 #else
-      TYPE(C_PTR)                                      :: sctx
-      TYPE(C_PTR)                                      :: gs_handler
-      TYPE(C_PTR)                                      :: ks_handler
+      TYPE(C_PTR)                                      :: sctx = C_NULL_PTR
+      TYPE(C_PTR)                                      :: gs_handler = C_NULL_PTR
+      TYPE(C_PTR)                                      :: ks_handler = C_NULL_PTR
 #endif
 
    END TYPE pwdft_environment_type
@@ -146,7 +146,7 @@ CONTAINS
       TYPE(section_vals_type), OPTIONAL, POINTER         :: pwdft_input, force_env_input, xc_input
       TYPE(cp_subsys_type), OPTIONAL, POINTER            :: cp_subsys
       TYPE(qs_subsys_type), OPTIONAL, POINTER            :: qs_subsys
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(pwdft_energy_type), OPTIONAL, POINTER         :: energy
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: forces
       REAL(KIND=dp), DIMENSION(3, 3), OPTIONAL           :: stress
@@ -207,7 +207,7 @@ CONTAINS
       TYPE(section_vals_type), OPTIONAL, POINTER         :: pwdft_input, force_env_input, xc_input
       TYPE(qs_subsys_type), OPTIONAL, POINTER            :: qs_subsys
       TYPE(cp_subsys_type), OPTIONAL, POINTER            :: cp_subsys
-      TYPE(cp_para_env_type), OPTIONAL, POINTER          :: para_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env
       TYPE(pwdft_energy_type), OPTIONAL, POINTER         :: energy
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: forces
       REAL(KIND=dp), DIMENSION(3, 3), OPTIONAL           :: stress

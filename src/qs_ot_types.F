@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,7 +17,6 @@ MODULE qs_ot_types
                                               Weber2008,&
                                               cite_reference
    USE cp_blacs_env,                    ONLY: cp_blacs_env_release,&
-                                              cp_blacs_env_retain,&
                                               cp_blacs_env_type
    USE cp_dbcsr_operations,             ONLY: cp_dbcsr_m_by_n_from_row_template,&
                                               cp_dbcsr_m_by_n_from_template,&
@@ -25,9 +24,6 @@ MODULE qs_ot_types
                                               dbcsr_deallocate_matrix_set
    USE cp_fm_struct,                    ONLY: cp_fm_struct_get,&
                                               cp_fm_struct_type
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_init_p,&
                                               dbcsr_p_type,&
                                               dbcsr_release_p,&
@@ -46,6 +42,8 @@ MODULE qs_ot_types
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
    USE preconditioner_types,            ONLY: preconditioner_type
 #include "./base/base_uses.f90"
 
@@ -135,7 +133,7 @@ MODULE qs_ot_types
       LOGICAL os_valid
 
       ! for efficient/parallel writing to the blacs_matrix
-      TYPE(cp_para_env_type), POINTER :: para_env
+      TYPE(mp_para_env_type), POINTER :: para_env
       TYPE(cp_blacs_env_type), POINTER :: blacs_env
 
       ! mo-like vectors
@@ -309,7 +307,7 @@ CONTAINS
 
       INTEGER                                            :: i, k, m_diis, my_ortho_k, n, ncoef
       TYPE(cp_blacs_env_type), POINTER                   :: context
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL cite_reference(VandeVondele2003)
 
@@ -323,8 +321,8 @@ CONTAINS
 
       qs_ot_env%para_env => para_env
       qs_ot_env%blacs_env => context
-      CALL cp_para_env_retain(para_env)
-      CALL cp_blacs_env_retain(context)
+      CALL para_env%retain()
+      CALL context%retain()
 
       IF (PRESENT(ortho_k)) THEN
          my_ortho_k = ortho_k
@@ -637,7 +635,7 @@ CONTAINS
    SUBROUTINE qs_ot_destroy(qs_ot_env)
       TYPE(qs_ot_type)                                   :: qs_ot_env
 
-      CALL cp_para_env_release(qs_ot_env%para_env)
+      CALL mp_para_env_release(qs_ot_env%para_env)
       CALL cp_blacs_env_release(qs_ot_env%blacs_env)
 
       DEALLOCATE (qs_ot_env%evals)

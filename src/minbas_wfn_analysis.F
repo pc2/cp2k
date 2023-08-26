@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -38,7 +38,6 @@ MODULE minbas_wfn_analysis
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_realspace_grid_cube,          ONLY: cp_pw_to_cube
    USE dbcsr_api,                       ONLY: &
         dbcsr_copy, dbcsr_create, dbcsr_distribution_type, dbcsr_dot, dbcsr_get_block_p, &
@@ -54,7 +53,7 @@ MODULE minbas_wfn_analysis
    USE iterate_matrix,                  ONLY: invert_Hotelling
    USE kinds,                           ONLY: default_path_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE minbas_methods,                  ONLY: minbas_calculation
    USE molden_utils,                    ONLY: write_mos_molden
    USE mulliken,                        ONLY: compute_bond_order,&
@@ -126,7 +125,6 @@ CONTAINS
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_a, fm_struct_b, fm_struct_c
       TYPE(cp_fm_type)                                   :: fm1, fm2, fm3, fm4
       TYPE(cp_fm_type), POINTER                          :: fm_mos
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_distribution_type), POINTER             :: dbcsr_dist
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: mao_coef, pqmat, quambo, sqmat
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
@@ -135,6 +133,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), ALLOCATABLE, DIMENSION(:)       :: mbas
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -273,7 +272,7 @@ CONTAINS
             CALL dbcsr_release(sinv)
          END DO
          ! Basis extension
-         CALL mp_sum(ecount, para_env%group)
+         CALL para_env%sum(ecount)
          IF (unit_nr > 0) THEN
             IF (nspin == 1) THEN
                WRITE (unit_nr, '(T2,A,T20,A,T40,A,T60,A)') 'Ref. Atom', ' # > 0.100 ', ' # > 0.010 ', ' # > 0.001 '
@@ -289,7 +288,7 @@ CONTAINS
             END IF
          END IF
          ! MAO projection
-         CALL mp_sum(prmao, para_env%group)
+         CALL para_env%sum(prmao)
          IF (unit_nr > 0) THEN
             DO ispin = 1, nspin
                WRITE (unit_nr, '(/,T2,A,I2)') 'Projection on same atom MAO orbitals: Spin ', ispin
@@ -342,7 +341,7 @@ CONTAINS
                                    filter_eps=filter_eps)
                CALL compute_bond_order(psmat, spmat, border)
             END DO
-            CALL mp_sum(border, para_env%group)
+            CALL para_env%sum(border)
             border = border*REAL(nspin, KIND=dp)
             CALL dbcsr_release(psmat)
             CALL dbcsr_release(spmat)

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -14,7 +14,6 @@
 MODULE pint_piglet
    USE cp_files,                        ONLY: close_file,&
                                               open_file
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE cp_units,                        ONLY: cp_unit_from_cp2k,&
                                               cp_unit_to_cp2k
    USE gle_system_dynamics,             ONLY: gle_cholesky_stab,&
@@ -29,7 +28,7 @@ MODULE pint_piglet
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
-   USE message_passing,                 ONLY: mp_bcast
+   USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_rng_types,              ONLY: GAUSSIAN,&
                                               rng_record_length,&
                                               rng_stream_type,&
@@ -144,7 +143,7 @@ CONTAINS
       TYPE(pint_env_type), INTENT(INOUT)                 :: pint_env
       TYPE(section_vals_type), POINTER                   :: section
       REAL(KIND=dp), INTENT(IN)                          :: dt
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=20)                                  :: default_format, read_unit
       CHARACTER(len=default_path_length)                 :: matrices_file_name
@@ -172,11 +171,11 @@ CONTAINS
       END IF
       ! Select algorithm for S-matrix initialization
       IF (matrix_init == matrix_init_cholesky) THEN
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             CALL pint_write_line("PIGLET| Initalizing S-matrices using cholesky decomposition.")
          END IF
       ELSE IF (matrix_init == matrix_init_diagonal) THEN
-         IF (para_env%ionode) THEN
+         IF (para_env%is_source()) THEN
             CALL pint_write_line("PIGLET| Initalizing S-matrices using full diagonalization.")
          END IF
       ELSE
@@ -184,7 +183,7 @@ CONTAINS
          matrix_init = matrix_init_cholesky
       END IF
 
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          ! Read input matrices
          WRITE (default_format, '(A,I10,A)') "(A", default_string_length, ")"
          CALL section_vals_val_get(section, "MATRICES_FILE_NAME", &
@@ -251,12 +250,10 @@ CONTAINS
          CALL close_file(unit_number=input_unit)
       END IF
       ! communicate A and C matrix to other nodes
-      CALL mp_bcast(piglet_therm%a_mat, &
-                    para_env%source, &
-                    para_env%group)
-      CALL mp_bcast(piglet_therm%c_mat, &
-                    para_env%source, &
-                    para_env%group)
+      CALL para_env%bcast(piglet_therm%a_mat, &
+                          para_env%source)
+      CALL para_env%bcast(piglet_therm%c_mat, &
+                          para_env%source)
 
       !prepare Random number generator
       NULLIFY (rng_section)

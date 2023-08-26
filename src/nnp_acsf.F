@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -17,10 +17,10 @@ MODULE nnp_acsf
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE mathconstants,                   ONLY: pi
+   USE message_passing,                 ONLY: mp_para_env_type
    USE nnp_environment_types,           ONLY: nnp_acsf_ang_type,&
                                               nnp_acsf_rad_type,&
                                               nnp_cut_cos,&
@@ -308,7 +308,7 @@ CONTAINS
       INTEGER                                            :: j
       LOGICAL                                            :: extrapolate
 
-      extrapolate = .FALSE.
+      extrapolate = nnp%output_expol
 
       DO j = 1, nnp%n_rad(ind)
          IF (nnp%rad(ind)%y(j) - &
@@ -1194,7 +1194,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE nnp_write_acsf(nnp, para_env)
       TYPE(nnp_type), INTENT(INOUT)                      :: nnp
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CHARACTER(len=default_string_length)               :: my_label
       INTEGER                                            :: i, j, unit_nr
@@ -1204,7 +1204,7 @@ CONTAINS
       logger => cp_get_default_logger()
 
       my_label = "NNP| "
-      IF (para_env%ionode) THEN
+      IF (para_env%is_source()) THEN
          unit_nr = cp_logger_get_default_unit_nr(logger)
          WRITE (unit_nr, '(1X,A,1X,10(I2,1X))') TRIM(my_label)//" Activation functions:", nnp%actfnct(:)
          DO i = 1, nnp%n_ele

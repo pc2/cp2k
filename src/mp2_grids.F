@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -14,9 +14,6 @@
 MODULE mp2_grids
    USE cp_fm_types,                     ONLY: cp_fm_get_info,&
                                               cp_fm_type
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_split
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_set
    USE kinds,                           ONLY: dp
@@ -25,9 +22,8 @@ MODULE mp2_grids
                                               kpoint_type
    USE machine,                         ONLY: m_flush
    USE mathconstants,                   ONLY: pi
-   USE message_passing,                 ONLY: mp_bcast,&
-                                              mp_max,&
-                                              mp_sum
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
    USE minimax_exp,                     ONLY: get_exp_minimax_coeff
    USE minimax_exp_gw,                  ONLY: get_exp_minimax_coeff_gw
    USE minimax_rpa,                     ONLY: get_rpa_minimax_coeff,&
@@ -44,7 +40,8 @@ MODULE mp2_grids
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'mp2_grids'
 
-   PUBLIC :: get_minimax_grid, get_clenshaw_grid, test_least_square_ft
+   PUBLIC :: get_minimax_grid, get_clenshaw_grid, test_least_square_ft, get_l_sq_wghts_cos_tf_t_to_w, &
+             get_l_sq_wghts_cos_tf_w_to_t, get_l_sq_wghts_sin_tf_t_to_w
 
 CONTAINS
 
@@ -69,13 +66,14 @@ CONTAINS
 !> \param weights_cos_tf_t_to_w ...
 !> \param weights_cos_tf_w_to_t ...
 !> \param weights_sin_tf_t_to_w ...
+!> \param regularization ...
 ! **************************************************************************************************
    SUBROUTINE get_minimax_grid(para_env, unit_nr, homo, Eigenval, num_integ_points, &
                                do_im_time, do_ri_sos_laplace_mp2, do_print, tau_tj, tau_wj, qs_env, do_gw_im_time, &
                                do_kpoints_cubic_RPA, e_fermi, tj, wj, weights_cos_tf_t_to_w, &
-                               weights_cos_tf_w_to_t, weights_sin_tf_t_to_w)
+                               weights_cos_tf_w_to_t, weights_sin_tf_t_to_w, regularization)
 
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       INTEGER, INTENT(IN)                                :: unit_nr
       INTEGER, DIMENSION(:), INTENT(IN)                  :: homo
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: Eigenval
@@ -93,6 +91,7 @@ CONTAINS
          INTENT(OUT)                                     :: weights_cos_tf_t_to_w, &
                                                             weights_cos_tf_w_to_t, &
                                                             weights_sin_tf_t_to_w
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: regularization
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'get_minimax_grid'
       INTEGER, PARAMETER                                 :: num_points_per_magnitude = 200
@@ -100,7 +99,7 @@ CONTAINS
       INTEGER                                            :: handle, ierr, ispin, jquad, nspins
       LOGICAL                                            :: my_do_kpoints, my_open_shell
       REAL(KIND=dp)                                      :: Emax, Emin, max_error_min, my_E_Range, &
-                                                            scaling
+                                                            my_regularization, scaling
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: x_tw
       TYPE(section_vals_type), POINTER                   :: input
 
@@ -114,6 +113,11 @@ CONTAINS
       my_do_kpoints = .FALSE.
       IF (.NOT. do_ri_sos_laplace_mp2) THEN
          my_do_kpoints = do_kpoints_cubic_RPA
+      END IF
+
+      my_regularization = 0.0_dp
+      IF (PRESENT(regularization)) THEN
+         my_regularization = regularization
       END IF
 
       IF (my_do_kpoints) THEN
@@ -251,14 +255,16 @@ CONTAINS
             weights_cos_tf_t_to_w = 0.0_dp
 
             CALL get_l_sq_wghts_cos_tf_t_to_w(num_integ_points, tau_tj, weights_cos_tf_t_to_w, tj, &
-                                              Emin, Emax, max_error_min, num_points_per_magnitude)
+                                              Emin, Emax, max_error_min, num_points_per_magnitude, &
+                                              my_regularization)
 
             ! get the weights for the cosine transform W^c(iw) -> W^c(it)
             ALLOCATE (weights_cos_tf_w_to_t(num_integ_points, num_integ_points))
             weights_cos_tf_w_to_t = 0.0_dp
 
             CALL get_l_sq_wghts_cos_tf_w_to_t(num_integ_points, tau_tj, weights_cos_tf_w_to_t, tj, &
-                                              Emin, Emax, max_error_min, num_points_per_magnitude)
+                                              Emin, Emax, max_error_min, num_points_per_magnitude, &
+                                              my_regularization)
 
             IF (do_gw_im_time) THEN
 
@@ -267,7 +273,8 @@ CONTAINS
                weights_sin_tf_t_to_w = 0.0_dp
 
                CALL get_l_sq_wghts_sin_tf_t_to_w(num_integ_points, tau_tj, weights_sin_tf_t_to_w, tj, &
-                                                 Emin, Emax, max_error_min, num_points_per_magnitude)
+                                                 Emin, Emax, max_error_min, num_points_per_magnitude, &
+                                                 my_regularization)
 
                IF (unit_nr > 0) THEN
                   WRITE (UNIT=unit_nr, FMT="(T3,A,T66,ES15.2)") &
@@ -305,7 +312,7 @@ CONTAINS
                                 num_integ_group, color_rpa_group, fm_mat_S, my_do_gw, &
                                 ext_scaling, a_scaling, tj, wj)
 
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env, para_env_RPA
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env, para_env_RPA
       INTEGER, INTENT(IN)                                :: unit_nr
       INTEGER, DIMENSION(:), INTENT(IN)                  :: homo, virtual
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: Eigenval
@@ -377,7 +384,7 @@ CONTAINS
                                   num_integ_points, num_integ_group, color_rpa_group, &
                                   tj_ext, wj_ext, fm_mat_S)
       REAL(KIND=dp), INTENT(OUT)                         :: a_scaling_ext
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env, para_env_RPA
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env, para_env_RPA
       INTEGER, DIMENSION(:), INTENT(IN)                  :: homo, virtual
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: Eigenval
       INTEGER, INTENT(IN)                                :: num_integ_points, num_integ_group, &
@@ -395,7 +402,7 @@ CONTAINS
          right_term, right_term_ref, right_term_ref_beta, step
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cottj, D_ia, D_ia_beta, iaia_RI, &
                                                             iaia_RI_beta, M_ia, M_ia_beta
-      TYPE(cp_para_env_type), POINTER                    :: para_env_col, para_env_col_beta
+      TYPE(mp_para_env_type), POINTER                    :: para_env_col, para_env_col_beta
 
       CALL timeset(routineN, handle)
 
@@ -424,10 +431,10 @@ CONTAINS
 
       ! bcast the result
       IF (para_env%mepos == 0) THEN
-         CALL mp_bcast(right_term_ref, 0, para_env%group)
+         CALL para_env%bcast(right_term_ref, 0)
       ELSE
          right_term_ref = 0.0_dp
-         CALL mp_bcast(right_term_ref, 0, para_env%group)
+         CALL para_env%bcast(right_term_ref, 0)
       END IF
 
       ! 5) start iteration for solving the non-linear equation by bisection
@@ -480,19 +487,19 @@ CONTAINS
       END IF
 
       a_scaling_ext = a_scaling
-      CALL mp_bcast(a_scaling_ext, 0, para_env%group)
+      CALL para_env%bcast(a_scaling_ext, 0)
 
       DEALLOCATE (cottj)
       DEALLOCATE (iaia_RI)
       DEALLOCATE (D_ia)
       DEALLOCATE (M_ia)
-      CALL cp_para_env_release(para_env_col)
+      CALL mp_para_env_release(para_env_col)
 
       IF (my_open_shell) THEN
          DEALLOCATE (iaia_RI_beta)
          DEALLOCATE (D_ia_beta)
          DEALLOCATE (M_ia_beta)
-         CALL cp_para_env_release(para_env_col_beta)
+         CALL mp_para_env_release(para_env_col_beta)
       END IF
 
       CALL timestop(handle)
@@ -516,7 +523,7 @@ CONTAINS
    SUBROUTINE calc_ia_ia_integrals(para_env_RPA, homo, virtual, ncol_local, right_term_ref, Eigenval, &
                                    D_ia, iaia_RI, M_ia, fm_mat_S, para_env_col)
 
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env_RPA
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env_RPA
       INTEGER, INTENT(IN)                                :: homo, virtual
       INTEGER, INTENT(OUT)                               :: ncol_local
       REAL(KIND=dp), INTENT(OUT)                         :: right_term_ref
@@ -524,7 +531,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
          INTENT(OUT)                                     :: D_ia, iaia_RI, M_ia
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_S
-      TYPE(cp_para_env_type), POINTER                    :: para_env_col
+      TYPE(mp_para_env_type), POINTER                    :: para_env_col
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calc_ia_ia_integrals'
 
@@ -533,7 +540,7 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
       REAL(KIND=dp)                                      :: eigen_diff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: iaia_RI_dp
-      TYPE(cp_para_env_type), POINTER                    :: para_env_row
+      TYPE(mp_para_env_type), POINTER                    :: para_env_row
 
       CALL timeset(routineN, handle)
 
@@ -572,9 +579,10 @@ CONTAINS
       !
 
       color_col = fm_mat_S%matrix_struct%context%mepos(2)
-      CALL cp_para_env_split(para_env_col, para_env_RPA, color_col)
+      ALLOCATE (para_env_col)
+      CALL para_env_col%from_split(para_env_RPA, color_col)
 
-      CALL mp_sum(iaia_RI_dp, para_env_col%group)
+      CALL para_env_col%sum(iaia_RI_dp)
 
       ! convert the iaia_RI_dp into double-double precision
       ALLOCATE (iaia_RI(ncol_local))
@@ -612,12 +620,13 @@ CONTAINS
 
       ! sum the result with the processes of the RPA_group having the same row
       color_row = fm_mat_S%matrix_struct%context%mepos(1)
-      CALL cp_para_env_split(para_env_row, para_env_RPA, color_row)
+      ALLOCATE (para_env_row)
+      CALL para_env_row%from_split(para_env_RPA, color_row)
 
       ! allocate communication array for rows
-      CALL mp_sum(right_term_ref, para_env_row%group)
+      CALL para_env_row%sum(right_term_ref)
 
-      CALL cp_para_env_release(para_env_row)
+      CALL mp_para_env_release(para_env_row)
 
       CALL timestop(handle)
 
@@ -657,8 +666,8 @@ CONTAINS
                                                             M_ia_beta
       INTEGER, INTENT(IN)                                :: ncol_local, ncol_local_beta, &
                                                             num_integ_group, color_rpa_group
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env, para_env_col
-      TYPE(cp_para_env_type), POINTER                    :: para_env_col_beta
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env, para_env_col
+      TYPE(mp_para_env_type), POINTER                    :: para_env_col_beta
 
       INTEGER                                            :: iiB, jquad
       REAL(KIND=dp)                                      :: first_deriv_beta, left_term_beta, omega
@@ -700,12 +709,12 @@ CONTAINS
       END DO
 
       ! sum the contribution from all proc, starting form the row group
-      CALL mp_sum(left_term, para_env%group)
-      CALL mp_sum(first_deriv, para_env%group)
+      CALL para_env%sum(left_term)
+      CALL para_env%sum(first_deriv)
 
       IF (my_open_shell) THEN
-         CALL mp_sum(left_term_beta, para_env%group)
-         CALL mp_sum(first_deriv_beta, para_env%group)
+         CALL para_env%sum(left_term_beta)
+         CALL para_env%sum(first_deriv_beta)
 
          left_term = left_term + left_term_beta
          first_deriv = first_deriv + first_deriv_beta
@@ -723,9 +732,11 @@ CONTAINS
 !> \param E_max ...
 !> \param max_error ...
 !> \param num_points_per_magnitude ...
+!> \param regularization ...
 ! **************************************************************************************************
    SUBROUTINE get_l_sq_wghts_cos_tf_t_to_w(num_integ_points, tau_tj, weights_cos_tf_t_to_w, omega_tj, &
-                                           E_min, E_max, max_error, num_points_per_magnitude)
+                                           E_min, E_max, max_error, num_points_per_magnitude, &
+                                           regularization)
 
       INTEGER, INTENT(IN)                                :: num_integ_points
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
@@ -737,6 +748,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: E_min, E_max
       REAL(KIND=dp), INTENT(INOUT)                       :: max_error
       INTEGER, INTENT(IN)                                :: num_points_per_magnitude
+      REAL(KIND=dp), INTENT(IN)                          :: regularization
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'get_l_sq_wghts_cos_tf_t_to_w'
 
@@ -819,7 +831,9 @@ CONTAINS
          ! 1) V*Sigma
          DO jjj = 1, num_integ_points
             DO iii = 1, num_integ_points
-               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)/sing_values(jjj)
+!               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)/sing_values(jjj)
+               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)*sing_values(jjj) &
+                                              /(regularization**2 + sing_values(jjj)**2)
             END DO
          END DO
 
@@ -855,9 +869,10 @@ CONTAINS
 !> \param E_max ...
 !> \param max_error ...
 !> \param num_points_per_magnitude ...
+!> \param regularization ...
 ! **************************************************************************************************
    SUBROUTINE get_l_sq_wghts_sin_tf_t_to_w(num_integ_points, tau_tj, weights_sin_tf_t_to_w, omega_tj, &
-                                           E_min, E_max, max_error, num_points_per_magnitude)
+                                           E_min, E_max, max_error, num_points_per_magnitude, regularization)
 
       INTEGER, INTENT(IN)                                :: num_integ_points
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
@@ -869,6 +884,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: E_min, E_max
       REAL(KIND=dp), INTENT(OUT)                         :: max_error
       INTEGER, INTENT(IN)                                :: num_points_per_magnitude
+      REAL(KIND=dp), INTENT(IN)                          :: regularization
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'get_l_sq_wghts_sin_tf_t_to_w'
 
@@ -956,7 +972,9 @@ CONTAINS
          ! 1) V*Sigma
          DO jjj = 1, num_integ_points
             DO iii = 1, num_integ_points
-               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)/sing_values(jjj)
+!               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)/sing_values(jjj)
+               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)*sing_values(jjj) &
+                                              /(regularization**2 + sing_values(jjj)**2)
             END DO
          END DO
 
@@ -1189,7 +1207,8 @@ CONTAINS
             END DO
 
             CALL get_l_sq_wghts_cos_tf_t_to_w(num_integ_points, tau_tj, &
-                                              weights_cos_tf_t_to_w, tj, 1.0_dp, Rc, max_error, 200)
+                                              weights_cos_tf_t_to_w, tj, &
+                                              1.0_dp, Rc, max_error, 200, 0.0_dp)
 
             IF (iw > 0) THEN
                WRITE (iw, '(T2, I3, F12.1, ES12.3)') num_integ_points, Rc, max_error
@@ -1213,9 +1232,10 @@ CONTAINS
 !> \param E_max ...
 !> \param max_error ...
 !> \param num_points_per_magnitude ...
+!> \param regularization ...
 ! **************************************************************************************************
    SUBROUTINE get_l_sq_wghts_cos_tf_w_to_t(num_integ_points, tau_tj, weights_cos_tf_w_to_t, omega_tj, &
-                                           E_min, E_max, max_error, num_points_per_magnitude)
+                                           E_min, E_max, max_error, num_points_per_magnitude, regularization)
 
       INTEGER, INTENT(IN)                                :: num_integ_points
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
@@ -1227,6 +1247,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: E_min, E_max
       REAL(KIND=dp), INTENT(INOUT)                       :: max_error
       INTEGER, INTENT(IN)                                :: num_points_per_magnitude
+      REAL(KIND=dp), INTENT(IN)                          :: regularization
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'get_l_sq_wghts_cos_tf_w_to_t'
 
@@ -1316,7 +1337,9 @@ CONTAINS
          ! 1) V*Sigma
          DO jjj = 1, num_integ_points
             DO iii = 1, num_integ_points
-               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)/sing_values(jjj)
+!               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)/sing_values(jjj)
+               mat_SinvVSinvSigma(iii, jjj) = mat_SinvVSinvT(jjj, iii)*sing_values(jjj) &
+                                              /(regularization**2 + sing_values(jjj)**2)
             END DO
          END DO
 
@@ -1438,7 +1461,7 @@ CONTAINS
    SUBROUTINE gap_and_max_eig_diff_kpoints(qs_env, para_env, gap, max_eig_diff, e_fermi)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(cp_para_env_type), INTENT(IN)                 :: para_env
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
       REAL(KIND=dp), INTENT(OUT)                         :: gap, max_eig_diff, e_fermi
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'gap_and_max_eig_diff_kpoints'
@@ -1490,7 +1513,7 @@ CONTAINS
       tmp(1) = e_homo
       tmp(2) = -e_lumo
       tmp(3) = max_eig_diff
-      CALL mp_max(tmp, para_env%group)
+      CALL para_env%max(tmp)
 
       gap = -tmp(2) - tmp(1)
       e_fermi = (tmp(1) - tmp(2))*0.5_dp

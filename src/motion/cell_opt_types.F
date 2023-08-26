@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -12,10 +12,10 @@
 !> \author Teodoro Laino - created [tlaino] - 03.2008 - Zurich University
 ! **************************************************************************************************
 MODULE cell_opt_types
-   USE cell_opt_utils,                  ONLY: get_ut_cell_matrix,&
-                                              read_external_press_tensor
+
+   USE cell_methods,                    ONLY: cell_create
+   USE cell_opt_utils,                  ONLY: read_external_press_tensor
    USE cell_types,                      ONLY: cell_clone,&
-                                              cell_create,&
                                               cell_release,&
                                               cell_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -58,13 +58,13 @@ MODULE cell_opt_types
 ! **************************************************************************************************
    TYPE cell_opt_env_type
       ! Simulation cell optimization parameters
-      INTEGER                                    :: constraint_id
-      LOGICAL                                    :: keep_angles, &
-                                                    keep_symmetry
-      REAL(KIND=dp)                              :: pres_ext, pres_int, pres_tol, pres_constr
-      REAL(KIND=dp), DIMENSION(3, 3)             :: mtrx
-      REAL(KIND=dp), DIMENSION(3, 3)             :: rot_matrix
-      TYPE(cell_type), POINTER                   :: ref_cell
+      INTEGER                                    :: constraint_id = fix_none
+      LOGICAL                                    :: keep_angles = .FALSE., &
+                                                    keep_symmetry = .FALSE.
+      REAL(KIND=dp)                              :: pres_ext = 0.0_dp, pres_int = 0.0_dp, pres_tol = 0.0_dp, pres_constr = 0.0_dp
+      REAL(KIND=dp), DIMENSION(3, 3)             :: mtrx = 0.0_dp
+      REAL(KIND=dp), DIMENSION(3, 3)             :: rot_matrix = 0.0_dp
+      TYPE(cell_type), POINTER                   :: ref_cell => NULL()
    END TYPE cell_opt_env_type
 
 CONTAINS
@@ -94,14 +94,11 @@ CONTAINS
       NULLIFY (cell_env%ref_cell, cell, subsys, particles)
       CALL force_env_get(force_env, cell=cell, subsys=subsys)
       CALL cell_create(cell_env%ref_cell)
-      CALL cell_clone(cell, cell_env%ref_cell)
+      CALL cell_clone(cell, cell_env%ref_cell, tag="REF_CELL_OPT")
       CALL section_vals_val_get(geo_section, "KEEP_ANGLES", l_val=cell_env%keep_angles)
       CALL section_vals_val_get(geo_section, "KEEP_SYMMETRY", l_val=cell_env%keep_symmetry)
       CALL section_vals_val_get(geo_section, "PRESSURE_TOLERANCE", r_val=cell_env%pres_tol)
       CALL section_vals_val_get(geo_section, "CONSTRAINT", i_val=cell_env%constraint_id)
-
-      ! First let's rotate the cell vectors in order to have an upper triangular matrix.
-      CALL get_ut_cell_matrix(cell)
 
       ! Compute the rotation matrix that give the cell vectors in the "canonical" orientation
       cell_env%rot_matrix = MATMUL(cell_env%ref_cell%hmat, cell%h_inv)

@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,7 +25,6 @@ MODULE qs_kpp1_env_methods
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_add,&
                                               dbcsr_copy,&
                                               dbcsr_p_type,&
@@ -48,7 +47,7 @@ MODULE qs_kpp1_env_methods
                                               lri_environment_type,&
                                               lri_kind_type
    USE lri_ks_methods,                  ONLY: calculate_lri_ks_matrix
-   USE message_passing,                 ONLY: mp_sum
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
    USE pw_methods,                      ONLY: pw_axpy,&
@@ -217,12 +216,12 @@ CONTAINS
       REAL(KIND=dp)                                      :: alpha, energy_hartree, energy_hartree_1c
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: k1mat, rho_ao
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ksmat, psmat
       TYPE(lri_density_type), POINTER                    :: lri_density
       TYPE(lri_environment_type), POINTER                :: lri_env
       TYPE(lri_kind_type), DIMENSION(:), POINTER         :: lri_v_int
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -435,7 +434,7 @@ CONTAINS
 
                ! add hartree only for SINGLETS
                IF (.NOT. do_triplet) THEN
-                  v_rspace_new(1)%cr3d = v_hartree_rspace%cr3d
+                  CALL pw_copy(v_hartree_rspace, v_rspace_new(1))
 
                   CALL integrate_v_rspace(v_rspace=v_rspace_new(ispin), &
                                           pmat=rho_ao(ispin), &
@@ -459,7 +458,7 @@ CONTAINS
                                           calculate_forces=my_calc_forces, gapw=gapw_xc)
                END IF
 
-               v_rspace_new(ispin)%cr3d = v_hartree_rspace%cr3d
+               CALL pw_copy(v_hartree_rspace, v_rspace_new(ispin))
                CALL integrate_v_rspace(v_rspace=v_rspace_new(ispin), &
                                        pmat=rho_ao(ispin), &
                                        hmat=p_env%kpp1_env%v_ao(ispin), &
@@ -473,12 +472,10 @@ CONTAINS
 
                ! add hartree only for SINGLETS
                IF (.NOT. do_triplet) THEN
-                  v_rspace_new(1)%cr3d = v_rspace_new(1)%cr3d + &
-                                         v_hartree_rspace%cr3d
+                  CALL pw_axpy(v_hartree_rspace, v_rspace_new(1))
                END IF
             ELSE
-               v_rspace_new(ispin)%cr3d = v_rspace_new(ispin)%cr3d + &
-                                          v_hartree_rspace%cr3d
+               CALL pw_axpy(v_hartree_rspace, v_rspace_new(ispin))
             END IF
 
             IF (lrigpw) THEN
@@ -492,7 +489,7 @@ CONTAINS
                CALL integrate_v_rspace_one_center(v_rspace_new(ispin), qs_env, &
                                                   lri_v_int, .FALSE., "LRI_AUX")
                DO ikind = 1, nkind
-                  CALL mp_sum(lri_v_int(ikind)%v_int, para_env%group)
+                  CALL para_env%sum(lri_v_int(ikind)%v_int)
                END DO
                ALLOCATE (k1mat(1))
                k1mat(1)%matrix => p_env%kpp1_env%v_ao(ispin)%matrix
@@ -528,7 +525,7 @@ CONTAINS
             CALL Vh_1c_gg_integrals(qs_env, energy_hartree_1c, &
                                     p_env%hartree_local%ecoul_1c, &
                                     p_env%local_rho_set, &
-                                    para_env, tddft=.TRUE.)
+                                    para_env, tddft=.TRUE., core_2nd=.TRUE.)
             CALL integrate_vhg0_rspace(qs_env, v_hartree_rspace, para_env, &
                                        calculate_forces=my_calc_forces, &
                                        local_rho_set=p_env%local_rho_set)
@@ -610,8 +607,8 @@ CONTAINS
       DO ispin = 1, SIZE(k_p_p1)
          CALL dbcsr_add(rho_ao(ispin)%matrix, rho1_ao(ispin)%matrix, &
                         alpha_scalar=1.0_dp, beta_scalar=my_diff)
-         rho_r(ispin)%cr3d = rho_r(ispin)%cr3d + my_diff*rho1_r(ispin)%cr3d
-         rho_g(ispin)%cc = rho_g(ispin)%cc + my_diff*rho1_g(ispin)%cc
+         CALL pw_axpy(rho1_r(ispin), rho_r(ispin), my_diff)
+         CALL pw_axpy(rho1_g(ispin), rho_g(ispin), my_diff)
       END DO
 
       CALL qs_ks_build_kohn_sham_matrix(qs_env, &
@@ -631,8 +628,8 @@ CONTAINS
       DO ispin = 1, nspins
          CALL dbcsr_add(rho_ao(ispin)%matrix, rho1_ao(ispin)%matrix, &
                         alpha_scalar=1.0_dp, beta_scalar=my_diff)
-         rho_r(ispin)%cr3d = rho_r(ispin)%cr3d + my_diff*rho1_r(ispin)%cr3d
-         rho_g(ispin)%cc = rho_g(ispin)%cc + my_diff*rho1_g(ispin)%cc
+         CALL pw_axpy(rho1_r(ispin), rho_r(ispin), my_diff)
+         CALL pw_axpy(rho1_g(ispin), rho_g(ispin), my_diff)
       END DO
 
       CALL qs_ks_build_kohn_sham_matrix(qs_env, &
@@ -645,8 +642,8 @@ CONTAINS
       DO ispin = 1, nspins
          CALL dbcsr_add(rho_ao(ispin)%matrix, rho1_ao(ispin)%matrix, &
                         alpha_scalar=1.0_dp, beta_scalar=my_diff)
-         rho_r(ispin)%cr3d = rho_r(ispin)%cr3d + my_diff*rho1_r(ispin)%cr3d
-         rho_g(ispin)%cc = rho_g(ispin)%cc + my_diff*rho1_g(ispin)%cc
+         CALL pw_axpy(rho1_r(ispin), rho_r(ispin), my_diff)
+         CALL pw_axpy(rho1_g(ispin), rho_g(ispin), my_diff)
       END DO
 
 ! k_p_p1=(H(rho0+h/2 rho1)-H(rho0-h/2 rho1))/h
@@ -717,14 +714,14 @@ CONTAINS
             DO ispin = 1, 2
                CALL pw_pool_create_pw(auxbas_pw_pool, my_rho_r(ispin), &
                                       use_data=rho_r(1)%in_use, in_space=rho_r(1)%in_space)
-               my_rho_r(ispin)%cr3d = 0.5_dp*rho_r(1)%cr3d
+               CALL pw_axpy(rho_r(1), my_rho_r(ispin), 0.5_dp, 0.0_dp)
             END DO
             IF (dft_control%use_kinetic_energy_density) THEN
                ALLOCATE (my_tau_r(2))
                DO ispin = 1, 2
                   CALL pw_pool_create_pw(auxbas_pw_pool, my_tau_r(ispin), &
                                          use_data=tau_r(1)%in_use, in_space=tau_r(1)%in_space)
-                  my_tau_r(ispin)%cr3d = 0.5_dp*tau_r(1)%cr3d
+                  CALL pw_axpy(tau_r(1), my_tau_r(ispin), 0.5_dp, 0.0_dp)
                END DO
             END IF
          ELSE

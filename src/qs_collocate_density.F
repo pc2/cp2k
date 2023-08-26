@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -70,6 +70,7 @@ MODULE qs_collocate_density
                                               dp
    USE lri_environment_types,           ONLY: lri_kind_type
    USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_comm_type
    USE orbital_pointers,                ONLY: coset,&
                                               ncoset
    USE particle_types,                  ONLY: particle_type
@@ -101,11 +102,9 @@ MODULE qs_collocate_density
    USE realspace_grid_types,            ONLY: map_gaussian_here,&
                                               realspace_grid_desc_p_type,&
                                               realspace_grid_type,&
-                                              rs2pw,&
                                               rs_grid_zero,&
-                                              rs_pw_transfer
-   USE rs_pw_interface,                 ONLY: density_rs2pw,&
-                                              density_rs2pw_basic
+                                              transfer_rs2pw
+   USE rs_pw_interface,                 ONLY: density_rs2pw
    USE task_list_methods,               ONLY: rs_copy_to_buffer,&
                                               rs_distribute_matrix,&
                                               rs_scatter_matrices
@@ -314,7 +313,7 @@ CONTAINS
          DEALLOCATE (cores)
       END IF
 
-      CALL rs_pw_transfer(rs_rho, rho_nlcc, rs2pw)
+      CALL transfer_rs2pw(rs_rho, rho_nlcc)
 
       CALL timestop(handle)
 
@@ -487,7 +486,7 @@ CONTAINS
          DEALLOCATE (cores)
       END IF
 
-      CALL rs_pw_transfer(rs_rho, vppl, rs2pw)
+      CALL transfer_rs2pw(rs_rho, vppl)
 
       CALL timestop(handle)
 
@@ -511,8 +510,7 @@ CONTAINS
    SUBROUTINE calculate_lri_rho_elec(lri_rho_g, lri_rho_r, qs_env, &
                                      lri_coef, total_rho, basis_type, exact_1c_terms, pmat, atomlist)
 
-      TYPE(pw_type), INTENT(IN)                          :: lri_rho_g
-      TYPE(pw_type), INTENT(INOUT)                       :: lri_rho_r
+      TYPE(pw_type), INTENT(INOUT)                       :: lri_rho_g, lri_rho_r
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(lri_kind_type), DIMENSION(:), POINTER         :: lri_coef
       REAL(KIND=dp), INTENT(OUT)                         :: total_rho
@@ -760,8 +758,8 @@ CONTAINS
 
       DO igrid_level = 1, gridlevel_info%ngrid_levels
          CALL pw_zero(mgrid_rspace(igrid_level))
-         CALL rs_pw_transfer(rs=rs_rho(igrid_level), &
-                             pw=mgrid_rspace(igrid_level), dir=rs2pw)
+         CALL transfer_rs2pw(rs=rs_rho(igrid_level), &
+                             pw=mgrid_rspace(igrid_level))
       END DO
 
       DO igrid_level = 1, gridlevel_info%ngrid_levels
@@ -897,7 +895,7 @@ CONTAINS
       CALL pw_pool_create_pw(auxbas_pw_pool, rhoc_r, &
                              use_data=REALDATA3D, in_space=REALSPACE)
 
-      CALL rs_pw_transfer(rs_rho, rhoc_r, rs2pw)
+      CALL transfer_rs2pw(rs_rho, rhoc_r)
 
       total_rho = pw_integrate_function(rhoc_r, isign=-1)
 
@@ -1032,7 +1030,7 @@ CONTAINS
       CALL pw_pool_create_pw(auxbas_pw_pool, rhoc_r, &
                              use_data=REALDATA3D, in_space=REALSPACE)
 
-      CALL rs_pw_transfer(rs_rho, rhoc_r, rs2pw)
+      CALL transfer_rs2pw(rs_rho, rhoc_r)
 
       CALL pw_transfer(rhoc_r, drho_core)
 
@@ -1121,7 +1119,7 @@ CONTAINS
       CALL pw_pool_create_pw(auxbas_pw_pool, rhoc_r, &
                              use_data=REALDATA3D, in_space=REALSPACE)
 
-      CALL rs_pw_transfer(rs_rho, rhoc_r, rs2pw)
+      CALL transfer_rs2pw(rs_rho, rhoc_r)
 
       CALL pw_transfer(rhoc_r, rho_gb)
 
@@ -1226,7 +1224,7 @@ CONTAINS
       CALL pw_pool_create_pw(auxbas_pw_pool, rhoc_r, &
                              use_data=REALDATA3D, in_space=REALSPACE)
 
-      CALL rs_pw_transfer(rs_rho, rhoc_r, rs2pw)
+      CALL transfer_rs2pw(rs_rho, rhoc_r)
 
       IF (PRESENT(total_rho_metal)) &
          !minus sign: account for the fact that rho_metal has opposite sign
@@ -1320,7 +1318,7 @@ CONTAINS
       CALL pw_pool_create_pw(auxbas_pw_pool, rhoc_r, &
                              use_data=REALDATA3D, in_space=REALSPACE)
 
-      CALL rs_pw_transfer(rs_rho, rhoc_r, rs2pw)
+      CALL transfer_rs2pw(rs_rho, rhoc_r)
 
       CALL pw_transfer(rhoc_r, rho_gb)
 
@@ -1425,7 +1423,7 @@ CONTAINS
       CALL pw_pool_create_pw(auxbas_pw_pool, rhoc_r, &
                              use_data=REALDATA3D, in_space=REALSPACE)
 
-      CALL rs_pw_transfer(rs_rho, rhoc_r, rs2pw)
+      CALL transfer_rs2pw(rs_rho, rhoc_r)
 
       CALL pw_transfer(rhoc_r, rho_resp)
       CALL pw_pool_give_back_pw(auxbas_pw_pool, rhoc_r)
@@ -1478,12 +1476,13 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_rho_elec'
 
       CHARACTER(LEN=default_string_length)               :: my_basis_type
-      INTEGER                                            :: ga_gb_function, group, handle, ilevel, &
-                                                            img, nimages, nlevels
+      INTEGER                                            :: ga_gb_function, handle, ilevel, img, &
+                                                            nimages, nlevels
       LOGICAL                                            :: any_distributed, my_compute_grad, &
                                                             my_compute_tau, my_soft_valid
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_images
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_comm_type)                                 :: group
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(realspace_grid_type), DIMENSION(:), POINTER   :: rs_rho
       TYPE(task_list_type), POINTER                      :: task_list
@@ -1820,8 +1819,13 @@ CONTAINS
                END IF
 
                IF (ikind .NE. ikind_old) THEN
-                  CALL get_qs_kind(qs_kind_set(ikind), softb=my_soft, &
-                                   basis_set=orb_basis_set, basis_type=my_basis_type)
+                  IF (my_soft) THEN
+                     CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set, &
+                                      basis_type="ORB_SOFT")
+                  ELSE
+                     CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set, &
+                                      basis_type=my_basis_type)
+                  END IF
                   CALL get_gto_basis_set(gto_basis_set=orb_basis_set, &
                                          first_sgf=first_sgfa, &
                                          lmax=la_max, &
@@ -1834,8 +1838,13 @@ CONTAINS
                END IF
 
                IF (jkind .NE. jkind_old) THEN
-                  CALL get_qs_kind(qs_kind_set(jkind), softb=my_soft, &
-                                   basis_set=orb_basis_set, basis_type=my_basis_type)
+                  IF (my_soft) THEN
+                     CALL get_qs_kind(qs_kind_set(jkind), basis_set=orb_basis_set, &
+                                      basis_type="ORB_SOFT")
+                  ELSE
+                     CALL get_qs_kind(qs_kind_set(jkind), basis_set=orb_basis_set, &
+                                      basis_type=my_basis_type)
+                  END IF
                   CALL get_gto_basis_set(gto_basis_set=orb_basis_set, &
                                          first_sgf=first_sgfb, &
                                          lmax=lb_max, &
@@ -1965,7 +1974,7 @@ CONTAINS
 
          END DO loop_tasks
 
-         CALL density_rs2pw_basic(pw_env, rs_rho, drho(idir), drho_gspace(idir))
+         CALL density_rs2pw(pw_env, rs_rho, drho(idir), drho_gspace(idir))
 
       END DO loop_xyz
 
@@ -2192,8 +2201,13 @@ CONTAINS
             END IF
 
             IF (ikind .NE. ikind_old) THEN
-               CALL get_qs_kind(qs_kind_set(ikind), softb=my_soft, &
-                                basis_set=orb_basis_set, basis_type=my_basis_type)
+               IF (my_soft) THEN
+                  CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set, &
+                                   basis_type="ORB_SOFT")
+               ELSE
+                  CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set, &
+                                   basis_type=my_basis_type)
+               END IF
                CALL get_gto_basis_set(gto_basis_set=orb_basis_set, &
                                       first_sgf=first_sgfa, &
                                       lmax=la_max, &
@@ -2206,8 +2220,13 @@ CONTAINS
             END IF
 
             IF (jkind .NE. jkind_old) THEN
-               CALL get_qs_kind(qs_kind_set(jkind), softb=my_soft, &
-                                basis_set=orb_basis_set, basis_type=my_basis_type)
+               IF (my_soft) THEN
+                  CALL get_qs_kind(qs_kind_set(jkind), basis_set=orb_basis_set, &
+                                   basis_type="ORB_SOFT")
+               ELSE
+                  CALL get_qs_kind(qs_kind_set(jkind), basis_set=orb_basis_set, &
+                                   basis_type=my_basis_type)
+               END IF
                CALL get_gto_basis_set(gto_basis_set=orb_basis_set, &
                                       first_sgf=first_sgfb, &
                                       lmax=lb_max, &
@@ -2359,7 +2378,7 @@ CONTAINS
 
       END DO loop_tasks
 
-      CALL density_rs2pw_basic(pw_env, rs_rho, drho, drho_gspace)
+      CALL density_rs2pw(pw_env, rs_rho, drho, drho_gspace)
 
       !   *** Release work storage ***
       IF (distributed_rs_grids) THEN
@@ -2399,8 +2418,7 @@ CONTAINS
                                         atomic_kind_set, qs_kind_set, cell, dft_control, particle_set, &
                                         pw_env, required_function, basis_type)
 
-      TYPE(pw_type), INTENT(INOUT)                       :: rho
-      TYPE(pw_type), INTENT(IN)                          :: rho_gspace
+      TYPE(pw_type), INTENT(INOUT)                       :: rho, rho_gspace
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(cell_type), POINTER                           :: cell
@@ -2413,8 +2431,8 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'collocate_single_gaussian'
 
       CHARACTER(LEN=default_string_length)               :: my_basis_type
-      INTEGER :: group, group_size, handle, i, iatom, igrid_level, ikind, ipgf, iset, maxco, &
-         maxsgf_set, my_index, my_pos, na1, na2, natom, ncoa, nseta, offset, sgfa
+      INTEGER :: group_size, handle, i, iatom, igrid_level, ikind, ipgf, iset, maxco, maxsgf_set, &
+         my_index, my_pos, na1, na2, natom, ncoa, nseta, offset, sgfa
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: where_is_the_point
       INTEGER, DIMENSION(:), POINTER                     :: la_max, la_min, npgfa, nsgfa
       INTEGER, DIMENSION(:, :), POINTER                  :: first_sgfa
@@ -2424,6 +2442,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: pab, sphi_a, zeta
       TYPE(gridlevel_info_type), POINTER                 :: gridlevel_info
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
+      TYPE(mp_comm_type)                                 :: group
       TYPE(pw_pool_p_type), DIMENSION(:), POINTER        :: pw_pools
       TYPE(pw_type), ALLOCATABLE, DIMENSION(:)           :: mgrid_gspace, mgrid_rspace
       TYPE(realspace_grid_type), DIMENSION(:), POINTER   :: rs_rho
@@ -2538,8 +2557,8 @@ CONTAINS
       END DO
 
       DO igrid_level = 1, gridlevel_info%ngrid_levels
-         CALL rs_pw_transfer(rs_rho(igrid_level), &
-                             mgrid_rspace(igrid_level), rs2pw)
+         CALL transfer_rs2pw(rs_rho(igrid_level), &
+                             mgrid_rspace(igrid_level))
       END DO
 
       CALL pw_zero(rho_gspace)
@@ -2593,8 +2612,7 @@ CONTAINS
 
       TYPE(cp_fm_type), INTENT(IN)                       :: mo_vectors
       INTEGER, INTENT(IN)                                :: ivector
-      TYPE(pw_type), INTENT(INOUT)                       :: rho
-      TYPE(pw_type), INTENT(IN)                          :: rho_gspace
+      TYPE(pw_type), INTENT(INOUT)                       :: rho, rho_gspace
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(cell_type), POINTER                           :: cell
@@ -2607,8 +2625,8 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calculate_wavefunction'
 
       CHARACTER(LEN=default_string_length)               :: my_basis_type
-      INTEGER :: group, group_size, handle, i, iatom, igrid_level, ikind, ipgf, iset, maxco, &
-         maxsgf_set, my_pos, na1, na2, nao, natom, ncoa, nseta, offset, sgfa
+      INTEGER :: group_size, handle, i, iatom, igrid_level, ikind, ipgf, iset, maxco, maxsgf_set, &
+         my_pos, na1, na2, nao, natom, ncoa, nseta, offset, sgfa
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: where_is_the_point
       INTEGER, DIMENSION(:), POINTER                     :: la_max, la_min, npgfa, nsgfa
       INTEGER, DIMENSION(:, :), POINTER                  :: first_sgfa
@@ -2619,6 +2637,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: pab, sphi_a, work, zeta
       TYPE(gridlevel_info_type), POINTER                 :: gridlevel_info
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
+      TYPE(mp_comm_type)                                 :: group
       TYPE(pw_pool_p_type), DIMENSION(:), POINTER        :: pw_pools
       TYPE(pw_type), ALLOCATABLE, DIMENSION(:)           :: mgrid_gspace, mgrid_rspace
       TYPE(realspace_grid_type), DIMENSION(:), POINTER   :: rs_rho
@@ -2739,8 +2758,8 @@ CONTAINS
       END DO
 
       DO igrid_level = 1, gridlevel_info%ngrid_levels
-         CALL rs_pw_transfer(rs_rho(igrid_level), &
-                             mgrid_rspace(igrid_level), rs2pw)
+         CALL transfer_rs2pw(rs_rho(igrid_level), &
+                             mgrid_rspace(igrid_level))
       END DO
 
       CALL pw_zero(rho_gspace)

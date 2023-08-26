@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -27,6 +27,7 @@ MODULE header
    PUBLIC :: qmmm_header, atom_header, atom_footer, band_header, xtb_header
    PUBLIC :: tmc_header, tmc_ana_header
    PUBLIC :: sirius_header
+   PUBLIC :: tddfpt_soc_header
 
 CONTAINS
 
@@ -133,6 +134,27 @@ CONTAINS
          "*******************************************************************************"
 
    END SUBROUTINE tddfpt_header
+
+! **************************************************************************************************
+!> \brief ...
+!> \param iw ...
+! **************************************************************************************************
+   SUBROUTINE tddfpt_soc_header(iw)
+      INTEGER, INTENT(in)                                :: iw
+
+      IF (iw < 0) RETURN
+      WRITE (iw, '(/,(T2,A79))') &
+         "*******************************************************************************", &
+         "**                                                                           **", &
+         "**                            ####### ####### #######                        **", &
+         "**                        #   ##      ##   ## ##                             **", &
+         "**                       ###  ######  ##   ## ##                             **", &
+         "**                        #       ##  ##   ## ##                             **", &
+         "**                            ######  ####### #######                        **", &
+         "**                 Based on the xas module from Augustin Bussy               **", &
+         "*******************************************************************************"
+
+   END SUBROUTINE tddfpt_soc_header
 
 ! **************************************************************************************************
 !> \brief ...
@@ -256,7 +278,7 @@ CONTAINS
          "**                                                                           **", &
          "**                                                ... make the atoms dance   **", &
          "**                                                                           **", &
-         "**            Copyright (C) by CP2K developers group (2000-2022)             **", &
+         "**            Copyright (C) by CP2K developers group (2000-2023)             **", &
          "**                      J. Chem. Phys. 152, 194103 (2020)                    **", &
          "**                                                                           **", &
          "*******************************************************************************"

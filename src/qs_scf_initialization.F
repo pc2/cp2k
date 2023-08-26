@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -37,7 +37,6 @@ MODULE qs_scf_initialization
                                               cp_print_key_finished_output,&
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_create,&
                                               dbcsr_init_p,&
                                               dbcsr_p_type,&
@@ -54,6 +53,7 @@ MODULE qs_scf_initialization
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_type
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_types,                        ONLY: pw_type
    USE qmmm_image_charge,               ONLY: conditional_calc_image_matrix
    USE qs_block_davidson_types,         ONLY: block_davidson_allocate,&
@@ -452,8 +452,7 @@ CONTAINS
             IF (do_kpoints) nw = 4
             ALLOCATE (scf_env%scf_work1(nw))
             DO is = 1, SIZE(scf_env%scf_work1)
-               ALLOCATE (scf_env%scf_work1(is)%matrix)
-               CALL cp_fm_create(scf_env%scf_work1(is)%matrix, &
+               CALL cp_fm_create(scf_env%scf_work1(is), &
                                  matrix_struct=ao_ao_fmstruct, &
                                  name="SCF-WORK_MATRIX-1-"//TRIM(ADJUSTL(cp_to_string(is))))
             END DO
@@ -517,8 +516,7 @@ CONTAINS
             nw = 4
             ALLOCATE (scf_env%scf_work1(nw))
             DO is = 1, SIZE(scf_env%scf_work1)
-               ALLOCATE (scf_env%scf_work1(is)%matrix)
-               CALL cp_fm_create(scf_env%scf_work1(is)%matrix, &
+               CALL cp_fm_create(scf_env%scf_work1(is), &
                                  matrix_struct=ao_ao_fmstruct, &
                                  name="SCF-WORK_MATRIX-1-"//TRIM(ADJUSTL(cp_to_string(is))))
             END DO
@@ -871,10 +869,10 @@ CONTAINS
                                                             s_minus_half_available
       REAL(KIND=dp)                                      :: u_ramping
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_kind_type), POINTER                        :: qs_kind
       TYPE(qs_rho_type), POINTER                         :: rho
@@ -1052,9 +1050,9 @@ CONTAINS
       LOGICAL                                            :: orthogonal_wf
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom
 

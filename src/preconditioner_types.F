@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -13,13 +13,9 @@
 ! **************************************************************************************************
 MODULE preconditioner_types
    USE cp_blacs_env,                    ONLY: cp_blacs_env_release,&
-                                              cp_blacs_env_retain,&
                                               cp_blacs_env_type
    USE cp_fm_types,                     ONLY: cp_fm_release,&
                                               cp_fm_type
-   USE cp_para_env,                     ONLY: cp_para_env_release,&
-                                              cp_para_env_retain
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_deallocate_matrix,&
                                               dbcsr_p_type,&
                                               dbcsr_release_p,&
@@ -27,6 +23,8 @@ MODULE preconditioner_types
    USE input_constants,                 ONLY: cholesky_reduce,&
                                               ot_precond_solver_default
    USE kinds,                           ONLY: dp
+   USE message_passing,                 ONLY: mp_para_env_release,&
+                                              mp_para_env_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -49,7 +47,7 @@ MODULE preconditioner_types
       TYPE(dbcsr_type), POINTER           :: max_ev_vector
       TYPE(dbcsr_type), POINTER           :: min_ev_vector
       TYPE(dbcsr_p_type), POINTER, DIMENSION(:) :: inverse_history
-      TYPE(cp_para_env_type), POINTER   :: para_env
+      TYPE(mp_para_env_type), POINTER   :: para_env
       TYPE(cp_blacs_env_type), POINTER   :: ctxt
       INTEGER :: in_use, solver, ihistory, cholesky_use
       REAL(KIND=dp), DIMENSION(:), POINTER :: occ_evals, full_evals
@@ -87,7 +85,7 @@ CONTAINS
    SUBROUTINE init_preconditioner(preconditioner_env, para_env, blacs_env)
 
       TYPE(preconditioner_type)                          :: preconditioner_env
-      TYPE(cp_para_env_type), POINTER                    :: para_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
 
       NULLIFY (preconditioner_env%sparse_matrix)
@@ -106,8 +104,8 @@ CONTAINS
       preconditioner_env%condition_num = -1.0_dp
       preconditioner_env%ihistory = 0
 
-      CALL cp_para_env_retain(preconditioner_env%para_env)
-      CALL cp_blacs_env_retain(preconditioner_env%ctxt)
+      CALL preconditioner_env%para_env%retain()
+      CALL preconditioner_env%ctxt%retain()
 
    END SUBROUTINE init_preconditioner
 
@@ -156,7 +154,7 @@ CONTAINS
          END DO
          DEALLOCATE (preconditioner_env%inverse_history)
       END IF
-      CALL cp_para_env_release(preconditioner_env%para_env)
+      CALL mp_para_env_release(preconditioner_env%para_env)
       CALL cp_blacs_env_release(preconditioner_env%ctxt)
 
       preconditioner_env%in_use = 0

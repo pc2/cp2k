@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -28,6 +28,7 @@ MODULE cg_utils
    USE kinds, ONLY: dp
    USE mathconstants, ONLY: pi
    USE memory_utilities, ONLY: reallocate
+   USE message_passing, ONLY: mp_para_env_type
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE

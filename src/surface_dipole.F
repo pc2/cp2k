@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -10,16 +10,16 @@ MODULE surface_dipole
 
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE kahan_sum,                       ONLY: accurate_dot_product,&
-                                              accurate_sum
+   USE kahan_sum,                       ONLY: accurate_sum
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: pi
-   USE message_passing,                 ONLY: mp_sum
    USE physcon,                         ONLY: bohr
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL
    USE pw_methods,                      ONLY: pw_axpy,&
+                                              pw_integral_ab,&
+                                              pw_scale,&
                                               pw_transfer,&
                                               pw_zero
    USE pw_pool_types,                   ONLY: pw_pool_create_pw,&
@@ -148,7 +148,7 @@ CONTAINS
       bo => wf_r%pw_grid%bounds_local
       dh = wf_r%pw_grid%dh
 
-      wf_r%cr3d = wf_r%cr3d*wf_r%pw_grid%vol
+      CALL pw_scale(wf_r, wf_r%pw_grid%vol)
       IF (idir_surfdip == 3) THEN
          isurf = 1
          jsurf = 2
@@ -172,7 +172,7 @@ CONTAINS
             rhoavsurf(i) = accurate_sum(wf_r%cr3d(i, bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)))
          END DO
       END IF
-      wf_r%cr3d = wf_r%cr3d/wf_r%pw_grid%vol
+      CALL pw_scale(wf_r, 1.0_dp/wf_r%pw_grid%vol)
       rhoavsurf = rhoavsurf/wf_r%pw_grid%vol
 
       surfarea = cell%hmat(isurf, isurf)*cell%hmat(jsurf, jsurf) - &
@@ -180,7 +180,7 @@ CONTAINS
       dsurf = surfarea/REAL(ngrid(isurf)*ngrid(jsurf), dp)
 
       IF (wf_r%pw_grid%para%mode /= PW_MODE_LOCAL) THEN
-         CALL mp_sum(rhoavsurf, wf_r%pw_grid%para%group)
+         CALL wf_r%pw_grid%para%group%sum(rhoavsurf)
       END IF
       rhoavsurf(ilow:iup) = dsurf*rhoavsurf(ilow:iup)
 
@@ -264,13 +264,10 @@ CONTAINS
       END DO
 
 !    Dipole correction contribution to the energy
-      energy%surf_dipole = 0.5_dp*accurate_dot_product(vdip_r%cr3d, wf_r%cr3d)
-      IF (wf_r%pw_grid%para%mode /= PW_MODE_LOCAL) THEN
-         CALL mp_sum(energy%surf_dipole, wf_r%pw_grid%para%group)
-      END IF
+      energy%surf_dipole = 0.5_dp*pw_integral_ab(vdip_r, wf_r, just_sum=.TRUE.)
 
 !    Add the dipole potential to the hartree potential on the realspace grid
-      v_hartree_rspace%cr3d = v_hartree_rspace%cr3d + vdip_r%cr3d
+      CALL pw_axpy(vdip_r, v_hartree_rspace)
 
       CALL pw_pool_give_back_pw(auxbas_pw_pool, wf_r)
       CALL pw_pool_give_back_pw(auxbas_pw_pool, vdip_r)

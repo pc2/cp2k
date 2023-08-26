@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------------------------------!
 !   CP2K: A general program to perform molecular dynamics simulations                              !
-!   Copyright 2000-2022 CP2K developers group <https://cp2k.org>                                   !
+!   Copyright 2000-2023 CP2K developers group <https://cp2k.org>                                   !
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
@@ -25,7 +25,6 @@ MODULE xc_pot_saop
                                               cp_fm_set_all,&
                                               cp_fm_set_submatrix,&
                                               cp_fm_type
-   USE cp_para_types,                   ONLY: cp_para_env_type
    USE dbcsr_api,                       ONLY: dbcsr_copy,&
                                               dbcsr_deallocate_matrix,&
                                               dbcsr_p_type,&
@@ -41,9 +40,13 @@ MODULE xc_pot_saop
         section_vals_val_get, section_vals_val_set
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: pi
+   USE message_passing,                 ONLY: mp_para_env_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
-   USE pw_methods,                      ONLY: pw_zero
+   USE pw_methods,                      ONLY: pw_axpy,&
+                                              pw_copy,&
+                                              pw_scale,&
+                                              pw_zero
    USE pw_pool_types,                   ONLY: pw_pool_create_pw,&
                                               pw_pool_give_back_pw,&
                                               pw_pool_type
@@ -142,7 +145,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: coeff_col
       REAL(KIND=dp), DIMENSION(3, 3)                     :: virial_xc_tmp
       REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
-      REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: dummy, e_uniform
+      REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: e_uniform
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: single_mo_coeff
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: orbital_density_matrix, rho_struct_ao
@@ -168,7 +171,7 @@ CONTAINS
       NULLIFY (rho_g, rho_r, tau, rho_struct, e_uniform)
       NULLIFY (vxc_LB, vxc_tmp, vxc_tau)
       NULLIFY (mo_eigenvalues, deriv, rho_struct_r, rho_struct_ao)
-      NULLIFY (orbital_density_matrix, dummy, xc_section_tmp, xc_fun_section_tmp)
+      NULLIFY (orbital_density_matrix, xc_section_tmp, xc_fun_section_tmp)
 
       CALL get_qs_env(qs_env, &
                       ks_env=ks_env, &
@@ -270,15 +273,13 @@ CONTAINS
                              compute_virial=.FALSE., virial_xc=virial_xc_tmp)
 
       DO ispin = 1, nspins
-         vxc_LB(ispin)%cr3d = vxc_LB(ispin)%cr3d + alpha*vxc_tmp(ispin)%cr3d
+         CALL pw_axpy(vxc_tmp(ispin), vxc_LB(ispin), alpha)
       END DO
 
       DO ispin = 1, nspins
-         dummy => vxc_tmp(ispin)%cr3d
-         CALL add_lb_pot(dummy, rho_set, lsd, ispin)
-         vxc_LB(ispin)%cr3d = vxc_LB(ispin)%cr3d - vxc_tmp(ispin)%cr3d
+         CALL add_lb_pot(vxc_tmp(ispin)%cr3d, rho_set, lsd, ispin)
+         CALL pw_axpy(vxc_tmp(ispin), vxc_LB(ispin), -1.0_dp)
       END DO
-      NULLIFY (dummy)
 
       !-----------------------------------------------------------------------------------!
       ! Construct 2 times PBE one particle density from the PZ correlation energy density !
@@ -301,10 +302,8 @@ CONTAINS
       END DO
 
       DO ispin = 1, nspins
-         dummy => vxc_GLLB(ispin)%cr3d
-         CALL calc_2excpbe(dummy, rho_set, e_uniform, lsd)
+         CALL calc_2excpbe(vxc_GLLB(ispin)%cr3d, rho_set, e_uniform, lsd)
       END DO
-      NULLIFY (dummy)
 
       CALL xc_dset_release(deriv_set)
 
@@ -352,8 +351,7 @@ CONTAINS
                                     rho=orbital, rho_gspace=orbital_g, &
                                     ks_env=ks_env)
 
-            vxc_tmp(ispin)%cr3d = vxc_tmp(ispin)%cr3d + &
-                                  efac*orbital%cr3d
+            CALL pw_axpy(orbital, vxc_tmp(ispin), efac)
 
          END DO
          DEALLOCATE (coeff_col)
@@ -371,7 +369,7 @@ CONTAINS
             END DO
          END DO
 
-         vxc_GLLB(ispin)%cr3d = vxc_GLLB(ispin)%cr3d + vxc_tmp(ispin)%cr3d
+         CALL pw_axpy(vxc_tmp(ispin), vxc_GLLB(ispin), 1.0_dp)
 
       END DO
 
@@ -444,10 +442,7 @@ CONTAINS
 
       END DO
 
-      DO ispin = 1, nspins
-         CALL cp_fm_release(single_mo_coeff(ispin))
-      END DO
-      DEALLOCATE (single_mo_coeff)
+      CALL cp_fm_release(single_mo_coeff)
 
       CALL xc_rho_set_release(rho_set, auxbas_pw_pool)
       CALL pw_pool_give_back_pw(auxbas_pw_pool, orbital)
@@ -459,11 +454,11 @@ CONTAINS
       DO ispin = 1, nspins
 
          IF (oe_corr == oe_lb) THEN
-            vxc_SAOP(ispin)%cr3d = vxc_LB(ispin)%cr3d
+            CALL pw_copy(vxc_LB(ispin), vxc_SAOP(ispin))
          ELSE IF (oe_corr == oe_gllb) THEN
-            vxc_SAOP(ispin)%cr3d = vxc_GLLB(ispin)%cr3d
+            CALL pw_copy(vxc_GLLB(ispin), vxc_SAOP(ispin))
          END IF
-         vxc_SAOP(ispin)%cr3d = vxc_SAOP(ispin)%cr3d*vxc_SAOP(ispin)%pw_grid%dvol
+         CALL pw_scale(vxc_SAOP(ispin), vxc_SAOP(ispin)%pw_grid%dvol)
 
          CALL integrate_v_rspace(v_rspace=vxc_SAOP(ispin), pmat=rho_struct_ao(ispin), &
                                  hmat=ks_matrix(ispin), qs_env=qs_env, &
@@ -505,8 +500,8 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       INTEGER, INTENT(IN)                                :: oe_corr
 
-      INTEGER                                            :: ia, iat, iatom, ikind, ir, ispin, mepos, &
-                                                            na, natom, nr, ns, nspins, num_pe, orb
+      INTEGER                                            :: ia, iat, iatom, ikind, ir, ispin, na, &
+                                                            natom, nr, ns, nspins, orb
       INTEGER, DIMENSION(2)                              :: bo, homo, ncol, nrow
       INTEGER, DIMENSION(2, 3)                           :: bounds
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
@@ -523,7 +518,6 @@ CONTAINS
       TYPE(cp_1d_r_p_type), DIMENSION(:), POINTER        :: mo_eigenvalues
       TYPE(cp_fm_p_type), ALLOCATABLE, DIMENSION(:)      :: mo_coeff
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: single_mo_coeff
-      TYPE(cp_para_env_type), POINTER                    :: para_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, orbital_density_matrix, &
                                                             rho_struct_ao
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ksmat, psmat
@@ -533,6 +527,7 @@ CONTAINS
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(local_rho_type), POINTER                      :: local_rho_set
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: molecular_orbitals
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab
       TYPE(oce_matrix_type), POINTER                     :: oce
@@ -676,9 +671,7 @@ CONTAINS
          ALLOCATE (drho_h(1:4, 1:na, 1:nr, 1:nspins), drho_s(1:4, 1:na, 1:nr, 1:nspins))
 
          ! Distribute the atoms of this kind
-         num_pe = para_env%num_pe
-         mepos = para_env%mepos
-         bo = get_limit(natom, num_pe, mepos)
+         bo = get_limit(natom, para_env%num_pe, para_env%mepos)
 
          DO iat = 1, natom !bo(1),bo(2)
             iatom = atom_list(iat)
@@ -1058,10 +1051,8 @@ CONTAINS
       CALL section_vals_release(xc_section_orig)
 
       CALL local_rho_set_release(local_rho_set)
-      DO ispin = 1, nspins
-         CALL cp_fm_release(single_mo_coeff(ispin))
-      END DO
-      DEALLOCATE (mo_coeff, single_mo_coeff, mo_eigenvalues)
+      CALL cp_fm_release(single_mo_coeff)
+      DEALLOCATE (mo_coeff, mo_eigenvalues)
       CALL dbcsr_deallocate_matrix_set(orbital_density_matrix)
 
    END SUBROUTINE gapw_add_atomic_saop_pot
