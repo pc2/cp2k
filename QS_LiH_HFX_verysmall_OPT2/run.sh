@@ -1,7 +1,8 @@
 ntasks=3
 export OMP_NUM_THREADS=1
 #source ../env.sh
-source  /home/rschade/tmp/eri/cp2k/tools/toolchain/install/setup
+#source  /home/rschade/git/cp2k_eri/env_john.sh
+source  /home/rschade/git/cp2k/tools/toolchain/install/setup
 #rm *.wfn
 
 nx=1
@@ -13,4 +14,8 @@ sed "s/_NREPX_/$nx/g" input_bulk_HFX_3.inp | sed "s/_NREPY_/$ny/g" | sed "s/_NRE
 
 #mpirun -n $ntasks ../exe/local/cp2k.psmp input_bulk_B88_${nx}_${ny}_${nz}.inp > input_bulk_B88_${nx}_${ny}_${nz}.out 2> input_bulk_B88_${nx}_${ny}_${nz}.err
 #cp LiH_bulk_3-RESTART.wfn B88.wfn
-mpirun -n $ntasks -output-filename  out ../exe/local/cp2k.psmp input_bulk_HFX_${nx}_${ny}_${nz}.inp > input_bulk_HFX_${nx}_${ny}_${nz}.out 2> input_bulk_HFX_${nx}_${ny}_${nz}.err
+
+#mpirun -n $ntasks -output-filename  out ../exe/local/cp2k.psmp input_bulk_HFX_${nx}_${ny}_${nz}.inp > input_bulk_HFX_${nx}_${ny}_${nz}.out 2> input_bulk_HFX_${nx}_${ny}_${nz}.err
+mpirun -n $ntasks -output-filename  out ../../cp2k/exe/local/cp2k.psmp input_bulk_HFX_${nx}_${ny}_${nz}.inp > input_bulk_HFX_${nx}_${ny}_${nz}.out_ref 2> input_bulk_HFX_${nx}_${ny}_${nz}.err_ref
+
+#mpirun -n $ntasks ../exe/local/cp2k.psmp H2O-32.inp 

@@ -142,11 +142,21 @@ MODULE hfx_types
    END TYPE
    TYPE hfx_chunk_type
       INTEGER                                  :: nquartets
-      integer(int_8),pointer,dimension(:)      :: atom_block
-      integer,pointer,dimension(:)             :: index_ij,index_kl
-      integer,dimension(:),pointer             :: meta
+      integer(int_8),dimension(:),pointer      :: meta
       logical                                  :: sent                              
+      
+      !integer(int_8),pointer,dimension(:)      :: atom_block
+      !integer,pointer,dimension(:)             :: index_ij,index_kl
    END TYPE
+   INTEGER,parameter,PUBLIC                    :: meta_size=8
+   INTEGER,parameter,PUBLIC                    :: index_count=1
+   INTEGER,parameter,PUBLIC                    :: index_la=2 
+   INTEGER,parameter,PUBLIC                    :: index_lb=3
+   INTEGER,parameter,PUBLIC                    :: index_lc=4 
+   INTEGER,parameter,PUBLIC                    :: index_ld=5 
+   INTEGER,parameter,PUBLIC                    :: index_first_atom_block=6
+   INTEGER,parameter,PUBLIC                    :: index_ij_in_first_atom_block=7
+   INTEGER,parameter,PUBLIC                    :: index_kl_in_first_atom_block=8
    TYPE hfx_queue_type
       logical                                  :: chunks_left
       INTEGER                                  :: nmax
@@ -155,7 +165,7 @@ MODULE hfx_types
    END TYPE
    TYPE hfx_chunk_request_type
      integer :: src
-      integer,dimension(:),pointer :: data
+     integer,dimension(:),pointer :: data
    END TYPE
 
 ! **************************************************************************************************

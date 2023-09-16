@@ -65,7 +65,9 @@ MODULE hfx_energy_potential
       hfx_general_type, hfx_init_container, hfx_load_balance_type, hfx_memory_type, hfx_p_kind, &
       hfx_pgf_list, hfx_pgf_product_list, hfx_potential_type, hfx_reset_memory_usage_counter, &
       hfx_screen_coeff_type, hfx_screening_type, hfx_task_list_type, hfx_type, init_t_c_g0_lmax, &
-      log_zero, pair_list_type, pair_set_list_type, hfx_chunk_type, hfx_queue_type, hfx_chunk_request_type
+      log_zero, pair_list_type, pair_set_list_type, hfx_chunk_type, hfx_queue_type, hfx_chunk_request_type,&
+      index_la,index_lb,index_lc,index_ld,index_first_atom_block,meta_size,index_count,&
+      index_ij_in_first_atom_block,index_kl_in_first_atom_block
    USE input_constants, ONLY: do_potential_mix_cl_trunc, &
                               do_potential_truncated, &
                               hfx_do_eval_energy
@@ -80,14 +82,14 @@ MODULE hfx_energy_potential
                       m_memory, &
                       m_walltime
    USE mathconstants, ONLY: fac
-   USE message_passing, ONLY: mp_max, &
-                              mp_sum, &
-                              mp_sync, &
-                              mp_send,&
-                              mp_isend,&
-                              mp_recv,&
-                              mp_test,&
-                              mp_irecv
+   USE message_passing, ONLY: mp_request_type 
+!                              mp_sum, &
+!                              mp_sync, &
+!                              mp_send,&
+!                              mp_isend,&
+!                              mp_recv,&
+!                              mp_test,&
+!                              mp_irecv
    USE orbital_pointers, ONLY: nco, &
                                ncoset, &
                                nso
@@ -266,12 +268,12 @@ CONTAINS
       LOGICAL                                            :: tquartet_generated,completed
       type(hfx_queue_type),DIMENSION(:,:,:,:),allocatable     :: chunk_queue
       type(hfx_chunk_type)                               :: chunk
-      integer,DIMENSION(:),allocatable                   :: mpi_req
-      integer,DIMENSION(:),allocatable                   :: mpi_req1
-      integer,DIMENSION(:),allocatable                   :: mpi_req2
-      integer,DIMENSION(:),allocatable                   :: mpi_req3
-      integer,DIMENSION(:),allocatable                   :: mpi_req4
-      integer,DIMENSION(:),allocatable                   :: tmpmeta,endmsg
+      type(mp_request_type),DIMENSION(:),allocatable                   :: mpi_req
+      type(mp_request_type),DIMENSION(:),allocatable                   :: mpi_req1
+      type(mp_request_type),DIMENSION(:),allocatable                   :: mpi_req2
+      type(mp_request_type),DIMENSION(:),allocatable                   :: mpi_req3
+      type(mp_request_type),DIMENSION(:),allocatable                   :: mpi_req4
+      integer(int_8),DIMENSION(:),allocatable                   :: tmpmeta,endmsg
       type(hfx_chunk_request_type),DIMENSION(:),pointer      :: chunk_req
 
       
@@ -1164,11 +1166,12 @@ CONTAINS
          END IF
 
 !$OMP MASTER
-         CALL timeset(routineN//"_bin", handle_bin)
+        CALL timeset(routineN//"_bin", handle_bin)
 !$OMP END MASTER
         bintime_start = m_walltime()
 
         if(para_env%mepos.eq.0)then
+          !on master rank
           allocate(l_atom_block(0:maxl_loop,0:maxl_loop,0:maxl_loop,0:maxl_loop))
           l_atom_block(:,:,:,:)=0
           allocate(l_set_list_ij(0:maxl_loop,0:maxl_loop,0:maxl_loop,0:maxl_loop))
@@ -1202,18 +1205,19 @@ CONTAINS
             endif
 
           chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets=0
-          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%atom_block(qperchunk))
-          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(qperchunk))
-          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(qperchunk))
+          !allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%atom_block(qperchunk))
+          !allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(qperchunk))
+          !allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(qperchunk))
           chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nused=ichunk
-          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(5))
-          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(1)=outerl_a
-          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(2)=outerl_b
-          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(3)=outerl_c
-          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(4)=outerl_d
-          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(5)=0
-
+          allocate(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(meta_size))
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_count)=0
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_la)=outerl_a
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_lb)=outerl_b
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_lc)=outerl_c
+          chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_ld)=outerl_d
+          
           !generate work chunk
+          !FIXME reorder loops
           do iquartet=1,qperchunk
             tquartet_generated=.false.
             my_istart=l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)
@@ -1273,320 +1277,317 @@ CONTAINS
                                    coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
                                    shm_atomic_pair_list)
 
+              !FIXME
               CPASSERT(list_ij%n_element.eq.1)
               !DO i_list_ij = 1, list_ij%n_element
               i_list_ij = 1
                 
-                iatom = list_ij%elements(i_list_ij)%pair(1)
-                jatom = list_ij%elements(i_list_ij)%pair(2)
-                i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
-                i_set_list_ij_stop = list_ij%elements(i_list_ij)%set_bounds(2)
-                ikind = list_ij%elements(i_list_ij)%kind_pair(1)
-                jkind = list_ij%elements(i_list_ij)%kind_pair(2)
-                ra = list_ij%elements(i_list_ij)%r1
-                rb = list_ij%elements(i_list_ij)%r2
-                rab2 = list_ij%elements(i_list_ij)%dist2
-                
-                la_max => basis_parameter(ikind)%lmax
-                la_min => basis_parameter(ikind)%lmin
-                npgfa => basis_parameter(ikind)%npgf
-                nseta = basis_parameter(ikind)%nset
-                zeta => basis_parameter(ikind)%zet
-                nsgfa => basis_parameter(ikind)%nsgf
-                sphi_a_ext => basis_parameter(ikind)%sphi_ext(:, :, :, :)
-                nsgfl_a => basis_parameter(ikind)%nsgfl
-                sphi_a_u1 = UBOUND(sphi_a_ext, 1)
-                sphi_a_u2 = UBOUND(sphi_a_ext, 2)
-                sphi_a_u3 = UBOUND(sphi_a_ext, 3)
+              iatom = list_ij%elements(i_list_ij)%pair(1)
+              jatom = list_ij%elements(i_list_ij)%pair(2)
+              i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
+              i_set_list_ij_stop = list_ij%elements(i_list_ij)%set_bounds(2)
+              ikind = list_ij%elements(i_list_ij)%kind_pair(1)
+              jkind = list_ij%elements(i_list_ij)%kind_pair(2)
+              ra = list_ij%elements(i_list_ij)%r1
+              rb = list_ij%elements(i_list_ij)%r2
+              rab2 = list_ij%elements(i_list_ij)%dist2
+              
+              la_max => basis_parameter(ikind)%lmax
+              la_min => basis_parameter(ikind)%lmin
+              npgfa => basis_parameter(ikind)%npgf
+              nseta = basis_parameter(ikind)%nset
+              zeta => basis_parameter(ikind)%zet
+              nsgfa => basis_parameter(ikind)%nsgf
+              sphi_a_ext => basis_parameter(ikind)%sphi_ext(:, :, :, :)
+              nsgfl_a => basis_parameter(ikind)%nsgfl
+              sphi_a_u1 = UBOUND(sphi_a_ext, 1)
+              sphi_a_u2 = UBOUND(sphi_a_ext, 2)
+              sphi_a_u3 = UBOUND(sphi_a_ext, 3)
 
-                lb_max => basis_parameter(jkind)%lmax
-                lb_min => basis_parameter(jkind)%lmin
-                npgfb => basis_parameter(jkind)%npgf
-                nsetb = basis_parameter(jkind)%nset
-                zetb => basis_parameter(jkind)%zet
-                nsgfb => basis_parameter(jkind)%nsgf
-                sphi_b_ext => basis_parameter(jkind)%sphi_ext(:, :, :, :)
-                nsgfl_b => basis_parameter(jkind)%nsgfl
-                sphi_b_u1 = UBOUND(sphi_b_ext, 1)
-                sphi_b_u2 = UBOUND(sphi_b_ext, 2)
-                sphi_b_u3 = UBOUND(sphi_b_ext, 3)
-                
-                CPASSERT(list_kl%n_element.eq.1)
-                !DO i_list_kl = 1, list_kl%n_element
-                i_list_kl = 1
-                  katom = list_kl%elements(i_list_kl)%pair(1)
-                  latom = list_kl%elements(i_list_kl)%pair(2)
+              lb_max => basis_parameter(jkind)%lmax
+              lb_min => basis_parameter(jkind)%lmin
+              npgfb => basis_parameter(jkind)%npgf
+              nsetb = basis_parameter(jkind)%nset
+              zetb => basis_parameter(jkind)%zet
+              nsgfb => basis_parameter(jkind)%nsgf
+              sphi_b_ext => basis_parameter(jkind)%sphi_ext(:, :, :, :)
+              nsgfl_b => basis_parameter(jkind)%nsgfl
+              sphi_b_u1 = UBOUND(sphi_b_ext, 1)
+              sphi_b_u2 = UBOUND(sphi_b_ext, 2)
+              sphi_b_u3 = UBOUND(sphi_b_ext, 3)
+             
+              !FIXME
+              CPASSERT(list_kl%n_element.eq.1)
+              !DO i_list_kl = 1, list_kl%n_element
+              i_list_kl = 1
+              katom = list_kl%elements(i_list_kl)%pair(1)
+              latom = list_kl%elements(i_list_kl)%pair(2)
 
-                  IF (.NOT. (katom + latom <= iatom + jatom)) then
-                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    CYCLE
-                  endif
-                  IF (((iatom + jatom) .EQ. (katom + latom)) .AND. (katom < iatom))then
-                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    CYCLE
-                  endif
-                  i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
-                  i_set_list_kl_stop = list_kl%elements(i_list_kl)%set_bounds(2)
-                  kkind = list_kl%elements(i_list_kl)%kind_pair(1)
-                  lkind = list_kl%elements(i_list_kl)%kind_pair(2)
-                  rc = list_kl%elements(i_list_kl)%r1
-                  rd = list_kl%elements(i_list_kl)%r2
-                  rcd2 = list_kl%elements(i_list_kl)%dist2
+              IF (.NOT. (katom + latom <= iatom + jatom)) then
+                l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                CYCLE
+              endif
+              IF (((iatom + jatom) .EQ. (katom + latom)) .AND. (katom < iatom))then
+                l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                CYCLE
+              endif
+              i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
+              i_set_list_kl_stop = list_kl%elements(i_list_kl)%set_bounds(2)
+              kkind = list_kl%elements(i_list_kl)%kind_pair(1)
+              lkind = list_kl%elements(i_list_kl)%kind_pair(2)
+              rc = list_kl%elements(i_list_kl)%r1
+              rd = list_kl%elements(i_list_kl)%r2
+              rcd2 = list_kl%elements(i_list_kl)%dist2
 
-                  IF (do_p_screening) THEN
-                     pmax_atom = MAX(shm_pmax_atom(katom, iatom), &
-                                     shm_pmax_atom(latom, jatom), &
-                                     shm_pmax_atom(latom, iatom), &
-                                     shm_pmax_atom(katom, jatom))
-                  ELSE
-                     pmax_atom = 0.0_dp
-                  END IF
+              IF (do_p_screening) THEN
+                 pmax_atom = MAX(shm_pmax_atom(katom, iatom), &
+                                 shm_pmax_atom(latom, jatom), &
+                                 shm_pmax_atom(latom, iatom), &
+                                 shm_pmax_atom(katom, jatom))
+              ELSE
+                 pmax_atom = 0.0_dp
+              END IF
 
-                  screen_kind_ij = screen_coeffs_kind(jkind, ikind)%x(1)*rab2 + &
-                                   screen_coeffs_kind(jkind, ikind)%x(2)
-                  screen_kind_kl = screen_coeffs_kind(lkind, kkind)%x(1)*rcd2 + &
-                                   screen_coeffs_kind(lkind, kkind)%x(2)
+              screen_kind_ij = screen_coeffs_kind(jkind, ikind)%x(1)*rab2 + &
+                               screen_coeffs_kind(jkind, ikind)%x(2)
+              screen_kind_kl = screen_coeffs_kind(lkind, kkind)%x(1)*rcd2 + &
+                               screen_coeffs_kind(lkind, kkind)%x(2)
 
-                  IF (screen_kind_ij + screen_kind_kl + pmax_atom < log10_eps_schwarz) then
-                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    CYCLE
-                  endif
+              IF (screen_kind_ij + screen_kind_kl + pmax_atom < log10_eps_schwarz) then
+                l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                CYCLE
+              endif
 
-                  !! we want to be consistent with the KS matrix. If none of the atomic indices
-                  !! is associated cycle
-                  IF (.NOT. (shm_is_assoc_atomic_block(latom, iatom) >= 1 .AND. &
-                             shm_is_assoc_atomic_block(katom, iatom) >= 1 .AND. &
-                             shm_is_assoc_atomic_block(katom, jatom) >= 1 .AND. &
-                             shm_is_assoc_atomic_block(latom, jatom) >= 1)) then
-                    l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    cycle
-                  endif
+              !! we want to be consistent with the KS matrix. If none of the atomic indices
+              !! is associated cycle
+              IF (.NOT. (shm_is_assoc_atomic_block(latom, iatom) >= 1 .AND. &
+                         shm_is_assoc_atomic_block(katom, iatom) >= 1 .AND. &
+                         shm_is_assoc_atomic_block(katom, jatom) >= 1 .AND. &
+                         shm_is_assoc_atomic_block(latom, jatom) >= 1)) then
+                l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                cycle
+              endif
 
-                  !! calculate symmetry_factor according to degeneracy of atomic quartet
-                  symm_fac = 0.5_dp
-                  IF (iatom == jatom) symm_fac = symm_fac*2.0_dp
-                  IF (katom == latom) symm_fac = symm_fac*2.0_dp
-                  IF (iatom == katom .AND. jatom == latom .AND. iatom /= jatom .AND. katom /= latom) symm_fac = symm_fac*2.0_dp
-                  IF (iatom == katom .AND. iatom == jatom .AND. katom == latom) symm_fac = symm_fac*2.0_dp
-                  symm_fac = 1.0_dp/symm_fac
+              !! calculate symmetry_factor according to degeneracy of atomic quartet
+              symm_fac = 0.5_dp
+              IF (iatom == jatom) symm_fac = symm_fac*2.0_dp
+              IF (katom == latom) symm_fac = symm_fac*2.0_dp
+              IF (iatom == katom .AND. jatom == latom .AND. iatom /= jatom .AND. katom /= latom) symm_fac = symm_fac*2.0_dp
+              IF (iatom == katom .AND. iatom == jatom .AND. katom == latom) symm_fac = symm_fac*2.0_dp
+              symm_fac = 1.0_dp/symm_fac
 
-                  lc_max => basis_parameter(kkind)%lmax
-                  lc_min => basis_parameter(kkind)%lmin
-                  npgfc => basis_parameter(kkind)%npgf
-                  zetc => basis_parameter(kkind)%zet
-                  nsgfc => basis_parameter(kkind)%nsgf
-                  sphi_c_ext => basis_parameter(kkind)%sphi_ext(:, :, :, :)
-                  nsgfl_c => basis_parameter(kkind)%nsgfl
-                  sphi_c_u1 = UBOUND(sphi_c_ext, 1)
-                  sphi_c_u2 = UBOUND(sphi_c_ext, 2)
-                  sphi_c_u3 = UBOUND(sphi_c_ext, 3)
+              lc_max => basis_parameter(kkind)%lmax
+              lc_min => basis_parameter(kkind)%lmin
+              npgfc => basis_parameter(kkind)%npgf
+              zetc => basis_parameter(kkind)%zet
+              nsgfc => basis_parameter(kkind)%nsgf
+              sphi_c_ext => basis_parameter(kkind)%sphi_ext(:, :, :, :)
+              nsgfl_c => basis_parameter(kkind)%nsgfl
+              sphi_c_u1 = UBOUND(sphi_c_ext, 1)
+              sphi_c_u2 = UBOUND(sphi_c_ext, 2)
+              sphi_c_u3 = UBOUND(sphi_c_ext, 3)
 
-                  ld_max => basis_parameter(lkind)%lmax
-                  ld_min => basis_parameter(lkind)%lmin
-                  npgfd => basis_parameter(lkind)%npgf
-                  zetd => basis_parameter(lkind)%zet
-                  nsgfd => basis_parameter(lkind)%nsgf
-                  sphi_d_ext => basis_parameter(lkind)%sphi_ext(:, :, :, :)
-                  nsgfl_d => basis_parameter(lkind)%nsgfl
-                  sphi_d_u1 = UBOUND(sphi_d_ext, 1)
-                  sphi_d_u2 = UBOUND(sphi_d_ext, 2)
-                  sphi_d_u3 = UBOUND(sphi_d_ext, 3)
+              ld_max => basis_parameter(lkind)%lmax
+              ld_min => basis_parameter(lkind)%lmin
+              npgfd => basis_parameter(lkind)%npgf
+              zetd => basis_parameter(lkind)%zet
+              nsgfd => basis_parameter(lkind)%nsgf
+              sphi_d_ext => basis_parameter(lkind)%sphi_ext(:, :, :, :)
+              nsgfl_d => basis_parameter(lkind)%nsgfl
+              sphi_d_u1 = UBOUND(sphi_d_ext, 1)
+              sphi_d_u2 = UBOUND(sphi_d_ext, 2)
+              sphi_d_u3 = UBOUND(sphi_d_ext, 3)
 
-                  atomic_offset_bd = shm_atomic_block_offset(jatom, latom)
-                  atomic_offset_bc = shm_atomic_block_offset(jatom, katom)
-                  atomic_offset_ad = shm_atomic_block_offset(iatom, latom)
-                  atomic_offset_ac = shm_atomic_block_offset(iatom, katom)
+              atomic_offset_bd = shm_atomic_block_offset(jatom, latom)
+              atomic_offset_bc = shm_atomic_block_offset(jatom, katom)
+              atomic_offset_ad = shm_atomic_block_offset(iatom, latom)
+              atomic_offset_ac = shm_atomic_block_offset(iatom, katom)
 
-                  IF (jatom < latom) THEN
-                     offset_bd_set => shm_set_offset(:, :, lkind, jkind)
-                  ELSE
-                     offset_bd_set => shm_set_offset(:, :, jkind, lkind)
-                  END IF
-                  IF (jatom < katom) THEN
-                     offset_bc_set => shm_set_offset(:, :, kkind, jkind)
-                  ELSE
-                     offset_bc_set => shm_set_offset(:, :, jkind, kkind)
-                  END IF
-                  IF (iatom < latom) THEN
-                     offset_ad_set => shm_set_offset(:, :, lkind, ikind)
-                  ELSE
-                     offset_ad_set => shm_set_offset(:, :, ikind, lkind)
-                  END IF
-                  IF (iatom < katom) THEN
-                     offset_ac_set => shm_set_offset(:, :, kkind, ikind)
-                  ELSE
-                     offset_ac_set => shm_set_offset(:, :, ikind, kkind)
-                  END IF
+              IF (jatom < latom) THEN
+                 offset_bd_set => shm_set_offset(:, :, lkind, jkind)
+              ELSE
+                 offset_bd_set => shm_set_offset(:, :, jkind, lkind)
+              END IF
+              IF (jatom < katom) THEN
+                 offset_bc_set => shm_set_offset(:, :, kkind, jkind)
+              ELSE
+                 offset_bc_set => shm_set_offset(:, :, jkind, kkind)
+              END IF
+              IF (iatom < latom) THEN
+                 offset_ad_set => shm_set_offset(:, :, lkind, ikind)
+              ELSE
+                 offset_ad_set => shm_set_offset(:, :, ikind, lkind)
+              END IF
+              IF (iatom < katom) THEN
+                 offset_ac_set => shm_set_offset(:, :, kkind, ikind)
+              ELSE
+                 offset_ac_set => shm_set_offset(:, :, ikind, kkind)
+              END IF
 
-                  IF (do_p_screening) THEN
-                     swap_id = 0
-                     kind_kind_idx = INT(get_1D_idx(kkind, ikind, INT(nkind, int_8)))
-                     IF (ikind >= kkind) THEN
-                        ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(katom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(iatom))
-                     ELSE
-                        ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(iatom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(katom))
-                        swap_id = swap_id + 1
-                     END IF
-                     kind_kind_idx = INT(get_1D_idx(lkind, jkind, INT(nkind, int_8)))
-                     IF (jkind >= lkind) THEN
-                        ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(latom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(jatom))
-                     ELSE
-                        ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(jatom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(latom))
-                        swap_id = swap_id + 2
-                     END IF
-                     kind_kind_idx = INT(get_1D_idx(lkind, ikind, INT(nkind, int_8)))
-                     IF (ikind >= lkind) THEN
-                        ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(latom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(iatom))
-                     ELSE
-                        ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(iatom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(latom))
-                        swap_id = swap_id + 4
-                     END IF
-                     kind_kind_idx = INT(get_1D_idx(kkind, jkind, INT(nkind, int_8)))
-                     IF (jkind >= kkind) THEN
-                        ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(katom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(jatom))
-                     ELSE
-                        ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
-                                                                       actual_x_data%map_atom_to_kind_atom(jatom), &
-                                                                       actual_x_data%map_atom_to_kind_atom(katom))
-                        swap_id = swap_id + 8
-                     END IF
-                  END IF
+              IF (do_p_screening) THEN
+                 swap_id = 0
+                 kind_kind_idx = INT(get_1D_idx(kkind, ikind, INT(nkind, int_8)))
+                 IF (ikind >= kkind) THEN
+                    ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(katom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(iatom))
+                 ELSE
+                    ptr_p_1 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(iatom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(katom))
+                    swap_id = swap_id + 1
+                 END IF
+                 kind_kind_idx = INT(get_1D_idx(lkind, jkind, INT(nkind, int_8)))
+                 IF (jkind >= lkind) THEN
+                    ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(latom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(jatom))
+                 ELSE
+                    ptr_p_2 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(jatom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(latom))
+                    swap_id = swap_id + 2
+                 END IF
+                 kind_kind_idx = INT(get_1D_idx(lkind, ikind, INT(nkind, int_8)))
+                 IF (ikind >= lkind) THEN
+                    ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(latom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(iatom))
+                 ELSE
+                    ptr_p_3 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(iatom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(latom))
+                    swap_id = swap_id + 4
+                 END IF
+                 kind_kind_idx = INT(get_1D_idx(kkind, jkind, INT(nkind, int_8)))
+                 IF (jkind >= kkind) THEN
+                    ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(katom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(jatom))
+                 ELSE
+                    ptr_p_4 => shm_initial_p(kind_kind_idx)%p_kind(:, :, &
+                                                                   actual_x_data%map_atom_to_kind_atom(jatom), &
+                                                                   actual_x_data%map_atom_to_kind_atom(katom))
+                    swap_id = swap_id + 8
+                 END IF
+              END IF
                    
 
-  !                if(l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d).gt.list_ij%elements(i_list_ij)%set_bounds(2))then
-  !                  !no more elements, advance atom-block
-  !                  !l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)=l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)+1
-  !                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-  !                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-  !                  !print*,"atom_block cycle8",atom_block
-  !                  !cycle
-  !                endif
+!                if(l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d).gt.list_ij%elements(i_list_ij)%set_bounds(2))then
+!                  !no more elements, advance atom-block
+!                  !l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)=l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)+1
+!                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+!                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+!                  !print*,"atom_block cycle8",atom_block
+!                  !cycle
+!                endif
 
-                  if(l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d).eq.-1)then
-                    !starting new list_ij, thus restart start
-                    i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
-                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                  else
-                    i_set_list_ij_start = l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)
-                  endif
+              if(l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d).eq.-1)then
+                !starting new list_ij, thus restart start
+                i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+              else
+                i_set_list_ij_start = l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)
+              endif
 
-                  DO i_set_list_ij = i_set_list_ij_start, i_set_list_ij_stop
-                    iset = set_list_ij(i_set_list_ij)%pair(1)
-                    jset = set_list_ij(i_set_list_ij)%pair(2)
-     if(outerl_a.ne.la_min(iset).or.outerl_a.ne.la_max(iset).or.outerl_b.ne.lb_min(jset).or.outerl_b.ne.lb_max(jset))then
-                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                      cycle
-                    endif
-
-                    ncob = npgfb(jset)*ncoset(lb_max(jset))
-                    max_val1 = screen_coeffs_set(jset, iset, jkind, ikind)%x(1)*rab2 + &
-                                screen_coeffs_set(jset, iset, jkind, ikind)%x(2)
-
-                    IF (max_val1 + screen_kind_kl + pmax_atom < log10_eps_schwarz) then
-                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                      CYCLE
-                    endif
-
-                    sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
-                    sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
-                  
-                    if(l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d).gt.list_kl%elements(i_list_kl)%set_bounds(2))then
-                      !no more elements, advance list_ij
-                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                      cycle
-                    endif
-
-                    if(l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d).eq.-1)then
-                      !starting new list_kl, thus restart start
-                      i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
-                    else
-                      i_set_list_kl_start = l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)
-                    endif
-                    
-                    DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
-                      kset = set_list_kl(i_set_list_kl)%pair(1)
-                      lset = set_list_kl(i_set_list_kl)%pair(2)
-                      if(outerl_c.ne.lc_min(kset)) cycle
-                      if(outerl_c.ne.lc_max(kset)) cycle
-                      if(outerl_d.ne.ld_min(lset)) cycle
-                      if(outerl_d.ne.ld_max(lset)) cycle
-
-                      max_val2_set = (screen_coeffs_set(lset, kset, lkind, kkind)%x(1)*rcd2 + &
-                                      screen_coeffs_set(lset, kset, lkind, kkind)%x(2))
-                      max_val2 = max_val1 + max_val2_set
-
-                      !! Near field screening
-                      IF (max_val2 + pmax_atom < log10_eps_schwarz) CYCLE
-                      sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
-                      sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
-                      !! get max_vals if we screen on initial density
-                      IF (do_p_screening) THEN
-                         CALL get_pmax_val(ptr_p_1, ptr_p_2, ptr_p_3, ptr_p_4, &
-                                           iset, jset, kset, lset, &
-                                           pmax_entry, swap_id)
-                      ELSE
-                         pmax_entry = 0.0_dp
-                      END IF
-                      log10_pmax = pmax_entry
-                      max_val2 = max_val2 + log10_pmax
-                      IF (max_val2 < log10_eps_schwarz) CYCLE
-                      pmax_entry = EXP(log10_pmax*ln_10)
-                      tquartet_generated=.True.
-                      l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_kl+1
-                      l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_ij
-                      l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)=atom_block
-                      !put in chunk
-                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets=iquartet
-                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%atom_block(iquartet)=&
-                          atom_block
-                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(iquartet)=&
-                          i_set_list_ij
-                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(iquartet)=&
-                          i_set_list_kl
-                      chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%sent=.false.
-                      exit
-                    enddo
-                    if(tquartet_generated)exit
-                    l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                    !l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_kl+1
-                  enddo
-                  if(tquartet_generated)exit
+              DO i_set_list_ij = i_set_list_ij_start, i_set_list_ij_stop
+                iset = set_list_ij(i_set_list_ij)%pair(1)
+                jset = set_list_ij(i_set_list_ij)%pair(2)
+                if(outerl_a.ne.la_min(iset).or.outerl_a.ne.la_max(iset).or.outerl_b.ne.lb_min(jset).or.&
+                  &outerl_b.ne.lb_max(jset))then
                   l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-                  !l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_ij+1
-                  !l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
-  !              enddo
-  !              if(tquartet_generated)exit
-  !            enddo
-  !            if(tquartet_generated)exit
+                  cycle
+                endif
+
+                ncob = npgfb(jset)*ncoset(lb_max(jset))
+                max_val1 = screen_coeffs_set(jset, iset, jkind, ikind)%x(1)*rab2 + &
+                            screen_coeffs_set(jset, iset, jkind, ikind)%x(2)
+
+                IF (max_val1 + screen_kind_kl + pmax_atom < log10_eps_schwarz) then
+                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                  CYCLE
+                endif
+
+                sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
+                sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
+              
+                if(l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d).gt.list_kl%elements(i_list_kl)%set_bounds(2))then
+                  !no more elements, advance list_ij
+                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+                  cycle
+                endif
+
+                if(l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d).eq.-1)then
+                  !starting new list_kl, thus restart start
+                  i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
+                else
+                  i_set_list_kl_start = l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)
+                endif
+                  
+                DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
+                  kset = set_list_kl(i_set_list_kl)%pair(1)
+                  lset = set_list_kl(i_set_list_kl)%pair(2)
+                  if(outerl_c.ne.lc_min(kset)) cycle
+                  if(outerl_c.ne.lc_max(kset)) cycle
+                  if(outerl_d.ne.ld_min(lset)) cycle
+                  if(outerl_d.ne.ld_max(lset)) cycle
+
+                  max_val2_set = (screen_coeffs_set(lset, kset, lkind, kkind)%x(1)*rcd2 + &
+                                  screen_coeffs_set(lset, kset, lkind, kkind)%x(2))
+                  max_val2 = max_val1 + max_val2_set
+
+                  !! Near field screening
+                  IF (max_val2 + pmax_atom < log10_eps_schwarz) CYCLE
+                  sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
+                  sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
+                  !! get max_vals if we screen on initial density
+                  IF (do_p_screening) THEN
+                     CALL get_pmax_val(ptr_p_1, ptr_p_2, ptr_p_3, ptr_p_4, &
+                                       iset, jset, kset, lset, &
+                                       pmax_entry, swap_id)
+                  ELSE
+                     pmax_entry = 0.0_dp
+                  END IF
+                  log10_pmax = pmax_entry
+                  max_val2 = max_val2 + log10_pmax
+                  IF (max_val2 < log10_eps_schwarz) CYCLE
+                  pmax_entry = EXP(log10_pmax*ln_10)
+                  tquartet_generated=.True.
+                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_kl+1
+                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=i_set_list_ij
+                  l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d)=atom_block
+                  !put in chunk
+                  chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets=iquartet
+                  chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_count)=iquartet
+                  chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%sent=.false.
+                  if(iquartet.eq.1)then
+                    chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_first_atom_block)=atom_block
+                    chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_ij_in_first_atom_block)=i_set_list_ij
+                    chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%meta(index_kl_in_first_atom_block)=i_set_list_kl
+                  endif
+                  !chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%atom_block(iquartet)=&
+                  !    atom_block
+                  !chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(iquartet)=&
+                  !    i_set_list_ij
+                  !chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(iquartet)=&
+                  !    i_set_list_kl
+                  exit
+                enddo
+                if(tquartet_generated)exit
+                l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+              enddo
+              if(tquartet_generated)exit
+              l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)=-1
+              l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d)=-1
             enddo ! atom_block
             if(.not.tquartet_generated)then
               chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks_left=.false.
               exit
             endif
-  !          print*,"quartet",outerl_a,outerl_b,outerl_c,outerl_d,&
-  !                  l_atom_block(outerl_a,outerl_b,outerl_c,outerl_d),&
-  !                  l_set_list_ij(outerl_a,outerl_b,outerl_c,outerl_d),&
-  !                  l_set_list_kl(outerl_a,outerl_b,outerl_c,outerl_d)
-
           enddo !quartets_per_chunk
           enddo !ichunk
           enddo !ld
@@ -1595,7 +1596,6 @@ CONTAINS
           enddo !la
 
           !chunk statistics
-          
           do outerl_a=0,maxl_loop
           do outerl_b=0,maxl_loop      
           do outerl_c=0,maxl_loop           
@@ -1603,7 +1603,7 @@ CONTAINS
           iquartet=0
           do ichunk=1,chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%nused
             iquartet=iquartet+chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets
-            print*,"chunk",outerl_a,outerl_b,outerl_c,outerl_d,ichunk,&
+            print*,"chunk",outerl_a,outerl_b,outerl_c,outerl_d,&
               chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets
   !          if(chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%nquartets.ge.1)then
   !            print*,"first element",&
@@ -1612,7 +1612,7 @@ CONTAINS
   !                    chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(1)
   !          endif
           enddo
-            print*,"chunk sum",outerl_a,outerl_b,outerl_c,outerl_d,ichunk,iquartet
+!            print*,"chunk sum",outerl_a,outerl_b,outerl_c,outerl_d,ichunk,iquartet
           enddo
           enddo
           enddo
@@ -1627,18 +1627,18 @@ CONTAINS
           allocate(endmsg(nrank))
           endmsg(:)=0
           allocate(chunk_req(nrank))
-          allocate(tmpmeta(5))
+          allocate(tmpmeta(meta_size))
 
           do irank=1,nrank-1
             allocate(chunk_req(irank)%data(4))
             chunk_req(irank)%src=irank
-            CALL mp_irecv(msgout=chunk_req(irank)%data,source=chunk_req(irank)%src,comm=para_env%group,request=mpi_req(irank),tag=0)
+            CALL para_env%irecv(msgout=chunk_req(irank)%data,source=chunk_req(irank)%src,request=mpi_req(irank),tag=0)
           enddo
           do while (.true.)
             if(sum(endmsg).eq.nrank-1)exit
             do irank=1,nrank-1
-              call mp_test(mpi_req(irank),completed)
-              if(completed)then
+              completed=mpi_req(irank)%test()
+              if(completed.and..not.endmsg(irank).eq.1)then
                 print*,"got request from",irank,chunk_req(irank)%src,chunk_req(irank)%data
                 !reply to chunk request
                 if(chunk_req(irank)%data(1).eq.-1.and.chunk_req(irank)%data(2).eq.-1.and.chunk_req(irank)%data(3).eq.-1.and. &
@@ -1665,45 +1665,35 @@ CONTAINS
                   if(.not.completed)exit
                   enddo
                 else
-                  print*,"client preference not implmented"
+                  print*,"client preference not implemented yet"
                   stop
                 endif
     
                 if(.not.completed)then
                   print*,"sending chunk",la,lb,lc,ld,ichunk,chunk_queue(la,lb,lc,ld)%chunks(ichunk)%nquartets,"to",irank
+
                   chunk_queue(la,lb,lc,ld)%chunks(ichunk)%sent=.true.
-                  chunk_queue(la,lb,lc,ld)%chunks(ichunk)%meta(5)=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%nquartets
-                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%meta,&
-                    dest=irank,comm=para_env%group,request=mpi_req1(irank),tag=1)
-                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%atom_block,&
-                    dest=irank,comm=para_env%group,request=mpi_req2(irank),tag=2)
-                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%index_ij,&
-                    dest=irank,comm=para_env%group,request=mpi_req3(irank),tag=3)
-                  CALL mp_isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%index_kl,&
-                    dest=irank,comm=para_env%group,request=mpi_req4(irank),tag=4)
+                  chunk_queue(la,lb,lc,ld)%chunks(ichunk)%meta(index_count)=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%nquartets
+                  CALL para_env%isend(msgin=chunk_queue(la,lb,lc,ld)%chunks(ichunk)%meta,dest=irank,request=mpi_req1(irank),tag=1)
+                  !listening for next chunk request
+                  CALL para_env%irecv(msgout=chunk_req(irank)%data,source=irank,request=mpi_req(irank),tag=0)
                 else
                   !send message that we are out of work
-                  print*,"sending endmsg to",irank
-                  tmpmeta(1)=-1
-                  CALL mp_isend(msgin=tmpmeta,dest=irank,comm=para_env%group,request=mpi_req1(irank),tag=1)
+                  tmpmeta(:)=0
+                  tmpmeta(index_count)=-1
+                  print*,"sending endmsg to",irank,tmpmeta
+                  CALL para_env%isend(msgin=tmpmeta,dest=irank,request=mpi_req1(irank),tag=1)
                   endmsg(irank)=1
                 endif
-
-                CALL mp_irecv(msgout=chunk_req(irank)%data,source=irank,comm=para_env%group,request=mpi_req(irank),tag=0)
               endif
             enddo
           enddo
-
         else 
           !mepos!=0
           !request chunk
           allocate(chunk_req(1))
           allocate(chunk_req(1)%data(4))
-          
-          allocate(chunk%atom_block(qperchunk))
-          allocate(chunk%index_ij(qperchunk))
-          allocate(chunk%index_kl(qperchunk))
-          allocate(chunk%meta(5))
+          allocate(chunk%meta(meta_size))
           
           do while (.true.)
             !values of -1 mean that there is no preference
@@ -1712,81 +1702,73 @@ CONTAINS
             chunk_req(1)%data(3)=-1
             chunk_req(1)%data(4)=-1
             print*,"requesting chunk",para_env%mepos,chunk_req(1)%data
-            CALL mp_send(msg=chunk_req(1)%data,dest=0,gid=para_env%group,tag=0)
+            CALL para_env%send(msg=chunk_req(1)%data,dest=0,tag=0)
             
             tag=1
             src=0
-            CALL mp_recv(msg=chunk%meta,source=src,gid=para_env%group,tag=tag)
+            CALL para_env%recv(msg=chunk%meta,source=src,tag=tag)
             print*,"chunk%meta",src,tag,chunk%meta
             
             !exit if no more chunks for this 
-            if(chunk%meta(1).eq.-1)then
+            if(chunk%meta(index_count).eq.-1)then
               print*,"got endmsg"
               exit
             endif
 
-            outerl_a=chunk%meta(1)
-            outerl_b=chunk%meta(2)
-            outerl_c=chunk%meta(3)
-            outerl_d=chunk%meta(4)
-            chunk%nquartets=chunk%meta(5)
+            outerl_a=Int(chunk%meta(index_la),kind=4)
+            outerl_b=Int(chunk%meta(index_lb),kind=4)
+            outerl_c=Int(chunk%meta(index_lc),kind=4)
+            outerl_d=Int(chunk%meta(index_ld),kind=4)
+            chunk%nquartets=int(chunk%meta(index_count),kind=4)
 
-            tag=2
-            src=0
-            CALL mp_recv(msg=chunk%atom_block,source=src,gid=para_env%group,tag=tag)
-            print*,"chunk%atom_block",src,tag
-            tag=3
-            src=0
-            CALL mp_recv(msg=chunk%index_ij,source=src,gid=para_env%group,tag=tag)
-            print*,"chunk%index_ij",src,tag
-            tag=4
-            src=0
-            CALL mp_recv(msg=chunk%index_kl,source=src,gid=para_env%group,tag=tag)
-            print*,"chunk%index_kl",src,tag
-            
             !compute chunk
-            do iquartet=1,chunk%nquartets
-            atom_block=chunk%atom_block(iquartet)
-            latom_block = INT(MODULO(atom_block, nblocks)) + 1
-            tmp_block = atom_block/nblocks
-            katom_block = INT(MODULO(tmp_block, nblocks)) + 1
-            IF (latom_block < katom_block) CYCLE
-            tmp_block = tmp_block/nblocks
-            jatom_block = INT(MODULO(tmp_block, nblocks)) + 1
-            tmp_block = tmp_block/nblocks
-            iatom_block = INT(MODULO(tmp_block, nblocks)) + 1
-            IF (jatom_block < iatom_block) CYCLE
+            iquartet=0
+            my_istart=chunk%meta(index_first_atom_block)
+            chunk_atom_block: DO atom_block = my_istart, nblocks**4-1
+              latom_block = INT(MODULO(atom_block, nblocks)) + 1
+              tmp_block = atom_block/nblocks
+              katom_block = INT(MODULO(tmp_block, nblocks)) + 1
+              IF (latom_block < katom_block) cycle
+              tmp_block = tmp_block/nblocks
+              jatom_block = INT(MODULO(tmp_block, nblocks)) + 1
+              tmp_block = tmp_block/nblocks
+              iatom_block = INT(MODULO(tmp_block, nblocks)) + 1
+              IF (jatom_block < iatom_block) cycle
 
-            iatom_start = actual_x_data%blocks(iatom_block)%istart
-            iatom_end = actual_x_data%blocks(iatom_block)%iend
-            jatom_start = actual_x_data%blocks(jatom_block)%istart
-            jatom_end = actual_x_data%blocks(jatom_block)%iend
-            katom_start = actual_x_data%blocks(katom_block)%istart
-            katom_end = actual_x_data%blocks(katom_block)%iend
-            latom_start = actual_x_data%blocks(latom_block)%istart
-            latom_end = actual_x_data%blocks(latom_block)%iend
+              iatom_start = actual_x_data%blocks(iatom_block)%istart
+              iatom_end = actual_x_data%blocks(iatom_block)%iend
+              jatom_start = actual_x_data%blocks(jatom_block)%istart
+              jatom_end = actual_x_data%blocks(jatom_block)%iend
+              katom_start = actual_x_data%blocks(katom_block)%istart
+              katom_end = actual_x_data%blocks(katom_block)%iend
+              latom_start = actual_x_data%blocks(latom_block)%istart
+              latom_end = actual_x_data%blocks(latom_block)%iend
 
-            pmax_blocks = MAX(shm_pmax_block(katom_block, iatom_block), &
-                              shm_pmax_block(latom_block, jatom_block), &
-                              shm_pmax_block(latom_block, iatom_block), &
-                              shm_pmax_block(katom_block, jatom_block))
+              pmax_blocks = MAX(shm_pmax_block(katom_block, iatom_block), &
+                                shm_pmax_block(latom_block, jatom_block), &
+                                shm_pmax_block(latom_block, iatom_block), &
+                                shm_pmax_block(katom_block, jatom_block))
 
-            IF (2.0_dp*coeffs_kind_max0 + pmax_blocks < log10_eps_schwarz) CYCLE
+              IF (2.0_dp*coeffs_kind_max0 + pmax_blocks < log10_eps_schwarz) cycle
 
-            CALL build_pair_list(natom, list_ij, set_list_ij, iatom_start, iatom_end, &
-                                 jatom_start, jatom_end, &
-                                 kind_of, basis_parameter, particle_set, &
-                                 do_periodic, screen_coeffs_set, screen_coeffs_kind, &
-                                 coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
-                                 shm_atomic_pair_list)
+              CALL build_pair_list(natom, list_ij, set_list_ij, iatom_start, iatom_end, &
+                                   jatom_start, jatom_end, &
+                                   kind_of, basis_parameter, particle_set, &
+                                   do_periodic, screen_coeffs_set, screen_coeffs_kind, &
+                                   coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
+                                   shm_atomic_pair_list)
 
-            CALL build_pair_list(natom, list_kl, set_list_kl, katom_start, katom_end, &
-                                 latom_start, latom_end, &
-                                 kind_of, basis_parameter, particle_set, &
-                                 do_periodic, screen_coeffs_set, screen_coeffs_kind, &
-                                 coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
-                                 shm_atomic_pair_list)
-            DO i_list_ij = 1, list_ij%n_element
+              CALL build_pair_list(natom, list_kl, set_list_kl, katom_start, katom_end, &
+                                   latom_start, latom_end, &
+                                   kind_of, basis_parameter, particle_set, &
+                                   do_periodic, screen_coeffs_set, screen_coeffs_kind, &
+                                   coeffs_kind_max0, log10_eps_schwarz, cell, pmax_blocks, &
+                                   shm_atomic_pair_list)
+
+              !FIXME
+              CPASSERT(list_ij%n_element.eq.1)
+              i_list_ij=1
+              !DO i_list_ij = 1, list_ij%n_element
                iatom = list_ij%elements(i_list_ij)%pair(1)
                jatom = list_ij%elements(i_list_ij)%pair(2)
                i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
@@ -1820,8 +1802,11 @@ CONTAINS
                sphi_b_u1 = UBOUND(sphi_b_ext, 1)
                sphi_b_u2 = UBOUND(sphi_b_ext, 2)
                sphi_b_u3 = UBOUND(sphi_b_ext, 3)
-                 
-               DO i_list_kl = 1, list_kl%n_element
+               
+              !FIXME
+              CPASSERT(list_kl%n_element.eq.1)
+              !DO i_list_kl = 1, list_kl%n_element
+              i_list_kl=1
                   katom = list_kl%elements(i_list_kl)%pair(1)
                   latom = list_kl%elements(i_list_kl)%pair(2)
 
@@ -1962,13 +1947,24 @@ CONTAINS
                      END IF
                   END IF
 
-                  !FIXME MEMORY COMPRESSION STUFF
+                  if(iquartet.eq.0)then
+                    i_set_list_ij_start=int(chunk%meta(index_ij_in_first_atom_block),kind=4)
+                    i_set_list_kl_start=int(chunk%meta(index_kl_in_first_atom_block),kind=4)
+                  else
+                    i_set_list_ij_start = list_ij%elements(i_list_ij)%set_bounds(1)
+                    i_set_list_kl_start = list_kl%elements(i_list_kl)%set_bounds(1)
+                  endif
+                  i_set_list_ij_stop = list_ij%elements(i_list_ij)%set_bounds(2)
 
-                  !DO i_set_list_ij = i_set_list_ij_start, i_set_list_ij_stop
+                  DO i_set_list_ij = i_set_list_ij_start, i_set_list_ij_stop
                   !i_set_list_ij =chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_ij(iquartet)
-                  i_set_list_ij =chunk%index_ij(iquartet)
+                  !i_set_list_ij =chunk%index_ij(iquartet)
                    iset = set_list_ij(i_set_list_ij)%pair(1)
                    jset = set_list_ij(i_set_list_ij)%pair(2)
+                    if(chunk%meta(index_la).ne.la_min(iset)) cycle
+                    if(chunk%meta(index_la).ne.la_max(iset)) cycle
+                    if(chunk%meta(index_lb).ne.lb_min(jset)) cycle
+                    if(chunk%meta(index_lb).ne.lb_max(jset)) cycle
 
                    ncob = npgfb(jset)*ncoset(lb_max(jset))
                    max_val1 = screen_coeffs_set(jset, iset, jkind, ikind)%x(1)*rab2 + &
@@ -1978,12 +1974,19 @@ CONTAINS
 
                    sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
                    sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
-                   !DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
+                  
+                   i_set_list_kl_stop = list_kl%elements(i_list_kl)%set_bounds(2)
+
+                   DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
                    !i_set_list_kl =chunk_queue(outerl_a,outerl_b,outerl_c,outerl_d)%chunks(ichunk)%index_kl(iquartet)
-                   i_set_list_kl =chunk%index_kl(iquartet)
+                   !i_set_list_kl =chunk%index_kl(iquartet)
 
                     kset = set_list_kl(i_set_list_kl)%pair(1)
                     lset = set_list_kl(i_set_list_kl)%pair(2)
+                    if(chunk%meta(index_lc).ne.lc_min(kset)) cycle
+                    if(chunk%meta(index_lc).ne.lc_max(kset)) cycle
+                    if(chunk%meta(index_ld).ne.ld_min(lset)) cycle
+                    if(chunk%meta(index_ld).ne.ld_max(lset)) cycle
 
                     max_val2_set = (screen_coeffs_set(lset, kset, lkind, kkind)%x(1)*rcd2 + &
                                     screen_coeffs_set(lset, kset, lkind, kkind)%x(2))
@@ -2005,26 +2008,19 @@ CONTAINS
                     max_val2 = max_val2 + log10_pmax
                     IF (max_val2 < log10_eps_schwarz) CYCLE
                     pmax_entry = EXP(log10_pmax*ln_10)
-                    
-  !                        if(Tbunch_up_ls)then
-  !                          if(outerl_a.ne.la_min(iset)) cycle
-  !                          if(outerl_a.ne.la_max(iset)) cycle
-  !                          if(outerl_b.ne.lb_min(jset)) cycle
-  !                          if(outerl_b.ne.lb_max(jset)) cycle
-  !                          if(outerl_c.ne.lc_min(kset)) cycle
-  !                          if(outerl_c.ne.lc_max(kset)) cycle
-  !                          if(outerl_d.ne.ld_min(lset)) cycle
-  !                          if(outerl_d.ne.ld_max(lset)) cycle
-  !                        endif
 
                     !! store current number of integrals, update total number and number of integrals in buffer
                     current_counter = nsgfa(iset)*nsgfb(jset)*nsgfc(kset)*nsgfd(lset)
                     IF (buffer_overflow) THEN
                        neris_onthefly = neris_onthefly + current_counter
                     END IF
-  !$OMP ATOMIC                         
+!$OMP ATOMIC                         
                     qcounter(la_min(iset),lb_min(jset),lc_min(kset),ld_min(lset))= &
                     qcounter(la_min(iset),lb_min(jset),lc_min(kset),ld_min(lset))+1
+                    iquartet=iquartet+1
+                    if(iquartet.gt.chunk%meta(index_count))then
+                      exit chunk_atom_block
+                    endif
 
   !                  !! Get integrals from buffer and update Kohn-Sham matrix
   !                  IF (.NOT. buffer_overflow .AND. .NOT. my_geo_change) THEN
@@ -2136,7 +2132,6 @@ CONTAINS
   !                           END IF
   !
   !                           IF (cartesian_estimate < eps_schwarz) CYCLE
-
                        !! Compress the array for storage
                        spherical_estimate = 0.0_dp
                        DO i = 1, nints
@@ -2281,14 +2276,15 @@ CONTAINS
                           END IF
                        END IF
                     END IF
-  !               END DO ! i_set_list_kl
-  !            END DO ! i_set_list_ij
-          enddo
-          enddo
-          enddo
+                 END DO ! i_set_list_kl
+              END DO ! i_set_list_ij
+!          enddo
+!          enddo
+!          enddo
+            enddo chunk_atom_block
           enddo
         endif
-        CALL mp_sync(para_env%group)
+        CALL para_env%sync()
 
                   !! At this stage, check for memory used in compression
 

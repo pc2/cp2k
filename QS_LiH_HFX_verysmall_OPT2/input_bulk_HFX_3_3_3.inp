@@ -6,7 +6,7 @@
 &FORCE_EVAL
   METHOD Quickstep
   &DFT
-    BASIS_SET_FILE_NAME ./BASIS_OPT
+    BASIS_SET_FILE_NAME ./BASIS_cc-pvdz
     POTENTIAL_FILE_NAME ./POTENTIAL
     WFN_RESTART_FILE_NAME B88.wfn
     &MGRID
@@ -21,7 +21,7 @@
     &END QS
     &SCF
       EPS_SCF 1.0E-6
-      MAX_SCF 20
+      MAX_SCF 1
       SCF_GUESS RESTART
       &OT
          PRECONDITIONER FULL_ALL
@@ -51,7 +51,8 @@
           EPS_STORAGE_SCALING 0.1
         &END
         &LOAD_BALANCE
-          NBINS 64
+          NBINS 1
+          BLOCK_SIZE 1
           &PRINT
             LOAD_BALANCE_INFO .TRUE.
           &END
@@ -78,11 +79,11 @@ H 0 2.042 0
 H 0 0 2.042
     &END COORD
     &KIND H
-      BASIS_SET OPT1
+      BASIS_SET cc-pVDZ
       POTENTIAL ALL
     &END KIND
     &KIND Li
-      BASIS_SET OPT1
+      BASIS_SET cc-pVDZ
       POTENTIAL ALL
     &END KIND
   &END SUBSYS
