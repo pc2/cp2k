@@ -222,17 +222,27 @@ list(
   group_dist_types.F
   grrm_utils.F
   gapw_1c_basis_set.F
-  gw_communication.F
-  gw_main.F
-  gw_large_cell_gamma.F
-  gw_small_cell_full_kp.F
-  gw_non_periodic_ri_rs.F
-  gw_large_cell_gamma_ri_rs.F
-  gw_optimize_ri_rs_grid.F
+  gw_ri_rs_compute_Z_lP.F
+  gw_ri_rs_compute_Z_lP_utils.F
+  gw_auto_ri_generate_RI_basis.F
+  gw_auto_ri_types.F
+  gw_utils_dbcsr.F
+  gw_utils_fm.F
+  gw_utils_communication.F
+  gw.F
+  gw_tensor_large_cell_gamma.F
+  gw_tensor_small_cell_full_kp.F
+  gw_ri_rs_non_periodic.F
+  gw_ri_rs_large_cell_gamma.F
+  gw_ri_rs_grid_from_file.F
+  gw_ri_rs_grid_initialization.F
+  gw_ri_rs_grid_optimization.F
+  gw_ri_rs_grid_setup_main.F
+  gw_ri_rs_utils.F
   post_scf_bandstructure_types.F
   post_scf_bandstructure_utils.F
   gw_utils.F
-  gw_integrals.F
+  gw_utils_compute_integrals.F
   hairy_probes.F
   hartree_local_methods.F
   hartree_local_types.F
@@ -395,6 +405,7 @@ list(
   molecular_dipoles.F
   molecular_moments.F
   molecular_states.F
+  mo_window.F
   mol_force.F
   molsym.F
   moments_utils.F
@@ -406,7 +417,6 @@ list(
   mp2.F
   mp2_gpw.F
   mp2_gpw_method.F
-  mp2_grids.F
   mp2_integrals.F
   mp2_laplace.F
   mp2_optimize_ri_basis.F
@@ -490,7 +500,7 @@ list(
   pme.F
   pme_tools.F
   population_analyses.F
-  lattice_low_rank_preconditioner.F
+  lattice_preconditioner_operator.F
   low_rank_preconditioner_model.F
   preconditioner_apply.F
   preconditioner.F
@@ -555,7 +565,6 @@ list(
   qs_cneo_types.F
   qs_cneo_utils.F
   qs_collocate_density.F
-  qs_commutators.F
   qs_condnum.F
   qs_core_energies.F
   qs_core_hamiltonian.F
@@ -578,7 +587,6 @@ list(
   qs_scf_subspace_types.F
   qs_scf_subspace_math.F
   qs_scf_subspace.F
-  qs_scf_oda.F
   qs_dispersion_nonloc.F
   qs_dispersion_d2.F
   qs_dispersion_d3.F
@@ -619,6 +627,7 @@ list(
   qs_fb_matrix_data_types.F
   qs_fb_trial_fns_types.F
   qs_fermi_contact.F
+  qs_fod.F
   qs_force.F
   qs_force_types.F
   qs_fxc.F
@@ -776,6 +785,7 @@ list(
   qs_fgxc_atom.F
   qs_vxc_atom_utils.F
   qs_vxc_atom.F
+  qs_native_grid_cache.F
   qs_vxc.F
   qs_wannier90.F
   qs_wf_history_methods.F
@@ -804,7 +814,6 @@ list(
   rpa_im_time_force_types.F
   rpa_im_time_force_methods.F
   rpa_util.F
-  rirs_grid_utils.F
   rtp_admm_methods.F
   rt_propagation_forces.F
   rt_propagation_types.F
@@ -864,6 +873,7 @@ list(
   tblite_ks_matrix.F
   tblite_scc_mixer.F
   tblite_types.F
+  time_frequency_grids.F
   tip_scan_methods.F
   tip_scan_types.F
   topology_amber.F
@@ -892,6 +902,15 @@ list(
   virial_methods.F
   voronoi_interface.F
   wannier90.F
+  wannier90_nnkpts.F
+  topology_wilson.F
+  topology_state_io.F
+  topology_symmetry.F
+  topology_inversion.F
+  topology_tqc.F
+  topology_snapshot.F
+  topology_curvature.F
+  topology_phason_analysis.F
   wannier_states.F
   wannier_states_types.F
   xas_control.F
@@ -1564,11 +1583,18 @@ set(CP2K_PROGS_F
     common/parallel_rng_types_unittest.F
     kpoint_lattice_fft_unittest.F
     kpoint_smearing_unittest.F
+    topology_wilson_unittest.F
+    topology_symmetry_unittest.F
+    topology_curvature_unittest.F
+    topology_snapshot_unittest.F
+    topology_phasons.F
+    kpsym_unittest.F
     qs_ot_minimizer_unittest.F
     optbas_frontier_orbitals_utils_unittest.F
-    rirs_grid_utils_unittest.F
     low_rank_preconditioner_unittest.F
+    ot_covariant_preconditioner_unittest.F
     qs_charge_mixing_unittest.F
+    qs_fod_unittest.F
     qs_ot_complex_ref_unittest.F
     subsys/cell_types_unittest.F
     pw/realspace_grid_cube_unittest.F
@@ -1848,8 +1874,7 @@ target_link_libraries(
     cp2k_linalg_libs
     # Torch includes some LAPACK routines, but with floating-point exceptions.
     $<$<BOOL:${CP2K_USE_LIBTORCH}>:${TORCH_LIBRARIES}>
-    $<$<BOOL:${CP2K_USE_OPENPMD}>:openPMD::openPMD>
-    $<$<AND:$<CONFIG:COVERAGE>,$<Fortran_COMPILER_ID:GNU>>:gcov>)
+    $<$<BOOL:${CP2K_USE_OPENPMD}>:openPMD::openPMD>)
 
 set(CP2K_BUILD_INFO_FILE "${CMAKE_CURRENT_BINARY_DIR}/cp2k_build_info.h")
 file(
@@ -1981,11 +2006,18 @@ list(
   "parallel_rng_types_unittest"
   "kpoint_lattice_fft_unittest"
   "kpoint_smearing_unittest"
+  "topology_wilson_unittest"
+  "topology_symmetry_unittest"
+  "topology_curvature_unittest"
+  "topology_snapshot_unittest"
+  "topology_phasons"
+  "kpsym_unittest"
   "qs_ot_minimizer_unittest"
   "optbas_frontier_orbitals_utils_unittest"
-  "rirs_grid_utils_unittest"
   "low_rank_preconditioner_unittest"
+  "ot_covariant_preconditioner_unittest"
   "qs_charge_mixing_unittest"
+  "qs_fod_unittest"
   "qs_ot_complex_ref_unittest"
   "cell_types_unittest"
   "realspace_grid_cube_unittest"
@@ -2012,13 +2044,21 @@ add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
+add_executable(topology_wilson_unittest topology_wilson_unittest.F)
+add_executable(topology_symmetry_unittest topology_symmetry_unittest.F)
+add_executable(topology_curvature_unittest topology_curvature_unittest.F)
+add_executable(topology_snapshot_unittest topology_snapshot_unittest.F)
+add_executable(topology_phasons topology_phasons.F)
+add_executable(kpsym_unittest kpsym_unittest.F)
 add_executable(qs_ot_minimizer_unittest qs_ot_minimizer_unittest.F)
 add_executable(optbas_frontier_orbitals_utils_unittest
                optbas_frontier_orbitals_utils_unittest.F)
-add_executable(rirs_grid_utils_unittest rirs_grid_utils_unittest.F)
 add_executable(low_rank_preconditioner_unittest
                low_rank_preconditioner_unittest.F)
+add_executable(ot_covariant_preconditioner_unittest
+               ot_covariant_preconditioner_unittest.F)
 add_executable(qs_charge_mixing_unittest qs_charge_mixing_unittest.F)
+add_executable(qs_fod_unittest qs_fod_unittest.F)
 add_executable(qs_ot_complex_ref_unittest qs_ot_complex_ref_unittest.F)
 add_executable(cell_types_unittest subsys/cell_types_unittest.F)
 add_executable(realspace_grid_cube_unittest pw/realspace_grid_cube_unittest.F)
@@ -2154,10 +2194,7 @@ foreach(__app grid_miniapp grid_unittest dbm_miniapp)
            $<$<BOOL:${CP2K_USE_CUDA}>:${CMAKE_CUDA_INCLUDE_DIRECTORIES}>
            $<$<BOOL:${CP2K_USE_HIP}>:${CMAKE_HIP_INCLUDE_DIRECTORIES}>)
 
-  target_link_libraries(
-    ${__app}
-    PUBLIC cp2k_linalg_libs
-           $<$<AND:$<CONFIG:COVERAGE>,$<Fortran_COMPILER_ID:GNU>>:gcov> m)
+  target_link_libraries(${__app} PUBLIC cp2k_linalg_libs m)
 endforeach()
 
 # ##############################################################################

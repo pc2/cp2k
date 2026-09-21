@@ -86,15 +86,14 @@ MODULE qs_scf
         broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
         broyden_type_2, broyden_type_2_explicit, broyden_type_2_explicit_ls, broyden_type_2_ls, &
         cdft2ot, cholesky_dbcsr, diag_update_method_adiis, history_guess, ot2cdft, &
-        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_kinetic, &
-        ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_none, &
-        ot_precond_s_inverse, outer_scf_becke_constraint, outer_scf_hirshfeld_constraint, &
-        outer_scf_optimizer_broyden, outer_scf_optimizer_newton_ls, sic_eo, smear_fermi_dirac, &
-        smear_gaussian, smear_mp, smear_mv, tblite_scc_mixer_tblite
-   USE input_section_types,             ONLY: section_vals_get,&
-                                              section_vals_get_subs_vals,&
-                                              section_vals_type,&
-                                              section_vals_val_get
+        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_all_covariant, &
+        ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
+        ot_precond_none, ot_precond_s_inverse, outer_scf_becke_constraint, &
+        outer_scf_hirshfeld_constraint, outer_scf_optimizer_broyden, &
+        outer_scf_optimizer_newton_ls, sic_eo, smear_fermi_dirac, smear_gaussian, smear_mp, &
+        smear_mv, tblite_scc_mixer_tblite
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
                                               dp
@@ -111,13 +110,12 @@ MODULE qs_scf
                                               mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: evolt
-   USE preconditioner,                  ONLY: make_preconditioner_complex_full_all,&
-                                              make_preconditioner_complex_full_kinetic,&
-                                              make_preconditioner_complex_full_s_inverse,&
-                                              make_preconditioner_complex_full_single,&
-                                              make_preconditioner_complex_full_single_inverse,&
-                                              prepare_preconditioner,&
-                                              restart_preconditioner
+   USE preconditioner,                  ONLY: &
+        make_preconditioner_complex_fermi_low_rank, make_preconditioner_complex_full_all, &
+        make_preconditioner_complex_full_all_covariant, make_preconditioner_complex_full_kinetic, &
+        make_preconditioner_complex_full_s_inverse, make_preconditioner_complex_full_single, &
+        make_preconditioner_complex_full_single_inverse, prepare_preconditioner, &
+        restart_preconditioner
    USE preconditioner_types,            ONLY: destroy_preconditioner,&
                                               init_preconditioner
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -143,11 +141,15 @@ MODULE qs_scf
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
+   USE qs_fod,                          ONLY: qs_fod_validate
    USE qs_integrate_potential,          ONLY: integrate_v_rspace
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE qs_kpoint_operators,             ONLY: kpoint_operator_get_local,&
+                                              kpoint_operator_store
    USE qs_kpoint_state,                 ONLY: qs_kpoint_copy_spin_mos,&
                                               qs_kpoint_mos_initialized,&
+                                              qs_kpoint_set_fixed_occupations,&
                                               qs_kpoint_state_canonicalize_fixed,&
                                               qs_kpoint_state_commit,&
                                               qs_kpoint_state_prepare_fixed_density
@@ -196,15 +198,13 @@ MODULE qs_scf
    USE qs_rho_methods,                  ONLY: qs_rho_update_rho
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_scf_diagonalization,          ONLY: do_general_diag_kp,&
-                                              qs_scf_get_ot_kpoint_operator
+   USE qs_scf_diagonalization,          ONLY: do_general_diag_kp
    USE qs_scf_initialization,           ONLY: qs_scf_env_initialize
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_candidate_density_delta, qs_scf_check_inner_exit, qs_scf_check_outer_exit, &
         qs_scf_commit_density_candidate, qs_scf_density_mixing, qs_scf_inner_finalize, &
         qs_scf_kp_search_endpoint, qs_scf_new_mos, qs_scf_new_mos_kp, qs_scf_rho_update, &
         qs_scf_set_loop_flags
-   USE qs_scf_oda,                      ONLY: qs_scf_oda_apply
    USE qs_scf_output,                   ONLY: qs_scf_cdft_info,&
                                               qs_scf_cdft_initial_info,&
                                               qs_scf_gce_info,&
@@ -215,7 +215,8 @@ MODULE qs_scf
    USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
    USE qs_scf_subspace,                 ONLY: qs_scf_subspace_build,&
                                               qs_scf_subspace_push,&
-                                              qs_scf_subspace_restart
+                                              qs_scf_subspace_restart,&
+                                              qs_scf_subspace_update_shift
    USE qs_scf_subspace_types,           ONLY: qs_scf_subspace_buffer_clear,&
                                               qs_scf_subspace_buffer_create,&
                                               qs_scf_subspace_buffer_release
@@ -287,6 +288,7 @@ CONTAINS
       END IF
       CALL get_qs_env(qs_env, scf_env=scf_env, input=input, &
                       dft_control=dft_control, scf_control=scf_control)
+      CALL qs_fod_validate(input, logger, qs_env)
       IF (scf_control%max_scf > 0) THEN
 
          dft_section => section_vals_get_subs_vals(input, "DFT")
@@ -345,7 +347,10 @@ CONTAINS
              ((scf_control%density_guess /= history_guess) .OR. &
               (.NOT. first_step_flag))) THEN
             IF (.NOT. dft_control%qs_control%cdft) THEN
-               CALL wfi_update(qs_env%wf_history, qs_env=qs_env, dt=1.0_dp)
+               ! No next geometry step in a standalone single-point calculation.
+               IF (.NOT. qs_env%skip_wf_history) THEN
+                  CALL wfi_update(qs_env%wf_history, qs_env=qs_env, dt=1.0_dp)
+               END IF
             ELSE
                IF (dft_control%qs_control%cdft_control%should_purge) THEN
                   CALL wfi_purge_history(qs_env)
@@ -420,18 +425,15 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: adiis_stagnation_ratio = 1.0E-2_dp
 
       CHARACTER(LEN=default_string_length)               :: description, name
-      INTEGER :: accepted_ot_kp_searches, ext_master_id, handle, handle2, i_tmp, ic, irep, ispin, &
-         iter_count, kp_ot_entry_reason, n_rep_hf, oda_base_slot, ot_kp_subspace_refresh_count, &
+      INTEGER :: accepted_ot_kp_searches, ext_master_id, handle, handle2, i_tmp, ic, ispin, &
+         iter_count, kp_ot_entry_reason, ot_kp_subspace_refresh_count, &
          ot_kp_subspace_refresh_iter_count, output_unit, scf_energy_message_tag, total_steps
-      LOGICAL :: ace_active, added_mos_auto_grow, adiis_pushed, adiis_restarted, adiis_stagnated, &
+      LOGICAL :: added_mos_auto_grow, adiis_pushed, adiis_restarted, adiis_stagnated, &
          adiis_validation, density_full_step, diis_step, do_kpoints, energy_only, exit_inner_loop, &
          exit_outer_loop, inner_loop_converged, internal_tblite_density_full_step, &
-         internal_tblite_mixer, just_energy, oda_applied, oda_eligible, oda_globalization_active, &
-         oda_interior, oda_predictor_valid, oda_restart_trigger, oda_state_evaluated, oda_trigger, &
-         ot_kp_subspace_refresh, ot_kp_subspace_refresh_pending, outer_loop_converged, &
-         tblite_native_mixer
-      REAL(KIND=dp)                                      :: adiis_raw_delta, adiis_step_delta, &
-                                                            oda_predictor_lambda, t1, t2
+         internal_tblite_mixer, just_energy, ot_kp_subspace_refresh, &
+         ot_kp_subspace_refresh_pending, outer_loop_converged, tblite_native_mixer
+      REAL(KIND=dp)                                      :: adiis_raw_delta, adiis_step_delta, t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -447,13 +449,11 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(qs_charges_type), POINTER                     :: qs_charges
-      TYPE(qs_energy_type)                               :: oda_base_energy, oda_evaluated_energy
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
-      TYPE(section_vals_type), POINTER                   :: ace_section, dft_section, hfx_sections, &
-                                                            input, scf_section
+      TYPE(section_vals_type), POINTER                   :: dft_section, input, scf_section
 
 ! Weak orbital metrics can need several bounded REF rebuilds to close the canonical density tail.
 
@@ -461,7 +461,7 @@ CONTAINS
 
       NULLIFY (dft_control, rho, energy, &
                logger, qs_charges, ks_env, mos, atomic_kind_set, qs_kind_set, &
-               particle_set, ace_section, dft_section, hfx_sections, input, &
+               particle_set, dft_section, input, &
                scf_section, para_env, results, kpoints, pw_env, matrix_ks, &
                matrix_ks_kp, rho_ao_kp, mos_last_converged)
 
@@ -505,32 +505,6 @@ CONTAINS
       dft_section => section_vals_get_subs_vals(input, "DFT")
       scf_section => section_vals_get_subs_vals(dft_section, "SCF")
 
-      ! ODA uses the STANDARD diagonalization endpoint for Gamma-point and k-point runs.
-      ! Smearing remains excluded by ADIIS; other ADIIS-compatible variants are admitted
-      ! only when their raw endpoint is a descent direction and its evaluated trial lowers the energy.
-      oda_eligible = scf_control%diagonalization%update_method == diag_update_method_adiis .AND. &
-                     scf_control%diagonalization%do_oda .AND. &
-                     scf_env%method == general_diag_method_nr .AND. &
-                     .NOT. (dft_control%smear .OR. scf_control%smear%do_smear)
-      IF (oda_eligible) THEN
-         ace_active = .FALSE.
-         hfx_sections => section_vals_get_subs_vals(dft_section, "XC%HF")
-         CALL section_vals_get(hfx_sections, n_repetition=n_rep_hf)
-         DO irep = 1, n_rep_hf
-            ace_section => section_vals_get_subs_vals(hfx_sections, "ACE", i_rep_section=irep)
-            IF (ASSOCIATED(ace_section)) THEN
-               CALL section_vals_val_get(ace_section, "ACTIVE", l_val=ace_active)
-               IF (ace_active) EXIT
-            END IF
-         END DO
-         IF (ace_active) THEN
-            CALL cp_warn(__LOCATION__, &
-                         "ODA is disabled because HF%ACE is active; ODA trial densities have no matching "// &
-                         "MOs for the ACE projector.")
-            oda_eligible = .FALSE.
-         END IF
-      END IF
-
       output_unit = cp_print_key_unit_nr(logger, scf_section, "PRINT%PROGRAM_RUN_INFO", &
                                          extension=".scfLog")
 
@@ -572,7 +546,7 @@ CONTAINS
          CALL get_results(results, description=description, &
                           values=res_val_3, n_entries=i_tmp)
          CPASSERT(i_tmp == 3)
-         IF (ALL(res_val_3(:) <= 0.0)) THEN
+         IF (ALL(res_val_3(:) <= 0.0_dp)) THEN
             CALL cp_abort(__LOCATION__, &
                           " Trying to access result ("//TRIM(description)// &
                           ") which is not correctly stored.")
@@ -600,10 +574,7 @@ CONTAINS
                             scf_section=scf_section, &
                             kp_ot_entry_reason=kp_ot_entry_reason)
          kp_ot_entry_reason = kp_ot_entry_reuse
-
-         oda_globalization_active = oda_eligible
-         oda_predictor_lambda = 1.0_dp
-         oda_predictor_valid = .FALSE.
+         scf_env%adiis_shift = scf_control%diagonalization%adiis_shift
 
          CALL qs_scf_set_loop_flags(scf_env, diis_step, &
                                     energy_only, just_energy, exit_inner_loop)
@@ -640,16 +611,7 @@ CONTAINS
                                      calculate_forces=.FALSE.)
 
             scf_env%raw_map_delta = 0.0_dp
-            scf_env%oda_lambda = 0.0_dp
-            scf_env%oda_energy = 0.0_dp
-            scf_env%oda_gradient0 = 0.0_dp
-            scf_env%oda_gradient1 = 0.0_dp
-            scf_env%oda_evaluations = 0
-            scf_env%oda_status = ""
             scf_env%raw_map_delta_valid = .FALSE.
-            oda_applied = .FALSE.
-            oda_interior = .FALSE.
-            oda_state_evaluated = .FALSE.
             ! print 'heavy weight' or relatively expensive quantities
             CALL qs_scf_loop_print(qs_env, scf_env, para_env)
 
@@ -659,7 +621,6 @@ CONTAINS
                                scf_env%adiis_check_next
             adiis_step_delta = scf_env%step_norm
             scf_env%adiis_validated = .FALSE.
-            oda_base_energy = energy
 
             IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
                ! ADIIS is a Fock-space SCF method and never uses density mixing.  A small
@@ -670,37 +631,22 @@ CONTAINS
                scf_env%scf_subspace_buffer%last_restart = .FALSE.
                scf_env%scf_subspace_buffer%use_combined_fock = .FALSE.
                scf_env%scf_subspace_buffer%last_old_fock_weight = 0.0_dp
-               oda_trigger = .FALSE.
-               oda_restart_trigger = .FALSE.
                IF (.NOT. adiis_validation .AND. scf_env%iter_count > 1) THEN
                   ! Only accepted densities whose raw F[P] has just been evaluated enter history.
                   ! The initial guess and raw-validation trial endpoint are deliberately excluded.
-                  IF (scf_env%scf_subspace_buffer%diis_weight < 1.0_dp .OR. &
+                  ! A shifted candidate needs a current ADIIS fallback even if CDIIS was
+                  ! active last time: its acceptance is decided later, during diagonalization.
+                  IF (scf_control%diagonalization%adiis_shift > 0.0_dp .OR. &
+                      scf_env%scf_subspace_buffer%diis_weight < 1.0_dp .OR. &
                       scf_env%iter_delta >= scf_control%eps_diis) THEN
                      CALL qs_scf_subspace_push(scf_env%scf_subspace_buffer, matrix_ks_kp, rho_ao_kp, &
                                                energy%total, adiis_pushed)
                      IF (.NOT. adiis_pushed) CPABORT("Failed to append the accepted ADIIS SCF state")
                      CALL qs_scf_subspace_build(scf_env%scf_subspace_buffer)
+                     IF (scf_control%diagonalization%adiis_shift > 0.0_dp) THEN
+                        CALL qs_scf_subspace_update_shift(scf_env%scf_subspace_buffer, scf_env%adiis_shift)
+                     END IF
                   END IF
-                  oda_restart_trigger = scf_env%scf_subspace_buffer%last_restart
-                  ! ODA globalizes the initial raw Roothaan phase. Once ADIIS has formed
-                  ! a genuine history combination, remain in ADIIS unless its history is
-                  ! explicitly restarted; a later raw-vertex solution alone is not a new
-                  ! globalization event.
-                  IF (oda_restart_trigger) THEN
-                     oda_globalization_active = .TRUE.
-                  END IF
-                  IF (scf_env%scf_subspace_buffer%use_combined_fock) THEN
-                     oda_globalization_active = .FALSE.
-                  END IF
-                  IF (oda_restart_trigger .OR. scf_env%scf_subspace_buffer%use_combined_fock) THEN
-                     oda_predictor_lambda = 1.0_dp
-                     oda_predictor_valid = .FALSE.
-                  END IF
-                  oda_trigger = oda_eligible .AND. &
-                                scf_env%iter_count < scf_control%max_scf .AND. &
-                                oda_globalization_active .AND. &
-                                .NOT. scf_env%scf_subspace_buffer%use_combined_fock
                END IF
                IF (do_kpoints) THEN
                   CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, &
@@ -709,15 +655,10 @@ CONTAINS
                   CALL qs_scf_new_mos(qs_env, scf_env, scf_control, scf_section, diis_step, energy_only)
                END IF
 
-               IF (oda_trigger .OR. adiis_validation) THEN
+               IF (adiis_validation) THEN
                   CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, adiis_raw_delta)
                   scf_env%raw_map_delta = adiis_raw_delta
                   scf_env%raw_map_delta_valid = .TRUE.
-               END IF
-
-               IF (adiis_validation) THEN
-                  oda_predictor_lambda = 1.0_dp
-                  oda_predictor_valid = .FALSE.
                   IF (adiis_raw_delta < scf_control%eps_scf) THEN
                      scf_env%iter_delta = adiis_raw_delta
                      scf_env%iter_param = 0.0_dp
@@ -737,16 +678,10 @@ CONTAINS
                         IF (.NOT. adiis_restarted) THEN
                            CPABORT("Failed to restart the ADIIS history from the current SCF state")
                         END IF
-                        oda_restart_trigger = .TRUE.
-                        oda_trigger = oda_eligible .AND. scf_env%iter_count < scf_control%max_scf
-                        IF (oda_trigger) THEN
-                           oda_globalization_active = .TRUE.
-                        ELSE
-                           scf_env%iter_delta = adiis_raw_delta
-                           scf_env%iter_param = 0.0_dp
-                           scf_env%iter_method = "ADIIS/Rst."
-                           scf_env%adiis_check_next = .FALSE.
-                        END IF
+                        scf_env%iter_delta = adiis_raw_delta
+                        scf_env%iter_param = 0.0_dp
+                        scf_env%iter_method = "ADIIS/Rst."
+                        scf_env%adiis_check_next = .FALSE.
                      ELSE
                         ! The raw map is not converged, but the accelerated step is not an
                         ! artificial subspace zero. Preserve the useful history, discard the
@@ -755,17 +690,6 @@ CONTAINS
                                                   energy%total, adiis_pushed)
                         IF (.NOT. adiis_pushed) CPABORT("Failed to append the accepted ADIIS SCF state")
                         CALL qs_scf_subspace_build(scf_env%scf_subspace_buffer)
-                        IF (scf_env%scf_subspace_buffer%last_restart) THEN
-                           oda_globalization_active = .TRUE.
-                        END IF
-                        IF (scf_env%scf_subspace_buffer%use_combined_fock) THEN
-                           oda_globalization_active = .FALSE.
-                        END IF
-                        IF (scf_env%scf_subspace_buffer%last_restart .OR. &
-                            scf_env%scf_subspace_buffer%use_combined_fock) THEN
-                           oda_predictor_lambda = 1.0_dp
-                           oda_predictor_valid = .FALSE.
-                        END IF
                         IF (do_kpoints) THEN
                            CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, &
                                                   added_mos_auto_grow=added_mos_auto_grow)
@@ -785,31 +709,7 @@ CONTAINS
                   END IF
                END IF
 
-               IF (oda_trigger) THEN
-                  CPASSERT(ALLOCATED(scf_env%scf_subspace_buffer%generation))
-                  CPASSERT(SIZE(scf_env%scf_subspace_buffer%generation) > 0)
-                  CPASSERT(ASSOCIATED(scf_env%scf_subspace_buffer%fock))
-                  CPASSERT(scf_env%scf_subspace_buffer%nstored > 0)
-                  oda_base_slot = MAXLOC(scf_env%scf_subspace_buffer%generation, DIM=1)
-                  CALL qs_scf_oda_apply(qs_env, scf_env, rho, ks_env, &
-                                        scf_env%scf_subspace_buffer%fock(oda_base_slot, :, :), &
-                                        matrix_ks_kp, rho_ao_kp, oda_base_energy, &
-                                        oda_predictor_lambda, oda_predictor_valid, oda_applied, &
-                                        oda_state_evaluated, oda_evaluated_energy)
-                  IF (oda_applied) THEN
-                     oda_interior = scf_env%oda_lambda < 1.0_dp - 64.0_dp*EPSILON(1.0_dp)
-                  END IF
-                  scf_env%iter_delta = scf_env%oda_lambda*adiis_raw_delta
-                  scf_env%iter_param = scf_env%oda_lambda
-                  IF (.NOT. oda_applied) THEN
-                     scf_env%iter_method = "ODA/Fallback"
-                  ELSE IF (oda_restart_trigger) THEN
-                     scf_env%iter_method = "ODA/Rst."
-                  ELSE
-                     scf_env%iter_method = "ODA/Diag."
-                  END IF
-                  scf_env%adiis_check_next = scf_env%iter_delta < scf_control%eps_scf
-               ELSE IF (.NOT. adiis_validation) THEN
+               IF (.NOT. adiis_validation) THEN
                   CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, scf_env%iter_delta)
                   scf_env%adiis_check_next = .NOT. diis_step .AND. &
                                              scf_env%iter_delta < scf_control%eps_scf
@@ -891,11 +791,7 @@ CONTAINS
             END IF
 
             ! Print requested MO information (can be computationally expensive with OT)
-            ! The accepted interior ODA density is relaxed and has no matching MO set;
-            ! suppress iteration-local MO properties until the next idempotent endpoint.
-            IF (.NOT. oda_interior) THEN
-               CALL qs_scf_write_mos(qs_env, scf_env, final_mos=.FALSE.)
-            END IF
+            CALL qs_scf_write_mos(qs_env, scf_env, final_mos=.FALSE.)
 
             IF (dft_control%qs_control%xtb_control%do_tblite) THEN
                IF (scf_env%method == ot_method_nr) THEN
@@ -910,12 +806,7 @@ CONTAINS
             END IF
 
             IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
-               ! ADIIS never mixes densities. ODA trials already update rho; only an
-               ! unevaluated raw endpoint still needs to be committed from p_mix_new.
-               IF (.NOT. oda_state_evaluated) CALL qs_scf_commit_density_candidate(scf_env, rho)
-               ! An accepted interior ODA density has no matching MO set.  Admit the
-               ! state to CDIIS only after a subsequent full diagonalization step.
-               scf_env%scf_subspace_buffer%diis_state_valid = .NOT. oda_interior
+               CALL qs_scf_commit_density_candidate(scf_env, rho)
                density_full_step = .TRUE.
             ELSE
                density_full_step = diis_step .OR. tblite_native_mixer .OR. internal_tblite_density_full_step
@@ -981,10 +872,7 @@ CONTAINS
             IF (do_kpoints) THEN
                CALL write_kpoints_restart(rho_ao_kp, kpoints, scf_env, dft_section, particle_set, qs_kind_set)
             ELSE
-               ! A damped ODA density is generally non-idempotent and cannot be represented by
-               ! the raw-endpoint MOs. Defer the WFN restart until a later idempotent step.
-               IF (.NOT. dft_control%mtlr_dft_with_perturbation .AND. &
-                   .NOT. oda_interior) THEN
+               IF (.NOT. dft_control%mtlr_dft_with_perturbation) THEN
                   ! Write wavefunction restart file
                   IF (scf_env%method == ot_method_nr) THEN
                      ! With OT: provide the Kohn-Sham matrix for the calculation of the MO eigenvalues
@@ -1003,14 +891,6 @@ CONTAINS
                EXIT scf_loop
             END IF
 
-            IF (oda_state_evaluated) THEN
-               ! ODA has already updated the accepted AO density, real-space density, Fock
-               ! matrix, and all energy components.  Preserve the ordinary SCF row above,
-               ! then carry that evaluated state directly into the next iteration.
-               oda_evaluated_energy%tot_old = energy%tot_old
-               energy = oda_evaluated_energy
-            END IF
-
             IF (.NOT. BTEST(cp_print_key_should_output(logger%iter_info, &
                                                        scf_section, "PRINT%ITERATION_INFO/TIME_CUMUL"), cp_p_file)) THEN
                t1 = m_walltime()
@@ -1026,10 +906,8 @@ CONTAINS
                END DO
             END IF
 
-            IF (.NOT. oda_state_evaluated) THEN
-               CALL qs_scf_rho_update(rho, qs_env, scf_env, ks_env, &
-                                      mix_rho=scf_env%mixing_method >= gspace_mixing_nr)
-            END IF
+            CALL qs_scf_rho_update(rho, qs_env, scf_env, ks_env, &
+                                   mix_rho=scf_env%mixing_method >= gspace_mixing_nr)
 
             CALL timestop(handle2)
 
@@ -1514,7 +1392,8 @@ CONTAINS
       SELECT CASE (scf_env%method)
       CASE DEFAULT
 
-         CPABORT("Unknown SCF method <"//TRIM(cp_to_string(scf_env%method))//"> found. Check the code!")
+         CALL cp_abort(__LOCATION__, &
+                       "Unknown SCF method <"//TRIM(cp_to_string(scf_env%method))//"> found. Check the code!")
 
       CASE (filter_matrix_diag_method_nr)
 
@@ -1586,7 +1465,12 @@ CONTAINS
                                      scf_control%diagonalization%ot_settings%precond_solver_type, &
                                      scf_control%diagonalization%ot_settings%energy_gap, dft_control%nspins, &
                                      chebyshev_degree=scf_control%diagonalization%ot_settings%chebyshev_degree, &
-                                     low_rank_base=scf_control%diagonalization%ot_settings%low_rank_base)
+                                     low_rank_base=scf_control%diagonalization%ot_settings%low_rank_base, &
+                                     fermi_low_rank_max_rank= &
+                                     scf_control%diagonalization%ot_settings%fermi_low_rank_max_rank, &
+                                     lattice_fft=scf_control%diagonalization%ot_settings%lattice_fft, &
+                                     lattice_fft_local_cells= &
+                                     scf_control%diagonalization%ot_settings%lattice_fft_local_cells)
 
       CASE (block_davidson_diag_method_nr)
          ! Preconditioner initialized within the loop, when required
@@ -1606,6 +1490,11 @@ CONTAINS
                                         kp_range=kp_range, &
                                         wkp=wkp)
 
+               ! A previous zero-width filling may have changed the occupied rank at each k point.
+               ! Restore the fixed OT ranks before validating or reconstructing the active space.
+               IF (.NOT. scf_env%qs_ot_env(1)%settings%do_ener) THEN
+                  CALL qs_kpoint_set_fixed_occupations(kpoints)
+               END IF
                kpoint_mos_initialized = qs_kpoint_mos_initialized( &
                                         kpoints, require_full_space=scf_env%qs_ot_env(1)%settings%do_ener)
                SELECT CASE (entry_reason)
@@ -1633,10 +1522,7 @@ CONTAINS
                   CPASSERT(ASSOCIATED(rho))
                   CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
                   CPASSERT(ASSOCIATED(rho_ao_kp))
-                  kp_diis_step = .FALSE.
-                  CALL do_general_diag_kp(rho_ao_kp, matrix_s_kp, kpoints, scf_env, &
-                                          scf_control, .FALSE., kp_diis_step, &
-                                          store_ot_matrices=.TRUE., transfer_only=.TRUE.)
+                  CALL kpoint_operator_store(kpoints, scf_env%scf_work1(1), rho_ao_kp, matrix_s_kp)
                   CALL qs_kpoint_state_prepare_fixed_density(kpoints)
                   IF (SIZE(rho_ao_kp, 1) < nspin_ot) THEN
                      CPASSERT(SIZE(rho_ao_kp, 1) == 1)
@@ -1692,10 +1578,7 @@ CONTAINS
 
                ! Redistribute the physical operators to their owning k-point groups.  OT must not
                ! call the collective real-space transform independently with group-local k values.
-               kp_diis_step = .FALSE.
-               CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, &
-                                       scf_control, .FALSE., kp_diis_step, matrix_t=matrix_t_kp, &
-                                       store_ot_matrices=.TRUE., transfer_only=.TRUE.)
+               CALL kpoint_operator_store(kpoints, scf_env%scf_work1(1), matrix_ks_kp, matrix_s_kp, matrix_t_kp)
 
                ! Natural orbitals define the fixed occupied projector but not its internal gauge.
                ! Canonicalize that subspace with the matching physical Hamiltonian and populate
@@ -1754,6 +1637,18 @@ CONTAINS
                                      kp_range=kp_range, &
                                      wkp=wkp)
 
+            IF (scf_env%qs_ot_env(1)%settings%preconditioner_type == &
+                ot_precond_full_all_covariant) THEN
+               IF (.NOT. do_kpoints) THEN
+                  DO ispin = 1, SIZE(mos)
+                     IF (.NOT. mos(ispin)%uniform_occupation) THEN
+                        CALL cp_abort(__LOCATION__, &
+                                      'PRECONDITIONER FULL_ALL_COVARIANT currently requires uniform occupations.')
+                     END IF
+                  END DO
+               END IF
+            END IF
+
             ! might need the KS matrix to init properly
             CALL qs_ks_update_qs_env(qs_env, just_energy=.FALSE., &
                                      calculate_forces=.FALSE.)
@@ -1784,7 +1679,12 @@ CONTAINS
                                            has_unit_metric=has_unit_metric, &
                                            chol_type=scf_env%qs_ot_env(1)%settings%cholesky_type, &
                                            chebyshev_degree=scf_env%qs_ot_env(1)%settings%chebyshev_degree, &
-                                           low_rank_base=scf_env%qs_ot_env(1)%settings%low_rank_base)
+                                           low_rank_base=scf_env%qs_ot_env(1)%settings%low_rank_base, &
+                                           fermi_low_rank_max_rank= &
+                                           scf_env%qs_ot_env(1)%settings%fermi_low_rank_max_rank, &
+                                           lattice_fft=scf_env%qs_ot_env(1)%settings%lattice_fft, &
+                                           lattice_fft_local_cells= &
+                                           scf_env%qs_ot_env(1)%settings%lattice_fft_local_cells)
             END IF
             IF (reuse_precond) reuse_precond = .FALSE.
 
@@ -1794,7 +1694,8 @@ CONTAINS
 
             SELECT CASE (scf_env%qs_ot_env(1)%settings%preconditioner_type)
             CASE (ot_precond_none)
-            CASE (ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_single_inverse)
+            CASE (ot_precond_full_all, ot_precond_fermi_low_rank, ot_precond_full_all_covariant, &
+                  ot_precond_full_single_inverse)
                DO ispin = 1, SIZE(scf_env%qs_ot_env)
                   CALL qs_ot_new_preconditioner(scf_env%qs_ot_env(ispin), &
                                                 scf_env%ot_preconditioner(ispin)%preconditioner)
@@ -1856,10 +1757,12 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
 
       CHARACTER(len=*), PARAMETER :: kpoint_precond_error = &
-         "Complex K-point OT supports PRECONDITIONER NONE, FULL_S_INVERSE, "// &
-         "FULL_KINETIC, FULL_SINGLE_INVERSE, or FULL_ALL.", kpoint_solver_error = &
-         "Complex K-point FULL_ALL supports PRECOND_SOLVER DEFAULT; inverse "// &
-         "preconditioners support DEFAULT or INVERSE_CHOLESKY."
+         "Complex K-point OT supports PRECONDITIONER NONE, FERMI_LOW_RANK, "// &
+         "FULL_S_INVERSE, FULL_KINETIC, FULL_SINGLE, FULL_SINGLE_INVERSE, FULL_ALL, or "// &
+         "FULL_ALL_COVARIANT.", kpoint_solver_error = &
+         "Complex K-point FERMI_LOW_RANK, FULL_SINGLE, FULL_ALL, and FULL_ALL_COVARIANT "// &
+         "support PRECOND_SOLVER DEFAULT; FULL_S_INVERSE, FULL_KINETIC, and "// &
+         "FULL_SINGLE_INVERSE support DEFAULT or INVERSE_CHOLESKY."
 
       INTEGER                                            :: ikpoint, ispin, local_kpoint, &
                                                             number_of_OT_envs, ot_channel
@@ -1883,6 +1786,12 @@ CONTAINS
       END IF
 
       CALL ot_scf_read_input(scf_env%qs_ot_env, scf_section, do_kpoints)
+
+      IF (dft_control%restricted .AND. .NOT. do_kpoints .AND. &
+          scf_env%qs_ot_env(1)%settings%preconditioner_type == &
+          ot_precond_full_all_covariant) THEN
+         CPABORT('Gamma-point PRECONDITIONER FULL_ALL_COVARIANT does not currently support ROKS.')
+      END IF
 
       IF (do_kpoints) THEN
          do_smear = dft_control%smear .OR. scf_control%smear%do_smear
@@ -2067,9 +1976,9 @@ CONTAINS
          ikpoint = kp%nkpoint
          CPASSERT(ikpoint >= 1)
          CPASSERT(SIZE(kp%ot_smat) >= 2)
-         CALL qs_scf_get_ot_kpoint_operator(matrix_s_kp, kpoints, kp, 1, &
-                                            kp%ot_smat(1), kp%ot_smat(2), &
-                                            matrix_sk_re, matrix_sk_im)
+         CALL kpoint_operator_get_local(matrix_s_kp, kpoints, kp, 1, &
+                                        kp%ot_smat(1), kp%ot_smat(2), &
+                                        matrix_sk_re, matrix_sk_im)
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
             CPASSERT(.NOT. scf_env%qs_ot_env(ot_channel)%state_allocated)
@@ -2237,16 +2146,18 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'prepare_qs_ot_kpoint_preconditioners'
 
-      INTEGER                                            :: handle, ikpoint, ispin, ks_spin, &
-                                                            local_kpoint, n_ot_channels, &
-                                                            ot_channel, prec_type, source_channel
+      INTEGER :: handle, ikpoint, ispin, ks_spin, local_kpoint, n_ot_channels, nocc, &
+         occupation_spin, ot_channel, prec_type, source_channel
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: occupation_signature
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
       TYPE(dbcsr_type), POINTER                          :: matrix_h_im, matrix_h_re, matrix_s_im, &
                                                             matrix_s_re, matrix_t_im, matrix_t_re
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (kp, matrix_h_im, matrix_h_re, matrix_s_im, matrix_s_re, matrix_t_im, matrix_t_re)
+      NULLIFY (kp, matrix_h_im, matrix_h_re, matrix_s_im, matrix_s_re, matrix_t_im, matrix_t_re, &
+               occupation_numbers)
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
       CPASSERT(ASSOCIATED(kpoints))
       CPASSERT(ASSOCIATED(matrix_ks))
@@ -2258,7 +2169,8 @@ CONTAINS
          RETURN
       END IF
       SELECT CASE (prec_type)
-      CASE (ot_precond_full_all, ot_precond_full_single, ot_precond_full_single_inverse, &
+      CASE (ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_all_covariant, &
+            ot_precond_full_single, ot_precond_full_single_inverse, &
             ot_precond_full_kinetic, ot_precond_s_inverse)
       CASE DEFAULT
          CPABORT("Unsupported complex K-point OT preconditioner")
@@ -2295,23 +2207,25 @@ CONTAINS
          CPASSERT(ASSOCIATED(kp%ot_smat))
          CPASSERT(SIZE(kp%ot_smat) >= 2)
          ikpoint = kp%nkpoint
-         CALL qs_scf_get_ot_kpoint_operator(matrix_s, kpoints, kp, 1, &
-                                            kp%ot_smat(1), kp%ot_smat(2), &
-                                            matrix_s_re, matrix_s_im)
+         CALL kpoint_operator_get_local(matrix_s, kpoints, kp, 1, &
+                                        kp%ot_smat(1), kp%ot_smat(2), &
+                                        matrix_s_re, matrix_s_im)
          IF (prec_type == ot_precond_full_kinetic) THEN
             CPASSERT(ASSOCIATED(matrix_t))
             CPASSERT(ASSOCIATED(kp%ot_tmat))
             CPASSERT(SIZE(kp%ot_tmat) >= 2)
-            CALL qs_scf_get_ot_kpoint_operator(matrix_t, kpoints, kp, 1, &
-                                               kp%ot_tmat(1), kp%ot_tmat(2), &
-                                               matrix_t_re, matrix_t_im)
+            CALL kpoint_operator_get_local(matrix_t, kpoints, kp, 1, &
+                                           kp%ot_tmat(1), kp%ot_tmat(2), &
+                                           matrix_t_re, matrix_t_im)
          END IF
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
             IF (ispin > 1 .AND. &
                 (prec_type == ot_precond_full_kinetic .OR. prec_type == ot_precond_s_inverse)) THEN
                source_channel = qs_ot_channel_index(1, ikpoint, nspin_ot)
-               CPASSERT(ASSOCIATED(scf_env%ot_preconditioner(source_channel)%preconditioner%complex_fm))
+               IF (.NOT. (ASSOCIATED(scf_env%ot_preconditioner(source_channel)%preconditioner%complex_fm))) THEN
+                  CALL cp_abort(__LOCATION__, "Missing shared complex OT preconditioner")
+               END IF
                scf_env%ot_preconditioner(ot_channel)%preconditioner%complex_fm => &
                   scf_env%ot_preconditioner(source_channel)%preconditioner%complex_fm
                scf_env%ot_preconditioner(ot_channel)%preconditioner%owns_complex_fm = .FALSE.
@@ -2325,16 +2239,27 @@ CONTAINS
                                              scf_env%ot_preconditioner(ot_channel)%preconditioner)
                CYCLE
             END IF
-            IF (prec_type == ot_precond_full_all .OR. &
+            IF (prec_type == ot_precond_fermi_low_rank .OR. &
+                prec_type == ot_precond_full_all .OR. &
+                prec_type == ot_precond_full_all_covariant .OR. &
                 prec_type == ot_precond_full_single .OR. &
                 prec_type == ot_precond_full_single_inverse) THEN
                ks_spin = MIN(ispin, SIZE(kp%ot_hmat, 2))
                CPASSERT(SIZE(kp%ot_hmat, 1) >= 2)
-               CALL qs_scf_get_ot_kpoint_operator(matrix_ks, kpoints, kp, ks_spin, &
-                                                  kp%ot_hmat(1, ks_spin), kp%ot_hmat(2, ks_spin), &
-                                                  matrix_h_re, matrix_h_im)
+               CALL kpoint_operator_get_local(matrix_ks, kpoints, kp, ks_spin, &
+                                              kp%ot_hmat(1, ks_spin), kp%ot_hmat(2, ks_spin), &
+                                              matrix_h_re, matrix_h_im)
             END IF
             SELECT CASE (prec_type)
+            CASE (ot_precond_fermi_low_rank)
+               CALL make_preconditioner_complex_fermi_low_rank( &
+                  scf_env%ot_preconditioner(ot_channel)%preconditioner, &
+                  scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                  scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
+                  matrix_h_re, matrix_h_im, matrix_s_re, matrix_s_im, &
+                  scf_env%qs_ot_env(ot_channel)%settings%energy_gap, &
+                  scf_env%qs_ot_env(ot_channel)%settings%fermi_low_rank_max_rank, &
+                  scf_env%qs_ot_env(ot_channel)%settings%precond_solver_type)
             CASE (ot_precond_full_all)
                CALL make_preconditioner_complex_full_all( &
                   scf_env%ot_preconditioner(ot_channel)%preconditioner, &
@@ -2351,6 +2276,36 @@ CONTAINS
                   kp%mos(1, ispin), &
                   scf_env%qs_ot_env(ot_channel)%settings%energy_gap, &
                   scf_env%qs_ot_env(ot_channel)%settings%precond_solver_type)
+            CASE (ot_precond_full_all_covariant)
+               IF (nspin_ot == 1 .AND. SIZE(kp%mos, 2) > 1) THEN
+                  CALL dbcsr_get_info(scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                                      nfullcols_total=nocc)
+                  ALLOCATE (occupation_signature(nocc, SIZE(kp%mos, 2)))
+                  DO occupation_spin = 1, SIZE(kp%mos, 2)
+                     CALL get_mo_set(kp%mos(1, occupation_spin), &
+                                     occupation_numbers=occupation_numbers)
+                     CPASSERT(ASSOCIATED(occupation_numbers))
+                     CPASSERT(SIZE(occupation_numbers) >= nocc)
+                     occupation_signature(:, occupation_spin) = occupation_numbers(1:nocc)
+                  END DO
+                  CALL make_preconditioner_complex_full_all_covariant( &
+                     scf_env%ot_preconditioner(ot_channel)%preconditioner, &
+                     scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                     scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
+                     matrix_h_re, matrix_h_im, matrix_s_re, matrix_s_im, &
+                     scf_env%qs_ot_env(ot_channel)%settings%energy_gap, &
+                     scf_env%qs_ot_env(ot_channel)%settings%precond_solver_type, &
+                     occupation_signature)
+                  DEALLOCATE (occupation_signature)
+               ELSE
+                  CALL make_preconditioner_complex_full_all_covariant( &
+                     scf_env%ot_preconditioner(ot_channel)%preconditioner, &
+                     scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                     scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
+                     matrix_h_re, matrix_h_im, matrix_s_re, matrix_s_im, &
+                     scf_env%qs_ot_env(ot_channel)%settings%energy_gap, &
+                     scf_env%qs_ot_env(ot_channel)%settings%precond_solver_type)
+               END IF
             CASE (ot_precond_full_single_inverse)
                CALL make_preconditioner_complex_full_single_inverse( &
                   scf_env%ot_preconditioner(ot_channel)%preconditioner, &

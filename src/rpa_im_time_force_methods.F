@@ -23,6 +23,7 @@ MODULE rpa_im_time_force_methods
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_clear, dbcsr_complete_redistribute, dbcsr_copy, dbcsr_create, &
@@ -160,10 +161,13 @@ MODULE rpa_im_time_force_methods
    USE realspace_grid_types,            ONLY: map_gaussian_here,&
                                               realspace_grid_type
    USE response_solver,                 ONLY: response_equation_new
-   USE rpa_im_time,                     ONLY: compute_mat_dm_global
+   USE rpa_im_time,                     ONLY: compute_mat_dm_global,&
+                                              propagator_sector_occupied,&
+                                              propagator_sector_virtual
    USE rpa_im_time_force_types,         ONLY: im_time_force_type
    USE rs_pw_interface,                 ONLY: potential_pw2rs
    USE task_list_types,                 ONLY: task_list_type
+   USE time_frequency_grids,            ONLY: time_frequency_grid_type
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
@@ -385,7 +389,7 @@ CONTAINS
       END DO
 
       CALL para_env%sum(memory)
-      compression_factor = REAL(nze_tot, dp)*1.0E-06*8.0_dp/memory
+      compression_factor = REAL(nze_tot, dp)*1.0E-06_dp*8.0_dp/memory
       IF (unit_nr > 0) THEN
          WRITE (UNIT=unit_nr, FMT="((T3,A,T66,F11.2,A4))") &
             "MEMORY_INFO| Memory for 3-center derivatives (compressed):", memory, ' MiB'
@@ -634,21 +638,15 @@ CONTAINS
 !> \param t_3c_O ...
 !> \param t_3c_O_compressed ...
 !> \param t_3c_O_ind ...
-!> \param fm_scaled_dm_occ_tau ...
-!> \param fm_scaled_dm_virt_tau ...
-!> \param fm_mo_coeff_occ ...
-!> \param fm_mo_coeff_virt ...
-!> \param fm_mo_coeff_occ_scaled ...
-!> \param fm_mo_coeff_virt_scaled ...
+!> \param cfm_mo_coeff ...
+!> \param homo ...
 !> \param starts_array_mc ...
 !> \param ends_array_mc ...
 !> \param starts_array_mc_block ...
 !> \param ends_array_mc_block ...
-!> \param num_integ_points ...
 !> \param nmo ...
 !> \param Eigenval ...
-!> \param tau_tj ...
-!> \param tau_wj ...
+!> \param grid ...
 !> \param cut_memory ...
 !> \param Pspin ...
 !> \param Qspin ...
@@ -661,11 +659,9 @@ CONTAINS
 !> \note In open-shell, we need to take Q from one spin, and everything from the other
 ! **************************************************************************************************
    SUBROUTINE calc_laplace_loop_forces(force_data, mat_P_omega, t_3c_M, t_3c_O, t_3c_O_compressed, &
-                                       t_3c_O_ind, fm_scaled_dm_occ_tau, fm_scaled_dm_virt_tau, &
-                                       fm_mo_coeff_occ, fm_mo_coeff_virt, fm_mo_coeff_occ_scaled, &
-                                       fm_mo_coeff_virt_scaled, starts_array_mc, ends_array_mc, &
-                                       starts_array_mc_block, ends_array_mc_block, num_integ_points, &
-                                       nmo, Eigenval, tau_tj, tau_wj, cut_memory, Pspin, Qspin, &
+                                       t_3c_O_ind, cfm_mo_coeff, homo, starts_array_mc, ends_array_mc, &
+                                       starts_array_mc_block, ends_array_mc_block, &
+                                       nmo, Eigenval, grid, cut_memory, Pspin, Qspin, &
                                        open_shell, unit_nr, dbcsr_time, dbcsr_nflop, mp2_env, qs_env)
 
       TYPE(im_time_force_type), INTENT(INOUT)            :: force_data
@@ -673,20 +669,13 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: t_3c_M, t_3c_O
       TYPE(hfx_compression_type), DIMENSION(:)           :: t_3c_O_compressed
       TYPE(block_ind_type), DIMENSION(:), INTENT(INOUT)  :: t_3c_O_ind
-      TYPE(cp_fm_type), INTENT(IN)                       :: fm_scaled_dm_occ_tau, &
-                                                            fm_scaled_dm_virt_tau
-      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mo_coeff_occ, fm_mo_coeff_virt
-      TYPE(cp_fm_type), INTENT(IN)                       :: fm_mo_coeff_occ_scaled, &
-                                                            fm_mo_coeff_virt_scaled
-      INTEGER, DIMENSION(:), INTENT(IN)                  :: starts_array_mc, ends_array_mc, &
+      TYPE(cp_cfm_type), DIMENSION(:), INTENT(IN)        :: cfm_mo_coeff
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: homo, starts_array_mc, ends_array_mc, &
                                                             starts_array_mc_block, &
                                                             ends_array_mc_block
-      INTEGER, INTENT(IN)                                :: num_integ_points, nmo
+      INTEGER, INTENT(IN)                                :: nmo
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: Eigenval
-      REAL(KIND=dp), DIMENSION(num_integ_points), &
-         INTENT(IN)                                      :: tau_tj
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
-         INTENT(IN)                                      :: tau_wj
+      TYPE(time_frequency_grid_type), INTENT(IN)         :: grid
       INTEGER, INTENT(IN)                                :: cut_memory, Pspin, Qspin
       LOGICAL, INTENT(IN)                                :: open_shell
       INTEGER, INTENT(IN)                                :: unit_nr
@@ -698,7 +687,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calc_laplace_loop_forces'
 
       INTEGER :: dummy_int, handle, handle2, i_mem, i_xyz, ibasis, ispin, j_xyz, jquad, k_xyz, &
-         n_mem_RI, n_rep, natom, nkind, nspins, unit_nr_dbcsr
+         n_mem_RI, n_rep, natom, nkind, nspins, num_integ_points, unit_nr_dbcsr
       INTEGER(int_8)                                     :: flop, nze, nze_ddint, nze_der_AO, &
                                                             nze_der_RI, nze_KQK
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, batch_blk_end, &
@@ -715,7 +704,7 @@ CONTAINS
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: mat_dm_occ, mat_dm_virt
+      TYPE(dbcsr_p_type), DIMENSION(:, :, :), POINTER    :: propagator
       TYPE(dbcsr_type)                                   :: dbcsr_work1, dbcsr_work2, dbcsr_work3, &
                                                             exp_occ, exp_virt, R_occ, R_virt, &
                                                             virial_ovlp, Y_1, Y_2
@@ -735,11 +724,15 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: qs_section
       TYPE(virial_type), POINTER                         :: virial
 
-      NULLIFY (matrix_s, dummy_ptr, atomic_kind_set, force, matrix_s, matrix_ks, mat_dm_occ, mat_dm_virt)
+      NULLIFY (matrix_s, dummy_ptr, atomic_kind_set, force, matrix_s, matrix_ks)
       NULLIFY (dft_control, virial, particle_set, cell, para_env, orb_basis, ri_basis, qs_section)
       NULLIFY (qs_kind_set)
 
       CALL timeset(routineN, handle)
+
+      num_integ_points = SIZE(grid%imaginary_time)
+
+      NULLIFY (propagator)
 
       CALL get_qs_env(qs_env, matrix_s=matrix_s, natom=natom, atomic_kind_set=atomic_kind_set, &
                       force=force, matrix_ks=matrix_ks, dft_control=dft_control, virial=virial, &
@@ -894,8 +887,8 @@ CONTAINS
       work_virial = 0.0_dp
       work_virial_ovlp = 0.0_dp
       DO jquad = 1, num_integ_points
-         tau = tau_tj(jquad)
-         omega = tau_wj(jquad)
+         tau = grid%imaginary_time(jquad)
+         omega = grid%time_weights_at_zero_frequency(jquad)
          fac = -2.0_dp*omega*mp2_env%scale_S
          IF (open_shell) fac = 0.5_dp*fac
          occ_ddint = 0; nze_ddint = 0
@@ -933,21 +926,19 @@ CONTAINS
          CALL get_tensor_occupancy(t_KQKT, nze_KQK, occ_KQK)
 
          !Calculate the pseudo-density matrix in tensor form. There are a few useless arguments for SOS-MP2
-         CALL compute_mat_dm_global(fm_scaled_dm_occ_tau, fm_scaled_dm_virt_tau, tau_tj, num_integ_points, &
-                                    nmo, fm_mo_coeff_occ(Pspin), fm_mo_coeff_virt(Pspin), &
-                                    fm_mo_coeff_occ_scaled, fm_mo_coeff_virt_scaled, mat_dm_occ, mat_dm_virt, &
+         CALL compute_mat_dm_global(grid, nmo, cfm_mo_coeff(Pspin), homo(Pspin), propagator, &
                                     matrix_s, Pspin, Eigenval(:, Pspin), 0.0_dp, eps_filter, &
                                     mp2_env%ri_rpa_im_time%memory_info, unit_nr, &
                                     jquad, .FALSE., .FALSE., qs_env, dummy_int, dummy_ptr, para_env)
 
-         CALL dbt_create(mat_dm_occ(jquad, 1)%matrix, t_2c_tmp)
-         CALL dbt_copy_matrix_to_tensor(mat_dm_occ(jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_create(propagator(propagator_sector_occupied, jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_copy_matrix_to_tensor(propagator(propagator_sector_occupied, jquad, 1)%matrix, t_2c_tmp)
          CALL dbt_copy(t_2c_tmp, t_dm_occ, move_data=.TRUE.)
          CALL dbt_filter(t_dm_occ, eps_filter)
          CALL dbt_destroy(t_2c_tmp)
 
-         CALL dbt_create(mat_dm_virt(jquad, 1)%matrix, t_2c_tmp)
-         CALL dbt_copy_matrix_to_tensor(mat_dm_virt(jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_create(propagator(propagator_sector_virtual, jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_copy_matrix_to_tensor(propagator(propagator_sector_virtual, jquad, 1)%matrix, t_2c_tmp)
          CALL dbt_copy(t_2c_tmp, t_dm_virt, move_data=.TRUE.)
          CALL dbt_filter(t_dm_virt, eps_filter)
          CALL dbt_destroy(t_2c_tmp)
@@ -1166,8 +1157,7 @@ CONTAINS
       CALL dbt_destroy(t_2c_RI)
       CALL dbt_destroy(t_2c_RI_2)
       CALL dbt_destroy(t_2c_AO)
-      CALL dbcsr_deallocate_matrix_set(mat_dm_occ)
-      CALL dbcsr_deallocate_matrix_set(mat_dm_virt)
+      CALL dbcsr_deallocate_matrix_set(propagator)
 
       CALL timestop(handle)
 
@@ -1182,25 +1172,16 @@ CONTAINS
 !> \param t_3c_O ...
 !> \param t_3c_O_compressed ...
 !> \param t_3c_O_ind ...
-!> \param fm_scaled_dm_occ_tau ...
-!> \param fm_scaled_dm_virt_tau ...
-!> \param fm_mo_coeff_occ ...
-!> \param fm_mo_coeff_virt ...
-!> \param fm_mo_coeff_occ_scaled ...
-!> \param fm_mo_coeff_virt_scaled ...
+!> \param cfm_mo_coeff ...
+!> \param homo ...
 !> \param starts_array_mc ...
 !> \param ends_array_mc ...
 !> \param starts_array_mc_block ...
 !> \param ends_array_mc_block ...
-!> \param num_integ_points ...
 !> \param nmo ...
 !> \param Eigenval ...
 !> \param e_fermi ...
-!> \param weights_cos_tf_t_to_w ...
-!> \param weights_cos_tf_w_to_t ...
-!> \param tj ...
-!> \param wj ...
-!> \param tau_tj ...
+!> \param grid ...
 !> \param cut_memory ...
 !> \param ispin ...
 !> \param open_shell ...
@@ -1211,12 +1192,9 @@ CONTAINS
 !> \param qs_env ...
 ! **************************************************************************************************
    SUBROUTINE calc_rpa_loop_forces(force_data, mat_P_omega, t_3c_M, t_3c_O, t_3c_O_compressed, &
-                                   t_3c_O_ind, fm_scaled_dm_occ_tau, fm_scaled_dm_virt_tau, &
-                                   fm_mo_coeff_occ, fm_mo_coeff_virt, fm_mo_coeff_occ_scaled, &
-                                   fm_mo_coeff_virt_scaled, starts_array_mc, ends_array_mc, &
-                                   starts_array_mc_block, ends_array_mc_block, num_integ_points, &
-                                   nmo, Eigenval, e_fermi, weights_cos_tf_t_to_w, weights_cos_tf_w_to_t, &
-                                   tj, wj, tau_tj, cut_memory, ispin, open_shell, unit_nr, dbcsr_time, &
+                                   t_3c_O_ind, cfm_mo_coeff, homo, starts_array_mc, ends_array_mc, &
+                                   starts_array_mc_block, ends_array_mc_block, &
+                                   nmo, Eigenval, e_fermi, grid, cut_memory, ispin, open_shell, unit_nr, dbcsr_time, &
                                    dbcsr_nflop, mp2_env, qs_env)
 
       TYPE(im_time_force_type), INTENT(INOUT)            :: force_data
@@ -1224,24 +1202,14 @@ CONTAINS
       TYPE(dbt_type), INTENT(INOUT)                      :: t_3c_M, t_3c_O
       TYPE(hfx_compression_type), DIMENSION(:)           :: t_3c_O_compressed
       TYPE(block_ind_type), DIMENSION(:), INTENT(INOUT)  :: t_3c_O_ind
-      TYPE(cp_fm_type), INTENT(IN)                       :: fm_scaled_dm_occ_tau, &
-                                                            fm_scaled_dm_virt_tau
-      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mo_coeff_occ, fm_mo_coeff_virt
-      TYPE(cp_fm_type), INTENT(IN)                       :: fm_mo_coeff_occ_scaled, &
-                                                            fm_mo_coeff_virt_scaled
-      INTEGER, DIMENSION(:), INTENT(IN)                  :: starts_array_mc, ends_array_mc, &
+      TYPE(cp_cfm_type), DIMENSION(:), INTENT(IN)        :: cfm_mo_coeff
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: homo, starts_array_mc, ends_array_mc, &
                                                             starts_array_mc_block, &
                                                             ends_array_mc_block
-      INTEGER, INTENT(IN)                                :: num_integ_points, nmo
+      INTEGER, INTENT(IN)                                :: nmo
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: Eigenval
       REAL(KIND=dp), INTENT(IN)                          :: e_fermi
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :), &
-         INTENT(IN)                                      :: weights_cos_tf_t_to_w, &
-                                                            weights_cos_tf_w_to_t
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
-         INTENT(IN)                                      :: tj, wj
-      REAL(KIND=dp), DIMENSION(num_integ_points), &
-         INTENT(IN)                                      :: tau_tj
+      TYPE(time_frequency_grid_type), INTENT(IN)         :: grid
       INTEGER, INTENT(IN)                                :: cut_memory, ispin
       LOGICAL, INTENT(IN)                                :: open_shell
       INTEGER, INTENT(IN)                                :: unit_nr
@@ -1253,7 +1221,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calc_rpa_loop_forces'
 
       INTEGER :: dummy_int, handle, handle2, i_mem, i_xyz, ibasis, iquad, j_xyz, jquad, k_xyz, &
-         n_mem_RI, n_rep, natom, nkind, nspins, unit_nr_dbcsr
+         n_mem_RI, n_rep, natom, nkind, nspins, num_integ_points, unit_nr_dbcsr
       INTEGER(int_8)                                     :: flop, nze, nze_ddint, nze_der_AO, &
                                                             nze_der_RI, nze_KBK
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, batch_blk_end, &
@@ -1269,7 +1237,7 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: mat_P_tau, matrix_ks, matrix_s
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: mat_dm_occ, mat_dm_virt
+      TYPE(dbcsr_p_type), DIMENSION(:, :, :), POINTER    :: propagator
       TYPE(dbcsr_type)                                   :: dbcsr_work1, dbcsr_work2, dbcsr_work3, &
                                                             dbcsr_work_symm, exp_occ, exp_virt, &
                                                             R_occ, R_virt, virial_ovlp, Y_1, Y_2
@@ -1289,11 +1257,15 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: qs_section
       TYPE(virial_type), POINTER                         :: virial
 
-      NULLIFY (matrix_s, dummy_ptr, atomic_kind_set, force, matrix_s, matrix_ks, mat_dm_occ, mat_dm_virt)
+      NULLIFY (matrix_s, dummy_ptr, atomic_kind_set, force, matrix_s, matrix_ks)
       NULLIFY (dft_control, virial, particle_set, cell, blacs_env, para_env, orb_basis, ri_basis)
       NULLIFY (qs_kind_set)
 
       CALL timeset(routineN, handle)
+
+      num_integ_points = SIZE(grid%imaginary_time)
+
+      NULLIFY (propagator)
 
       CALL get_qs_env(qs_env, matrix_s=matrix_s, natom=natom, atomic_kind_set=atomic_kind_set, &
                       force=force, matrix_ks=matrix_ks, dft_control=dft_control, virial=virial, &
@@ -1402,7 +1374,7 @@ CONTAINS
 
       !loop over freqeuncies
       DO iquad = 1, num_integ_points
-         omega = tj(iquad)
+         omega = grid%frequency(iquad)
 
          !calculate (1 + Q(w))^-1 - 1 for the given freq.
          !Always take spin alpha (get 2*alpha in closed shell, and alpha+beta in open-shell)
@@ -1431,10 +1403,10 @@ CONTAINS
          CALL dbcsr_add_on_diag(dbcsr_work_symm, -1.0_dp)
 
          DO jquad = 1, num_integ_points
-            tau = tau_tj(jquad)
+            tau = grid%imaginary_time(jquad)
 
             !the P matrix to time.
-            weight = weights_cos_tf_w_to_t(jquad, iquad)*COS(tau*omega)
+            weight = grid%cosine_frequency_to_time_weights(jquad, iquad)*COS(tau*omega)
             IF (open_shell) THEN
                IF (ispin == 1) THEN
                   !mat_P_omega contains the sum of alpha and beta spin => we only want alpha
@@ -1450,7 +1422,8 @@ CONTAINS
             END IF
 
             !convert B matrix to time
-            weight = weights_cos_tf_t_to_w(iquad, jquad)*COS(tau*omega)*wj(iquad)
+            weight = grid%cosine_time_to_frequency_weights(iquad, jquad)*COS(tau*omega)* &
+                     grid%frequency_weights(iquad)
             CALL dbt_copy_matrix_to_tensor(dbcsr_work_symm, t_2c_tmp)
             CALL dbt_scale(t_2c_tmp, weight)
             CALL dbt_copy(t_2c_tmp, t_B(jquad), summation=.TRUE., move_data=.TRUE.)
@@ -1525,7 +1498,7 @@ CONTAINS
       work_virial = 0.0_dp
       work_virial_ovlp = 0.0_dp
       DO jquad = 1, num_integ_points
-         tau = tau_tj(jquad)
+         tau = grid%imaginary_time(jquad)
          occ_ddint = 0; nze_ddint = 0
 
          CALL para_env%sync()
@@ -1544,21 +1517,19 @@ CONTAINS
          CALL get_tensor_occupancy(t_KBKT, nze_KBK, occ_KBK)
 
          !Calculate the pseudo-density matrix in tensor form. There are a few useless arguments for SOS-MP2
-         CALL compute_mat_dm_global(fm_scaled_dm_occ_tau, fm_scaled_dm_virt_tau, tau_tj, num_integ_points, &
-                                    nmo, fm_mo_coeff_occ(ispin), fm_mo_coeff_virt(ispin), &
-                                    fm_mo_coeff_occ_scaled, fm_mo_coeff_virt_scaled, mat_dm_occ, mat_dm_virt, &
+         CALL compute_mat_dm_global(grid, nmo, cfm_mo_coeff(ispin), homo(ispin), propagator, &
                                     matrix_s, ispin, Eigenval(:, ispin), e_fermi, eps_filter, &
                                     mp2_env%ri_rpa_im_time%memory_info, unit_nr, &
                                     jquad, .FALSE., .FALSE., qs_env, dummy_int, dummy_ptr, para_env)
 
-         CALL dbt_create(mat_dm_occ(jquad, 1)%matrix, t_2c_tmp)
-         CALL dbt_copy_matrix_to_tensor(mat_dm_occ(jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_create(propagator(propagator_sector_occupied, jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_copy_matrix_to_tensor(propagator(propagator_sector_occupied, jquad, 1)%matrix, t_2c_tmp)
          CALL dbt_copy(t_2c_tmp, t_dm_occ, move_data=.TRUE.)
          CALL dbt_filter(t_dm_occ, eps_filter)
          CALL dbt_destroy(t_2c_tmp)
 
-         CALL dbt_create(mat_dm_virt(jquad, 1)%matrix, t_2c_tmp)
-         CALL dbt_copy_matrix_to_tensor(mat_dm_virt(jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_create(propagator(propagator_sector_virtual, jquad, 1)%matrix, t_2c_tmp)
+         CALL dbt_copy_matrix_to_tensor(propagator(propagator_sector_virtual, jquad, 1)%matrix, t_2c_tmp)
          CALL dbt_copy(t_2c_tmp, t_dm_virt, move_data=.TRUE.)
          CALL dbt_filter(t_dm_virt, eps_filter)
          CALL dbt_destroy(t_2c_tmp)
@@ -1784,8 +1755,7 @@ CONTAINS
       CALL dbt_destroy(t_2c_RI)
       CALL dbt_destroy(t_2c_RI_2)
       CALL dbt_destroy(t_2c_AO)
-      CALL dbcsr_deallocate_matrix_set(mat_dm_occ)
-      CALL dbcsr_deallocate_matrix_set(mat_dm_virt)
+      CALL dbcsr_deallocate_matrix_set(propagator)
       CALL dbcsr_deallocate_matrix_set(mat_P_tau)
 
       CALL timestop(handle)
@@ -3956,83 +3926,76 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Overwrites the "optimal" Laplace quadrature with that of the first step
-!> \param tj ...
-!> \param wj ...
-!> \param tau_tj ...
-!> \param tau_wj ...
-!> \param weights_cos_tf_t_to_w ...
-!> \param weights_cos_tf_w_to_t ...
+!> \param grid ...
 !> \param do_laplace ...
 !> \param do_im_time ...
-!> \param num_integ_points ...
 !> \param unit_nr ...
 !> \param qs_env ...
 ! **************************************************************************************************
-   SUBROUTINE keep_initial_quad(tj, wj, tau_tj, tau_wj, weights_cos_tf_t_to_w, weights_cos_tf_w_to_t, &
-                                do_laplace, do_im_time, num_integ_points, unit_nr, qs_env)
+   SUBROUTINE keep_initial_quad(grid, do_laplace, do_im_time, unit_nr, qs_env)
 
-      REAL(dp), ALLOCATABLE, DIMENSION(:), INTENT(INOUT) :: tj, wj, tau_tj, tau_wj
-      REAL(dp), ALLOCATABLE, DIMENSION(:, :), &
-         INTENT(INOUT)                                   :: weights_cos_tf_t_to_w, &
-                                                            weights_cos_tf_w_to_t
+      TYPE(time_frequency_grid_type), INTENT(INOUT)      :: grid
       LOGICAL, INTENT(IN)                                :: do_laplace, do_im_time
-      INTEGER, INTENT(IN)                                :: num_integ_points, unit_nr
+      INTEGER, INTENT(IN)                                :: unit_nr
       TYPE(qs_environment_type), POINTER                 :: qs_env
 
       INTEGER                                            :: jquad
 
       IF (do_laplace .OR. do_im_time) THEN
-         IF (.NOT. ASSOCIATED(qs_env%mp2_env%ri_rpa_im_time%tau_tj)) THEN
-            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%tau_tj(num_integ_points))
-            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%tau_wj(num_integ_points))
-            qs_env%mp2_env%ri_rpa_im_time%tau_tj(:) = tau_tj(:)
-            qs_env%mp2_env%ri_rpa_im_time%tau_wj(:) = tau_wj(:)
+         IF (.NOT. ALLOCATED(qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%imaginary_time)) THEN
+            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%imaginary_time, SOURCE=grid%imaginary_time)
+            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%time_weights_at_zero_frequency, &
+                      SOURCE=grid%time_weights_at_zero_frequency)
          ELSE
             !If weights already stored, we overwrite the new ones
-            tau_tj(:) = qs_env%mp2_env%ri_rpa_im_time%tau_tj(:)
-            tau_wj(:) = qs_env%mp2_env%ri_rpa_im_time%tau_wj(:)
+            grid%imaginary_time(:) = qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%imaginary_time(:)
+            grid%time_weights_at_zero_frequency(:) = &
+               qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%time_weights_at_zero_frequency(:)
          END IF
       END IF
       IF (.NOT. do_laplace) THEN
-         IF (.NOT. ASSOCIATED(qs_env%mp2_env%ri_rpa_im_time%tj)) THEN
-            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%tj(num_integ_points))
-            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%wj(num_integ_points))
-            qs_env%mp2_env%ri_rpa_im_time%tj(:) = tj(:)
-            qs_env%mp2_env%ri_rpa_im_time%wj(:) = wj(:)
+         IF (.NOT. ALLOCATED(qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency)) THEN
+            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency, SOURCE=grid%frequency)
+            ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency_weights, &
+                      SOURCE=grid%frequency_weights)
             IF (do_im_time) THEN
-               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%weights_cos_tf_t_to_w(num_integ_points, num_integ_points))
-               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%weights_cos_tf_w_to_t(num_integ_points, num_integ_points))
-               qs_env%mp2_env%ri_rpa_im_time%weights_cos_tf_t_to_w(:, :) = weights_cos_tf_t_to_w(:, :)
-               qs_env%mp2_env%ri_rpa_im_time%weights_cos_tf_w_to_t(:, :) = weights_cos_tf_w_to_t(:, :)
+               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_time_to_frequency_weights, &
+                         SOURCE=grid%cosine_time_to_frequency_weights)
+               ALLOCATE (qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_frequency_to_time_weights, &
+                         SOURCE=grid%cosine_frequency_to_time_weights)
             END IF
          ELSE
-            tj(:) = qs_env%mp2_env%ri_rpa_im_time%tj(:)
-            wj(:) = qs_env%mp2_env%ri_rpa_im_time%wj(:)
+            grid%frequency(:) = qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency(:)
+            grid%frequency_weights(:) = qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency_weights(:)
             IF (do_im_time) THEN
-               weights_cos_tf_t_to_w(:, :) = qs_env%mp2_env%ri_rpa_im_time%weights_cos_tf_t_to_w(:, :)
-               weights_cos_tf_w_to_t(:, :) = qs_env%mp2_env%ri_rpa_im_time%weights_cos_tf_w_to_t(:, :)
+               grid%cosine_time_to_frequency_weights(:, :) = &
+                  qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_time_to_frequency_weights(:, :)
+               grid%cosine_frequency_to_time_weights(:, :) = &
+                  qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%cosine_frequency_to_time_weights(:, :)
             END IF
          END IF
       END IF
       IF (unit_nr > 0) THEN
          !Printing order same as in mp2_grids.F for consistency
-         IF (ASSOCIATED(qs_env%mp2_env%ri_rpa_im_time%tj) .AND. (.NOT. do_laplace)) THEN
+         IF (ALLOCATED(qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%frequency) .AND. (.NOT. do_laplace)) THEN
             WRITE (UNIT=unit_nr, FMT="(T3,A,T75,i6)") &
-               "MINIMAX_INFO| Number of integration points:", num_integ_points
+               "MINIMAX_INFO| Number of integration points:", SIZE(grid%frequency)
             WRITE (UNIT=unit_nr, FMT="(T3,A,T54,A,T72,A)") &
                "MINIMAX_INFO| Minimax params (freq grid, scaled):", "Weights", "Abscissas"
-            DO jquad = 1, num_integ_points
-               WRITE (UNIT=unit_nr, FMT="(T41,F20.10,F20.10)") wj(jquad), tj(jquad)
+            DO jquad = 1, SIZE(grid%frequency)
+               WRITE (UNIT=unit_nr, FMT="(T41,F20.10,F20.10)") &
+                  grid%frequency_weights(jquad), grid%frequency(jquad)
             END DO
             CALL m_flush(unit_nr)
          END IF
-         IF (ASSOCIATED(qs_env%mp2_env%ri_rpa_im_time%tau_tj)) THEN
+         IF (ALLOCATED(qs_env%mp2_env%ri_rpa_im_time%time_frequency_grid%imaginary_time)) THEN
             WRITE (UNIT=unit_nr, FMT="(T3,A,T75,i6)") &
-               "MINIMAX_INFO| Number of integration points:", num_integ_points
+               "MINIMAX_INFO| Number of integration points:", SIZE(grid%imaginary_time)
             WRITE (UNIT=unit_nr, FMT="(T3,A,T54,A,T72,A)") &
                "MINIMAX_INFO| Minimax params (time grid, scaled):", "Weights", "Abscissas"
-            DO jquad = 1, num_integ_points
-               WRITE (UNIT=unit_nr, FMT="(T41,F20.10,F20.10)") tau_wj(jquad), tau_tj(jquad)
+            DO jquad = 1, SIZE(grid%imaginary_time)
+               WRITE (UNIT=unit_nr, FMT="(T41,F20.10,F20.10)") &
+                  grid%time_weights_at_zero_frequency(jquad), grid%imaginary_time(jquad)
             END DO
             CALL m_flush(unit_nr)
          END IF

@@ -249,14 +249,14 @@ def main() -> None:
             )
         )
 
-    with OutputFile(f"Dockerfile.test_spack_gromacs", args.check) as f:
+    with OutputFile(f"Dockerfile.test_spack_ase", args.check) as f:
         f.write(
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="mpich",
-                feature_flags="--test_gromacs",
+                feature_flags="--test_ase",
                 image_tag=f.image_tag,
-                test_type="gromacs",
+                test_type="ase",
             )
         )
 
@@ -279,6 +279,17 @@ def main() -> None:
                 feature_flags="--test_coverage",
                 image_tag=f.image_tag,
                 test_type="coverage",
+            )
+        )
+
+    with OutputFile(f"Dockerfile.test_spack_gromacs", args.check) as f:
+        f.write(
+            install_cp2k_spack(
+                version="psmp",
+                mpi_mode="mpich",
+                feature_flags="--test_gromacs",
+                image_tag=f.image_tag,
+                test_type="gromacs",
             )
         )
 
@@ -423,7 +434,7 @@ RUN ./test_manual.sh "${{ADD_EDIT_LINKS}}" 2>&1 | tee report.log
 # ======================================================================================
 def precommit() -> str:
     return rf"""
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 # Install dependencies.
 WORKDIR /opt/cp2k-precommit
@@ -453,7 +464,7 @@ RUN ./test_{name}.sh 2>&1 | tee report.log
 # ======================================================================================
 def test_without_build(name: str) -> str:
     return rf"""
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 # Install dependencies.
 WORKDIR /opt/cp2k
@@ -705,7 +716,6 @@ COPY ./tools/toolchain/scripts/VERSION \
      ./tools/toolchain/scripts/tool_kit.sh \
      ./tools/toolchain/scripts/common_vars.sh \
      ./tools/toolchain/scripts/signal_trap.sh \
-     ./tools/toolchain/scripts/get_openblas_arch.sh \
      ./scripts/
 COPY ./tools/toolchain/install_cp2k_toolchain.sh .
 RUN ./install_cp2k_toolchain.sh \
@@ -862,6 +872,11 @@ RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_benchmarks {benchmark
 # Run CP2K regression test
 RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests {testopts} || echo "ERROR: Regression test run failed"
 """
+    elif test_type == "ase":
+        output += rf"""
+# Install packages needed by ASE
+RUN /opt/cp2k/install/bin/launch pip install --ignore-installed --quiet matplotlib numpy packaging six spglib
+"""
     elif test_type == "conventions":
         output += rf"""
 # Copy data from convention check
@@ -874,7 +889,16 @@ COPY --from=build_cp2k /opt/cp2k/tools/conventions /opt/cp2k/tools/conventions
 COPY --from=build_cp2k /workspace /workspace
 """
     elif test_type == "gromacs":
-        pass
+        output += rf"""
+# Preserve GROMACS QM/MM test data in the final container image
+COPY --from=build_cp2k /opt/cp2k/build/gromacs/src/gromacs/applied_forces/qmmm/tests /opt/cp2k/build/gromacs/src/gromacs/applied_forces/qmmm/tests
+COPY --from=build_cp2k /opt/cp2k/build/gromacs/src/testutils/simulationdatabase /opt/cp2k/build/gromacs/src/testutils/simulationdatabase
+COPY --from=build_cp2k /opt/cp2k/build/gromacs/share/top /opt/cp2k/build/gromacs/share/top
+RUN mkdir -p /opt/cp2k/build/gromacs/build/src/gromacs/applied_forces/qmmm/tests/Testing/Temporary
+
+# Install GROMACS/CP2K benchmarks
+COPY ./benchmarks/GROMACS ./benchmarks/GROMACS
+"""
     else:
         sys.exit(f"\nERROR: Unknown test type {test_type} specified\n")
     output += rf"""
@@ -1045,7 +1069,16 @@ RUN dnf -y install dnf-plugins-core && \
     && dnf clean -q all
 """
         elif "ubuntu" in base_image:
-            if test_type == "gromacs":
+            if test_type == "ase":
+                # ASE requires ca-certificates
+                output += rf"""
+RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
+    ca-certificates \
+    {gcc_compilers} \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+"""
+            elif test_type == "gromacs":
                 # GROMACS requires the shared C-library version of Python at runtime
                 output += rf"""
 RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
