@@ -30,16 +30,30 @@ MODULE hfx_energy_potential
                                  cp_print_key_finished_output, &
                                  cp_print_key_should_output, &
                                  cp_print_key_unit_nr
-   USE message_passing, ONLY: mp_para_env_type
+   USE message_passing, ONLY: mp_para_env_type, mp_win_type
    USE cp_dbcsr_api, ONLY: dbcsr_copy, &
                            dbcsr_get_matrix_type, &
                            dbcsr_p_type, &
                            dbcsr_type_antisymmetric, &
                            dbcsr_dot_threadsafe
+   USE cp_dbcsr_contrib, ONLY: dbcsr_dot
    USE gamma, ONLY: init_md_ftable
    USE hfx_communication, ONLY: distribute_ks_matrix, &
                                 get_atomic_block_maps, &
-                                get_full_density
+                                get_full_density, &
+                                hfx_libheric_get_pmatrix_from_dbcsr_matrix, &
+                                hfx_libheric_initialize_kmatrix, &
+                                hfx_libheric_reconstruct_dbcsr_kmatrix, &
+                                hfx_libheric_free_sparse_matrix, &
+                                hfx_libheric_pmatrix_verify, &
+                                hfx_libheric_sparse_matrix, &
+                                hfx_libheric_get_column_index_map, &
+                                hfx_libheric_digestion_state, &
+                                hfx_libheric_init_digestion_state, &
+                                hfx_libheric_digestion_state_set_angular_momentum, &
+                                hfx_libheric_digestion_state_flush, &
+                                hfx_libheric_digest_atom_quartet, &
+                                hfx_libheric_free_digestion_state
    USE hfx_compression_methods, ONLY: hfx_add_mult_cache_elements, &
                                       hfx_add_single_cache_element, &
                                       hfx_decompress_first_cache, &
@@ -48,6 +62,7 @@ MODULE hfx_energy_potential
                                       hfx_get_single_cache_element, &
                                       hfx_reset_cache_and_container
    USE hfx_contract_block, ONLY: contract_block
+   USE hfx_helpers, ONLY: hfx_libheric_quartet_class_to_idx, hfx_libheric_idx_to_quartet_class
    USE hfx_libint_interface, ONLY: evaluate_eri
    USE hfx_load_balance_methods, ONLY: collect_load_balance_info, &
                                        hfx_load_balance, &
@@ -56,18 +71,31 @@ MODULE hfx_energy_potential
                                     build_pair_list, &
                                     build_pair_list_pgf, &
                                     build_pgf_product_list, &
-                                    pgf_product_list_size
+                                    pgf_product_list_size, &
+                                    hfx_libheric_build_pgf_pair_list, &
+                                    hfx_libheric_build_atom_pair_lists, &
+                                    hfx_libheric_free_atom_pair_lists, &
+                                    hfx_libheric_atom_pair_type, &
+                                    hfx_libheric_atom_pair_list_type, &
+                                    hfx_libheric_pgf_pair_type, &
+                                    hfx_libheric_pgf_pair_list_type
    USE hfx_screening_methods, ONLY: calc_pair_dist_radii, &
                                     calc_screening_functions, &
-                                    update_pmax_mat
+                                    update_pmax_mat, &
+                                    hfx_libheric_init_screening_models, &
+                                    hfx_libheric_free_screening_models, &
+                                    hfx_libheric_eval_screening_model
    USE hfx_types, ONLY: &
       alloc_containers, dealloc_containers, hfx_basis_info_type, hfx_basis_type, hfx_cache_type, &
       hfx_cell_type, hfx_container_type, hfx_create_neighbor_cells, hfx_distribution, &
       hfx_general_type, hfx_init_container, hfx_load_balance_type, hfx_memory_type, hfx_p_kind, &
       hfx_pgf_list, hfx_pgf_product_list, hfx_potential_type, hfx_reset_memory_usage_counter, &
       hfx_screen_coeff_type, hfx_screening_type, hfx_task_list_type, hfx_type, init_t_c_g0_lmax, &
-      log_zero, pair_list_type, pair_set_list_type
-
+      log_zero, powell_min_log, pair_list_type, pair_set_list_type, &
+      hfx_libheric_cell_type, hfx_libheric_basis_type, hfx_libheric_screening_model_type, &
+      hfx_libheric_screening_models, hfx_libheric_screening_kkll_models, &
+      hfx_libheric_sorted_cells_from_hfx_cells, &
+      hfx_libheric_create_basis_types, hfx_libheric_free_basis_types
    USE input_constants, ONLY: do_potential_mix_cl_trunc, &
                               do_potential_truncated, &
                               do_potential_TShPSC, &
@@ -75,13 +103,36 @@ MODULE hfx_energy_potential
                               do_potential_coulomb, &
                               hfx_do_eval_energy, &
                               hfx_library_is_libint, hfx_library_is_libGint, hfx_library_is_both
-
    USE input_section_types, ONLY: section_vals_type
    USE kinds, ONLY: default_string_length, &
                     dp, &
                     int_8
    USE kpoint_types, ONLY: get_kpoint_info, &
                            kpoint_type
+   USE libheric_interface, ONLY: libheric_initialize, &
+                                 libheric_release, &
+                                 query_accelerator_devices, &
+                                 create_accelerator_contexts, &
+                                 free_accelerator_contexts, &
+                                 accelerator_context_is_functional, &
+                                 accelerator_context_set_potential_operator, &
+                                 accelerator_context_set_quartet_class, &
+                                 accelerator_context_set_atom_ids, &
+                                 accelerator_context_set_set_ids, &
+                                 accelerator_context_set_shell_ids, &
+                                 accelerator_context_set_B_offset, &
+                                 accelerator_context_set_D_offset, &
+                                 accelerator_context_set_exponent_ids, &
+                                 accelerator_context_set_Q_offset, &
+                                 accelerator_context_submit_peri, &
+                                 accelerator_context_finish_quartet_class, &
+                                 accelerator_context_get_next_staged_atom_quartet, &
+                                 accelerator_context_prefetch_cached_atom_quartet, &
+                                 atom_quartet_type, &
+                                 acc_kind, acc_device, &
+                                 LIBHERIC_MAX_AM, &
+                                 LIBHERIC_POTENTIAL_OPERATOR_COULOMB, &
+                                 LIBHERIC_POTENTIAL_OPERATOR_SHORT_RANGE
    USE libint_wrapper, ONLY: cp_libint_t
    USE machine, ONLY: m_flush, &
                       m_memory, &
@@ -93,6 +144,7 @@ MODULE hfx_energy_potential
    USE particle_types, ONLY: particle_type
    USE qs_environment_types, ONLY: get_qs_env, &
                                    qs_environment_type
+   USE qs_kind_types, ONLY: qs_kind_type, get_qs_kind
    USE qs_ks_types, ONLY: get_ks_env, &
                           qs_ks_env_type
    USE t_c_g0, ONLY: init
@@ -111,7 +163,7 @@ MODULE hfx_energy_potential
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC ::  integrate_four_center, coulomb4
+   PUBLIC ::  integrate_four_center, coulomb4, hfx_libheric_integrate_four_center
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'hfx_energy_potential'
 
@@ -3136,6 +3188,758 @@ CONTAINS
       END DO
 
    END SUBROUTINE print_integrals
+
+! **************************************************************************************************
+!> \brief computes four center integrals for a full basis set and updates the
+!>        Kohn-Sham matrix and energy. Uses all 8 eri symmetries. Based on original
+!>        implementation by Manuel Guidon
+!> \param qs_env ...
+!> \param x_data - data related HFX
+!> \param ks_ao - kohn-sham matrix in ao basis
+!> \param ehfx - energy calculated with the updated HFX matrix
+!> \param rho_ao - density matrix in ao basis
+!> \param hfx_section - input_section HFX
+!> \param para_env - MPI environment
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_integrate_four_center(qs_env, x_data, ks_ao, ehfx, rho_ao, hfx_section, para_env)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_type), POINTER, INTENT(IN)                :: x_data
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ks_ao
+      REAL(KIND=dp), INTENT(OUT)                         :: ehfx
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: rho_ao
+      TYPE(section_vals_type), POINTER                   :: hfx_section
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_integrate_four_center'
+
+      LOGICAL                                            :: do_periodic, do_p_screening
+      INTEGER                                            :: handle, iw
+      INTEGER                                            :: l_max, max_set, max_set_global, max_shl, &
+                                                            max_nsgf_total_l, max_nsgf_total, max_npgf
+      INTEGER                                            :: natom, nkind
+      INTEGER                                            :: i_thread
+      INTEGER(int_8)                                     :: memsize_before
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: kind_of, max_set_l
+
+      REAL(dp)                                           :: eps_schwarz, log10_eps_schwarz
+      REAL(dp)                                           :: fac
+
+      TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
+      TYPE(hfx_libheric_atom_pair_list_type), &
+         DIMENSION(:, :), ALLOCATABLE                    :: atom_pairs
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(hfx_basis_type), DIMENSION(:), POINTER        :: basis_parameter
+      TYPE(hfx_libheric_basis_type), DIMENSION(:, :), &
+         ALLOCATABLE                                     :: basis_parameter_l
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(hfx_libheric_sparse_matrix)                   :: p_matrix, k_matrix
+      TYPE(hfx_libheric_screening_models)                :: screen
+      TYPE(hfx_libheric_cell_type), DIMENSION(:), &
+         ALLOCATABLE                                     :: sorted_cells
+
+      CALL timeset(routineN, handle)
+      
+      CALL cite_reference(Guidon2008)
+      CALL cite_reference(Guidon2009)
+
+      IF(.NOT. libheric_initialize(para_env%mepos)) CPABORT("Failed to initialize libheric")
+      
+      ! Output memory usage info
+      logger => cp_get_default_logger()
+      CALL m_memory(memsize_before)
+      CALL para_env%max(memsize_before)
+      iw = cp_print_key_unit_nr(logger, hfx_section, "HF_INFO", extension=".scfLog")
+      IF (iw > 0) THEN
+         WRITE (UNIT=iw, FMT="(/,(T3,A,T60,I21))") &
+            "HFX_MEM_INFO| Est. max. program size before HFX [MiB]:", memsize_before/(1024*1024)
+         CALL m_flush(iw)
+      END IF
+      CALL cp_print_key_finished_output(iw, logger, hfx_section, "HF_INFO")
+
+
+      CALL get_qs_env(qs_env=qs_env, qs_kind_set=qs_kind_set)
+      nkind = SIZE(qs_kind_set, 1)
+      l_max = x_data%basis_info%max_am
+      IF (x_data%potential_parameter%potential_type .NE. do_potential_coulomb .AND. &
+          x_data%potential_parameter%potential_type .NE. do_potential_short) &
+         CPABORT("Libheric currently only supports the coulomb and short-range operator ") 
+      CPASSERT(l_max .LE. LIBHERIC_MAX_AM)
+      
+      !! Initialize Boys function table
+      !! Still needed to initialize screening coefficients
+      CALL init_md_ftable(4 * l_max)
+
+      do_periodic = x_data%periodic_parameter%do_periodic
+      IF (do_periodic) THEN
+         !! Rebuild neighbor lists in case the cell has changed (i.e. NPT MD)
+         x_data%periodic_parameter%number_of_shells = x_data%periodic_parameter%mode
+         CALL get_qs_env(qs_env=qs_env, cell=cell)
+         CALL hfx_create_neighbor_cells(x_data, x_data%periodic_parameter%number_of_shells_from_input, &
+                                        cell, i_thread=1)
+      END IF
+      CALL hfx_libheric_sorted_cells_from_hfx_cells(sorted_cells, x_data%neighbor_cells, cell)
+      
+      !! Define some shorthand aliases for later use
+      basis_parameter => x_data%basis_parameter
+
+      CALL get_qs_env(qs_env, dft_control=dft_control, qs_kind_set=qs_kind_set)
+      CALL hfx_libheric_create_basis_types(dft_control, basis_parameter_l, l_max, qs_kind_set)  
+      
+      CALL get_qs_env(qs_env=qs_env, particle_set=particle_set, atomic_kind_set=atomic_kind_set)
+      CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, kind_of=kind_of)
+      natom = SIZE(particle_set, 1)
+      
+      calc_size_bounds: BLOCK 
+         INTEGER                        :: l, ikind
+         max_nsgf_total = 0
+         max_nsgf_total_l = 0
+         max_npgf = 0
+         ALLOCATE(max_set_l(0:l_max))
+         max_set = 0
+         max_shl = 0
+         DO l = 0, l_max
+            max_set_l(l) = 0
+            DO ikind = 1, nkind
+               max_nsgf_total_l = MAX(max_nsgf_total_l, basis_parameter_l(ikind, l)%nsgf_total)
+               max_nsgf_total = MAX(max_nsgf_total, basis_parameter(ikind)%nsgf_total)
+               max_npgf = MAX(max_npgf, MAXVAL(basis_parameter_l(ikind, l)%npgf))
+               max_set_l(l) = MAX(max_set_l(l), basis_parameter_l(ikind, l)%nset)
+               max_shl = MAX(max_shl, MAXVAL(basis_parameter_l(ikind, l)%nshell))
+            END DO
+            max_set = MAX(max_set, max_set_l(l))
+         END DO
+      END BLOCK calc_size_bounds
+      max_set_global = x_data%basis_info%max_set
+      
+      !! Get screening parameter
+      eps_schwarz = x_data%screening_parameter%eps_schwarz
+      IF (eps_schwarz <= 0.0_dp) THEN
+         log10_eps_schwarz = log_zero
+      ELSE
+         log10_eps_schwarz = LOG10(eps_schwarz)
+      END IF
+
+      BLOCK
+      REAL(dp), DIMENSION(:), POINTER                    :: p_work
+      INTEGER :: nthreads, i_thread
+      nthreads = 1
+      i_thread = 0
+      IF (.NOT. x_data%screen_funct_is_initialized) THEN
+         !! Initialize pgf product radius estimate functions for crude far field screening 
+         CALL calc_pair_dist_radii(qs_env, basis_parameter, x_data%pair_dist_radii_pgf, & 
+                                   max_set_global, max_npgf, eps_schwarz, nthreads, i_thread)
+         !! Initialize screening functions for near field estimates 
+         CALL calc_screening_functions(qs_env, basis_parameter, x_data%lib, x_data%potential_parameter, &
+                                       x_data%screen_funct_coeffs_set, &
+                                       x_data%screen_funct_coeffs_kind, &
+                                       x_data%screen_funct_coeffs_pgf, &
+                                       x_data%pair_dist_radii_pgf, &
+                                       max_set_global, max_npgf, nthreads, i_thread, p_work)
+         CALL hfx_libheric_init_screening_models(x_data, nkind, l_max, basis_parameter_l, screen) 
+         x_data%screen_funct_is_initialized = .TRUE.
+      END IF
+      END BLOCK
+
+      fac = 0.5_dp * x_data%general_parameter%fraction
+      
+      CALL hfx_libheric_build_atom_pair_lists(natom, nkind, l_max, atom_pairs, kind_of, particle_set, &
+                                              basis_parameter_l, x_data%periodic_parameter%do_periodic, & 
+                                              screen, log10_eps_schwarz, cell)
+      
+      do_p_screening = x_data%screening_parameter%do_initial_p_screening
+      CALL hfx_libheric_get_pmatrix_from_dbcsr_matrix(rho_ao(1, 1)%matrix, para_env, kind_of, &
+                                                      natom, nkind, l_max, max_set, max_shl, &
+                                                      x_data%basis_parameter, basis_parameter_l, &
+                                                      p_matrix, do_p_screening)
+      CALL hfx_libheric_initialize_kmatrix(p_matrix, kind_of, natom, nkind, l_max, max_set, max_shl, &
+                                           basis_parameter_l, k_matrix)
+
+      CALL hfx_libheric_pmatrix_verify(x_data, para_env, rho_ao(1, 1), ks_ao(1, 1), kind_of, natom, nkind, l_max, &
+                                       max_nsgf_total, basis_parameter_l, p_matrix)
+
+
+      BLOCK 
+         TYPE(acc_kind), DIMENSION(:), ALLOCATABLE   :: acc_kinds
+         TYPE(acc_device), DIMENSION(:), ALLOCATABLE :: acc_devices
+         INTEGER                                     :: i, ikind, iset, &
+                                                        ishell, l, coeff_ctr, n_coeff, & 
+                                                        iexp, exp_ctr, n_exp, quartet_class_idx, &
+                                                        n_quartet_classes, n_classes_on_rank
+         INTEGER(int_8)                              :: atom_ij_idx
+         INTEGER(int_8)                              :: mem_available
+         INTEGER(int_8), DIMENSION(:), ALLOCATABLE   :: n_quartets 
+         REAL(dp)                                    :: t_start, t_stop
+         INTEGER, DIMENSION(:), ALLOCATABLE          :: atom_kinds
+         INTEGER, DIMENSION(:, :), ALLOCATABLE       :: kind_nset
+         INTEGER, DIMENSION(:, :, :), ALLOCATABLE    :: set_nexp, set_nshl
+         REAL(dp), DIMENSION(:, :), ALLOCATABLE      :: atom_positions
+         REAL(dp), DIMENSION(:), ALLOCATABLE         :: exponents, coefficients, timings
+         TYPE(qs_kind_type), DIMENSION(:), POINTER   :: qs_kind_set 
+         TYPE(C_PTR), DIMENSION(:), ALLOCATABLE      :: ctx_handles
+         INTEGER, DIMENSION(:), ALLOCATABLE          :: next_quartet_idx, next_quartet_buf
+         TYPE(mp_win_type)                           :: next_quartet_idx_win
+
+         ALLOCATE(acc_kinds(0))
+         ! Search for CPU accelerator is implicit
+         !acc_kinds(1) = acc_kind("CPU", "CPU", "libint")
+
+         CALL query_accelerator_devices(acc_kinds, acc_devices)
+         iw = cp_print_key_unit_nr(logger, hfx_section, "HF_INFO", extension=".scfLog")
+         IF (iw > 0) THEN
+            WRITE(iw, "(T3,A,I2,A)") "HFX_LIBHERIC_INFO| Discovered ", SIZE(acc_devices), " acc_devices"
+            DO i = 1, SIZE(acc_devices)
+               WRITE(iw, "(T3,12A,I3,2A)") "HFX_LIBHERIC_INFO|", &
+                  " -> DEVICE @ ", TRIM(acc_devices(i)%bdf), &
+                  " of kind (", TRIM(acc_devices(i)%kind%name), &
+                  ", ", TRIM(acc_devices(i)%kind%type), &
+                  ", ", TRIM(acc_devices(i)%kind%library), &
+                  ") -- ", TRIM(acc_devices(i)%name), &
+                  " on ", acc_devices(i)%num_cores, &
+                  "x ", TRIM(acc_devices(i)%cpu_name)
+            END DO
+            CALL m_flush(iw)
+         END IF
+         CALL cp_print_key_finished_output(iw, logger, hfx_section, "HF_INFO")
+
+         ALLOCATE(atom_positions(3, natom))
+         ALLOCATE(atom_kinds(natom))
+         DO i = 1, natom
+             atom_positions(:, i) = particle_set(i)%r(:)
+             atom_kinds(i) = particle_set(i)%atomic_kind%kind_number - 1 ! Make 0-indexed
+             CPASSERT(particle_set(i)%atom_index .EQ. i)
+         END DO
+
+         CALL get_qs_env(qs_env, qs_kind_set=qs_kind_set)
+         ALLOCATE(kind_nset(nkind, 0:l_max))
+         n_exp = 0
+         n_coeff = 0
+         DO l = 0, l_max
+            DO ikind = 1, nkind
+               ASSOCIATE(bp => basis_parameter_l(ikind, l))
+               kind_nset(ikind, l) = bp%nset
+               DO iset = 1, bp%nset
+                   n_exp = n_exp + bp%npgf(iset)
+                   n_coeff = n_coeff + bp%nshell(iset) * bp%npgf(iset)
+               END DO
+               END ASSOCIATE
+            END DO
+         END DO
+
+         ALLOCATE(exponents(n_exp))
+         ALLOCATE(coefficients(n_coeff))
+         ALLOCATE(set_nexp(max_set, nkind, 0:l_max))
+         ALLOCATE(set_nshl(max_set, nkind, 0:l_max))
+
+         exp_ctr = 0
+         coeff_ctr = 0
+         DO l = 0, l_max
+            DO ikind = 1, nkind
+               ASSOCIATE(bp => basis_parameter_l(ikind, l))
+               DO iset = 1, bp%nset
+                  set_nexp(iset, ikind, l) = bp%npgf(iset)
+                  set_nshl(iset, ikind, l) = bp%nshell(iset)
+                  DO iexp = 1, bp%npgf(iset)
+                     exp_ctr = exp_ctr + 1
+                     exponents(exp_ctr) = bp%zet(iexp, iset)
+                  END DO
+                  DO ishell = 1, bp%nshell(iset)
+                     DO iexp = 1, bp%npgf(iset)
+                        coeff_ctr = coeff_ctr + 1
+                        coefficients(coeff_ctr) = bp%gcc(iexp, ishell, iset)
+                     END DO
+                  END DO
+               END DO
+               END ASSOCIATE
+            END DO
+         END DO
+
+         n_quartet_classes = (l_max + 1) ** 4
+         ALLOCATE(n_quartets(n_quartet_classes), source=0_int_8)
+         ALLOCATE(timings(n_quartet_classes), source=0.0_dp)
+
+         ALLOCATE(ctx_handles(acc_devices(1)%num_cores))
+         mem_available = 1024 * 1024 * 1024 ! 1GiB
+         CALL create_accelerator_contexts(ctx_handles(1), acc_devices(1), SIZE(ctx_handles), &
+                                          mem_available, &
+                                          cell%hmat, atom_positions, atom_kinds, &
+                                          exponents, coefficients, &
+                                          kind_nset, set_nexp, set_nshl)
+
+         
+         !! First num_pe quartet_classes are assigned round-robin to ranks
+         !! The remaining quartet classes are grabbed first-come-first-serve using the MPI-window
+         ALLOCATE(next_quartet_idx(1), source=(para_env%num_pe + 1))
+         ALLOCATE(next_quartet_buf(1))
+         CALL next_quartet_idx_win%create(next_quartet_buf(:), para_env%mp_comm_type)
+         IF(para_env%is_source()) THEN
+            CALL next_quartet_idx_win%lock_exc(para_env%source)
+            CALL next_quartet_idx_win%put(next_quartet_idx, para_env%source, len=1)
+            CALL next_quartet_idx_win%flush(para_env%source)
+            CALL next_quartet_idx_win%unlock(para_env%source)
+         END IF
+         CALL para_env%sync()
+         n_classes_on_rank = 0
+         quartet_class_idx = para_env%mepos + 1
+
+         !$OMP PARALLEL DEFAULT(NONE) &
+         !$OMP SHARED(atom_ij_idx, atom_pairs, sorted_cells, cell, p_matrix, k_matrix, screen, basis_parameter_l, nso, &
+         !$OMP        n_quartet_classes, l_max, log10_eps_schwarz, max_npgf, natom, nkind, para_env, ctx_handles, x_data, &
+         !$OMP        t_start, t_stop, timings, n_quartets, next_quartet_idx_win, next_quartet_idx, quartet_class_idx, &
+         !$OMP        n_classes_on_rank, fac, kind_of, hfx_section, logger) & 
+         !$OMP PRIVATE(i_thread)
+         i_thread = omp_get_thread_num() ! Before the BLOCK statement to circumvent bug in GCC 13.2:
+                                         ! https://gcc.gnu.org/bugzilla/show_bug.cgi?id=114373
+         parallel_compute: BLOCK 
+            INTEGER                               :: iatom, jatom, katom, latom, &
+                                                     ikind, jkind, kkind, lkind, &
+                                                     prev_iatom, prev_jatom, iw
+            INTEGER                               :: quartet_class(4), la, lb, lc, ld
+            INTEGER(int_8)                        :: local_atom_ij_idx, atom_kl_idx, local_quartet_counter, &
+                                                     n_quartets_local
+            INTEGER, DIMENSION(:), ALLOCATABLE    :: pa_cols, pb_cols
+            LOGICAL                               :: do_p_screening
+            REAL(dp)                              :: pmax_atom, screen_kind_ij, &
+                                                     screen_kind_kl, rab2, rcd2
+            TYPE(hfx_libheric_atom_pair_type)     :: atom_pair_ij, atom_pair_kl
+            TYPE(hfx_libheric_pgf_pair_list_type) :: P_list, Q_list
+            TYPE(atom_quartet_type)               :: atom_quartet
+            TYPE(hfx_libheric_digestion_state)    :: digestion_state
+            TYPE(C_PTR)                           :: local_ctx
+            
+            local_ctx = ctx_handles(i_thread + 1)
+            do_p_screening = x_data%screening_parameter%do_initial_p_screening
+            
+            ALLOCATE(P_list%pair_list(max_npgf ** 2))
+            ALLOCATE(Q_list%pair_list(max_npgf ** 2))
+            ALLOCATE(pa_cols(natom), pb_cols(natom))
+            
+            
+            CALL accelerator_context_set_potential_operator(local_ctx, x_data%potential_parameter%potential_type, &
+                                                             x_data%potential_parameter%omega)
+
+            CALL hfx_libheric_init_digestion_state(digestion_state, k_matrix, l_max, i_thread, 4) 
+            
+            DO WHILE (quartet_class_idx .LE. n_quartet_classes) 
+               !$OMP MASTER
+               t_start = m_walltime()
+               n_classes_on_rank = n_classes_on_rank + 1
+               !$OMP END MASTER
+               n_quartets_local = 0
+               quartet_class = hfx_libheric_idx_to_quartet_class(quartet_class_idx, l_max)
+               la = quartet_class(1)
+               lb = quartet_class(2)
+               lc = quartet_class(3)
+               ld = quartet_class(4)
+               !$OMP MASTER
+               iw = cp_print_key_unit_nr(logger, hfx_section, "HF_INFO", extension=".scfLog")
+               IF (iw > 0) THEN
+                  WRITE(iw, "(T3,A,I3,2(A,I1,I1),A)") "HFX_LIBHERIC_INFO| Rank", para_env%mepos, &
+                                            " -- computing (", la, lb, "|", lc, ld, ")"
+                  CALL m_flush(iw)
+               END IF
+               CALL cp_print_key_finished_output(iw, logger, hfx_section, "HF_INFO")
+               !$OMP END MASTER
+               CALL accelerator_context_set_quartet_class(local_ctx, la, lb, lc, ld)
+               CALL hfx_libheric_digestion_state_set_angular_momentum(digestion_state, la, lb, lc, ld) 
+               IF(.NOT. accelerator_context_is_functional(local_ctx)) &
+                   CPABORT("ACC not functional")
+               !$OMP MASTER
+               atom_ij_idx = 1
+               !$OMP END MASTER
+               !$OMP BARRIER
+               prev_iatom = -1
+               prev_jatom = -1
+               atom_pair_loop: DO WHILE (.TRUE.)
+                  !$OMP CRITICAL
+                     local_atom_ij_idx = atom_ij_idx
+                     atom_ij_idx = atom_ij_idx + 1
+                  !$OMP END CRITICAL
+                  IF (local_atom_ij_idx .GT. atom_pairs(lb, la)%atom_list_size) EXIT atom_pair_loop
+                  !$OMP MASTER
+                  !$OMP END MASTER
+                  atom_pair_ij = atom_pairs(lb, la)%atom_list(local_atom_ij_idx)
+                  iatom = atom_pair_ij%atom1%atom_idx
+                  ikind = atom_pair_ij%atom1%kind_idx
+                  jatom = atom_pair_ij%atom2%atom_idx
+                  jkind = atom_pair_ij%atom2%kind_idx
+                  rab2  = atom_pair_ij%dist2
+                  local_quartet_counter = 0
+                  ASSOCIATE(pa_rows => p_matrix%rows(iatom), pb_rows => p_matrix%rows(jatom))
+                  CALL hfx_libheric_get_column_index_map(p_matrix, iatom, prev_iatom, pa_cols)
+                  CALL hfx_libheric_get_column_index_map(p_matrix, jatom, prev_jatom, pb_cols)
+
+                  DO atom_kl_idx = 1, atom_pairs(ld, lc)%atom_list_size
+                     atom_pair_kl = atom_pairs(ld, lc)%atom_list(atom_kl_idx)
+                     katom = atom_pair_kl%atom1%atom_idx
+                     kkind = atom_pair_kl%atom1%kind_idx
+                     latom = atom_pair_kl%atom2%atom_idx
+                     lkind = atom_pair_kl%atom2%kind_idx
+                     rcd2  = atom_pair_kl%dist2
+                     IF (.NOT. (katom + latom <= iatom + jatom)) CYCLE
+                     IF (((iatom + jatom) .EQ. (katom + latom)) .AND. (katom < iatom)) CYCLE  
+                     
+                     !! Check if any pair ac, ad, bc, bd is associated
+                     IF(pa_cols(katom) .EQ. p_matrix%invalid_col .AND. &
+                        pa_cols(latom) .EQ. p_matrix%invalid_col .AND. &
+                        pb_cols(katom) .EQ. p_matrix%invalid_col .AND. &
+                        pb_cols(latom) .EQ. p_matrix%invalid_col) CYCLE
+                     ASSOCIATE(ac_off => pa_rows%offset(pa_cols(katom), lc, la), &
+                               ad_off => pa_rows%offset(pa_cols(latom), ld, la), &
+                               bc_off => pb_rows%offset(pb_cols(katom), lc, lb), &
+                               bd_off => pb_rows%offset(pb_cols(latom), ld, lb), &
+                               coeffs_ij => screen%coeffs(jkind, ikind, lb, la), &
+                               coeffs_kl => screen%coeffs(lkind, kkind, ld, lc), & 
+                               bas_lai => basis_parameter_l(ikind, la), bas_lbj => basis_parameter_l(jkind, lb), &
+                               bas_lck => basis_parameter_l(kkind, lc), bas_ldl => basis_parameter_l(lkind, ld))
+                     
+                     IF (do_p_screening) THEN
+                        pmax_atom = MAX(p_matrix%data(ac_off), p_matrix%data(ad_off), &
+                                        p_matrix%data(bc_off), p_matrix%data(bd_off))
+                     ELSE
+                        pmax_atom = 0.0_dp
+                     END IF
+                      
+                     screen_kind_ij = hfx_libheric_eval_screening_model(coeffs_ij%kind, rab2)
+                     screen_kind_kl = hfx_libheric_eval_screening_model(coeffs_kl%kind, rcd2)
+                     IF (screen_kind_ij + screen_kind_kl + pmax_atom < log10_eps_schwarz) CYCLE
+                     ASSOCIATE(pset_ac => p_matrix%data(ac_off + 1:ac_off + bas_lai%nset * bas_lck%nset), &
+                               pset_ad => p_matrix%data(ad_off + 1:ad_off + bas_lai%nset * bas_ldl%nset), &
+                               pset_bc => p_matrix%data(bc_off + 1:bc_off + bas_lbj%nset * bas_lck%nset), &
+                               pset_bd => p_matrix%data(bd_off + 1:bd_off + bas_lbj%nset * bas_ldl%nset))
+
+                     IF(.NOT. accelerator_context_prefetch_cached_atom_quartet(local_ctx, &
+                                                                               iatom - 1, jatom - 1, &
+                                                                               katom - 1, latom - 1)) & 
+                     THEN
+                     
+                        CALL accelerator_context_set_atom_ids(local_ctx, iatom - 1, jatom - 1, katom - 1, latom - 1) 
+                        CALL hfx_libheric_submit_shellset_quartets(local_ctx, x_data, atom_pairs(lb, la), atom_pairs(ld, lc), &
+                                                                   atom_pair_ij, atom_pair_kl, bas_lai, bas_lbj, bas_lck, bas_ldl, &
+                                                                   coeffs_ij, coeffs_kl, pset_ac, pset_ad, pset_bc, pset_bd, &
+                                                                   screen_kind_kl, pmax_atom, log10_eps_schwarz, do_p_screening, &
+                                                                   sorted_cells, cell, P_list, Q_list, n_quartets_local)
+
+                     END IF
+                     END ASSOCIATE
+                     END ASSOCIATE
+                     DO WHILE(accelerator_context_get_next_staged_atom_quartet(local_ctx, atom_quartet))
+                        CALL hfx_libheric_digest_atom_quartet(digestion_state, atom_quartet, nkind, l_max, &
+                                                     p_matrix, k_matrix, basis_parameter_l, kind_of, fac)
+                     END DO
+                  END DO
+                  END ASSOCIATE
+
+               END DO atom_pair_loop
+               !$OMP BARRIER
+               CALL accelerator_context_finish_quartet_class(local_ctx)
+               DO WHILE(accelerator_context_get_next_staged_atom_quartet(local_ctx, atom_quartet))
+                  CALL hfx_libheric_digest_atom_quartet(digestion_state, atom_quartet, nkind, l_max, &
+                                               p_matrix, k_matrix, basis_parameter_l, kind_of, fac)
+               END DO
+               !! Flush all blocks remaining in cache
+               CALL hfx_libheric_digestion_state_flush(digestion_state, k_matrix, digestion_state%free_kblocks%size)  
+               !$OMP ATOMIC
+               n_quartets(quartet_class_idx) = n_quartets(quartet_class_idx) + n_quartets_local
+               !$OMP BARRIER
+               !$OMP MASTER
+               t_stop = m_walltime()
+               timings(quartet_class_idx) = t_stop - t_start
+               CALL next_quartet_idx_win%lock_exc(para_env%source)
+               CALL next_quartet_idx_win%get(next_quartet_idx, para_env%source, len=1)
+               CALL next_quartet_idx_win%flush(para_env%source)
+               quartet_class_idx = next_quartet_idx(1)
+               next_quartet_idx(1) = next_quartet_idx(1) + 1
+               CALL next_quartet_idx_win%put(next_quartet_idx, para_env%source, len=1)
+               CALL next_quartet_idx_win%flush(para_env%source)
+               CALL next_quartet_idx_win%unlock(para_env%source)
+               !$OMP END MASTER
+               !$OMP BARRIER
+            END DO
+            
+            DEALLOCATE(P_list%pair_list, Q_list%pair_list)
+            CALL hfx_libheric_free_digestion_state(digestion_state)
+         END BLOCK parallel_compute
+         !$OMP END PARALLEL
+
+         CALL hfx_libheric_reconstruct_dbcsr_kmatrix(k_matrix, para_env, kind_of, natom, nkind, l_max, &
+                                                     basis_parameter, basis_parameter_l, &
+                                                     dft_control%qs_control%eps_filter_matrix, ks_ao(1, 1)%matrix)
+         
+         !! Uncomment to store kmatrix to compare to reference calculation 
+         !BLOCK
+         !INTEGER :: io
+         !CHARACTER(len=256) :: file_name
+         !WRITE(file_name, "(A,I3.3,A)") "kmatrix_", natom, ".txt"
+         !io = 6661337
+         !IF(para_env%is_source()) THEN 
+         !   OPEN(UNIT=io, FILE=TRIM(file_name), STATUS="REPLACE")
+         !ELSE 
+         !   io = -1
+         !END IF
+         !CALL cp_dbcsr_write_sparse_matrix(ks_ao(1, 1)%matrix, 4, 20, qs_env, para_env, output_unit=io)
+         !END BLOCK
+         
+         CALL dbcsr_dot(rho_ao(1, 1)%matrix, ks_ao(1, 1)%matrix, ehfx)
+         ehfx = ehfx * 0.5_dp
+         iw = cp_print_key_unit_nr(logger, hfx_section, "HF_INFO", extension=".scfLog")
+         IF (iw > 0) THEN
+            WRITE(iw, "(/,T3,A,ES25.17)") "HFX_LIBHERIC_INFO| ehfx = ", ehfx 
+         END IF
+
+         BLOCK
+         INTEGER :: quartet_class_idx, quartet_class(4), n_classes_total
+         INTEGER(int_8) :: q_sum, eri_sum
+         REAL(dp) :: t_max, t_total, t_sum
+ 
+         t_max = SUM(timings)
+         CALL para_env%max(t_max)
+         CALL para_env%sum(timings)
+         CALL para_env%sum(n_quartets)
+         t_total = SUM(timings)
+         n_classes_total = n_classes_on_rank
+         CALL para_env%sum(n_classes_total)
+         CALL para_env%sync()
+
+         IF(para_env%is_source()) THEN
+             t_sum = 0.0_dp 
+             q_sum = 0
+             eri_sum = 0
+             WRITE(iw, "(T3,A,F10.4,A,I3,A)") &
+                 "HFX_LIBHERIC_INFO| Execution took ", t_max, "s -- ranks have worked on ", n_classes_total, " classes"
+             WRITE(iw, "(T3,A,2(I3,A))") "HFX_LIBHERIC_INFO| Rank ", para_env%mepos, " worked on ", n_classes_on_rank, " classes"
+             WRITE(iw, "(/,T3,A,/,5(A18,','),A18)") "HFX_LIBHERIC_INFO| ", &
+                                                    "quartet_class","n_quartets","n_eris","T(s)","Perf(quartets/s)","Perf(GERIS/s)"
+             DO quartet_class_idx = 1, n_quartet_classes
+                    quartet_class = hfx_libheric_idx_to_quartet_class(quartet_class_idx, l_max)
+                    ASSOCIATE(la => quartet_class(1), lb => quartet_class(2), lc => quartet_class(3), ld => quartet_class(4), &
+                              n_quartets_local => n_quartets(quartet_class_idx), &
+                              t_scaled => t_max * timings(quartet_class_idx) / t_total)
+                    ASSOCIATE(n_eris => n_quartets_local * nco(la) * nco(lb) * nco(lc) * nco(ld), &
+                              perf => n_quartets_local / t_scaled * 1e-9, &
+                              perf_eri => (n_quartets_local * (nco(la) * nco(lb) * nco(lc) * nco(ld))) / t_scaled * 1e-9)
+                    WRITE(iw, "(T12,2(A,2(I1)),A,',',2(I18,','),3(F18.4,','))") &
+                             "(", la, lb, "|", lc, ld, ")", n_quartets_local, n_eris, t_scaled, perf, perf_eri
+                    t_sum = t_sum + t_scaled
+                    q_sum = q_sum + n_quartets_local
+                    eri_sum = eri_sum + n_quartets_local * nco(la) * nco(lb) * nco(lc) * nco(ld)
+                    END ASSOCIATE
+                    END ASSOCIATE
+             END DO
+             WRITE(iw, "(A18,',',2(I18,','),3(F18.4,','))") "total", q_sum, eri_sum, t_sum, 0.0_dp, 0.0_dp
+         END IF
+         CALL para_env%sync()
+         END BLOCK
+         CALL cp_print_key_finished_output(iw, logger, hfx_section, "HF_INFO")
+         CALL free_accelerator_contexts(ctx_handles(1), SIZE(ctx_handles))
+         CALL next_quartet_idx_win%free()
+      END BLOCK
+      
+      CALL hfx_libheric_free_atom_pair_lists(l_max, atom_pairs)
+      CALL hfx_libheric_free_screening_models(screen)
+      CALL hfx_libheric_free_basis_types(basis_parameter_l)
+      CALL hfx_libheric_free_sparse_matrix(p_matrix)
+      CALL hfx_libheric_free_sparse_matrix(k_matrix)
+      CALL libheric_release()
+      
+      CALL timestop(handle)
+   END SUBROUTINE hfx_libheric_integrate_four_center
+   
+! **************************************************************************************************
+!> \brief iterate through all shellset quartets for given atom quartet and submit all non-screened
+!>        quartets to libheric
+!> \param ctx - libheric accelerator context
+!> \param x_data - data related HFX
+!> \param atom_pairs_bra/ket - holds the set-pair list for atom_pair_ij/kl
+!> \param atom_pair_ij/kl - info about atoms (iatom,jatom|katom,latom)
+!> \param screen_ij/kl - screening models for atom_pair_ij/kl
+!> \param pmax_ac/ad/bc/bd - pmatrix set-set screening values for atom pairs ac/ad/bc/bd
+!> \param pmax_atom - log10 bound of largest pmax_atom value for atom pairs ac/ad/bc/bd
+!> \param log10_eps_schwarz - screening threshold
+!> \param do_p_screening - ...
+!> \param sorted_cells - hfx_libheric_cells sorted by distance to origin
+!> \param cell - needed for pbc calculation
+!> \param P/Q_list - pgf_pair_lists, have to be allocated beforehand
+!> \param n_quartets - submitted quartet counter
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_submit_shellset_quartets(ctx, x_data, atom_pairs_bra, atom_pairs_ket, atom_pair_ij, atom_pair_kl, & 
+                                                    bas_lai, bas_lbj, bas_lck, bas_ldl, screen_ij, screen_kl, &
+                                                    pmax_ac, pmax_ad, pmax_bc, pmax_bd, screen_kind_kl, &
+                                                    pmax_atom, log10_eps_schwarz, do_p_screening, &
+                                                    sorted_cells, cell, P_list, Q_list, n_quartets)
+      TYPE(C_PTR)                                          :: ctx
+      TYPE(hfx_type), POINTER, INTENT(IN)                  :: x_data
+      TYPE(hfx_libheric_atom_pair_list_type), INTENT(IN)   :: atom_pairs_bra, atom_pairs_ket
+      TYPE(hfx_libheric_atom_pair_type), INTENT(IN)        :: atom_pair_ij, atom_pair_kl
+      TYPE(hfx_libheric_basis_type), INTENT(IN)            :: bas_lai, bas_lbj, bas_lck, bas_ldl
+      TYPE(hfx_libheric_screening_kkll_models), INTENT(IN) :: screen_ij, screen_kl
+      REAL(dp), INTENT(IN)                                 :: pmax_ac(bas_lck%nset, bas_lai%nset), &
+                                                              pmax_ad(bas_ldl%nset, bas_lai%nset), &
+                                                              pmax_bc(bas_lck%nset, bas_lbj%nset), &
+                                                              pmax_bd(bas_ldl%nset, bas_lbj%nset)
+      REAL(dp), INTENT(IN)                                 :: screen_kind_kl, pmax_atom, log10_eps_schwarz
+      LOGICAL, INTENT(IN)                                  :: do_p_screening
+      TYPE(hfx_libheric_cell_type), &
+         DIMENSION(:), INTENT(IN)                          :: sorted_cells
+      TYPE(cell_type), POINTER, INTENT(IN)                 :: cell
+      TYPE(hfx_libheric_pgf_pair_list_type), INTENT(INOUT) :: P_list, Q_list
+      INTEGER(int_8), INTENT(INOUT)                        :: n_quartets
+     
+      INTEGER                                              :: iset, jset, kset, lset, &
+                                                              ishl, jshl, kshl, lshl 
+      INTEGER(int_8)                                       :: ij_set, kl_set
+      INTEGER                                              :: B_off_idx, D_off_idx, Q_off_idx, P_idx, Q_idx
+      REAL(dp)                                             :: ra(3), rb(3), rab2, rbb(3), rabb2, &
+                                                              rc(3), rd(3), rcd2, rdd(3), rcdd2, &
+                                                              P(3), Q(3), QQ(3), QQQ(3), PQ(3), &
+                                                              rpq2, R_P, R_Q, R_c, PQ_R_c_dist2, &
+                                                              temp(3), shift(3)
+      INTEGER                                              :: B_base_off(3), D_base_off(3), Q_base_off(3), &
+                                                              B_off(3), D_off(3), Q_off(3)
+      LOGICAL                                              :: has_cutoff
+      REAL(dp)                                             :: outer_set_ij_bound, outer_set_kl_bound, &
+                                                              set_ij_bound, set_kl_bound, &
+                                                              max_ij_bound, max_kl_bound, &
+                                                              pgf_ij_bound, pgf_kl_bound, &
+                                                              log10_pmax_entry, pmax_entry
+                                                              
+      TYPE(hfx_libheric_pgf_pair_type)                      :: P_elem, Q_elem
+
+      ra = atom_pair_ij%atom1%R
+      rb = atom_pair_ij%atom2%R
+      rab2 = atom_pair_ij%dist2
+      B_base_off = atom_pair_ij%atom2_off
+
+      rc = atom_pair_kl%atom1%R
+      rd = atom_pair_kl%atom2%R
+      rcd2 = atom_pair_kl%dist2
+      D_base_off = atom_pair_kl%atom2_off
+
+      PQ_R_c_dist2 = HUGE(PQ_R_c_dist2)
+      has_cutoff = .FALSE.
+      IF (x_data%potential_parameter%potential_type == do_potential_truncated .OR. &
+          x_data%potential_parameter%potential_type == do_potential_short .OR. &
+          x_data%potential_parameter%potential_type == do_potential_mix_cl_trunc) THEN
+         R_c = x_data%potential_parameter%cutoff_radius
+         has_cutoff = .TRUE.
+      END IF
+      IF (x_data%potential_parameter%potential_type == do_potential_TShPSC) THEN
+         R_c = x_data%potential_parameter%cutoff_radius*2.0_dp
+         has_cutoff = .TRUE.
+      END IF
+      DO ij_set = atom_pair_ij%set_bounds(1), atom_pair_ij%set_bounds(2)
+         iset = atom_pairs_bra%set_list(ij_set)%set1
+         jset = atom_pairs_bra%set_list(ij_set)%set2
+         outer_set_ij_bound = hfx_libheric_eval_screening_model(screen_ij%set(jset, iset), rab2)
+
+         IF(outer_set_ij_bound + screen_kind_kl + pmax_atom .LT. log10_eps_schwarz) CYCLE
+         CALL hfx_libheric_build_pgf_pair_list(atom_pair_ij, bas_lai, bas_lbj, iset, jset, &
+                                               screen_ij%pgf(:, :, jset, iset), screen_ij%R_pgf(:, :, jset, iset), &
+                                               screen_kind_kl, pmax_atom, log10_eps_schwarz, P_list)
+         IF(P_list%size .EQ. 0) CYCLE
+
+         DO kl_set = atom_pair_kl%set_bounds(1), atom_pair_kl%set_bounds(2)
+             kset = atom_pairs_ket%set_list(kl_set)%set1
+             lset = atom_pairs_ket%set_list(kl_set)%set2
+             outer_set_kl_bound = hfx_libheric_eval_screening_model(screen_kl%set(lset, kset), rcd2)
+             IF(outer_set_ij_bound + outer_set_kl_bound + pmax_atom .LT. log10_eps_schwarz) CYCLE
+             IF (do_p_screening) THEN
+                log10_pmax_entry = MAX(pmax_ac(kset, iset), pmax_ad(lset, iset), &
+                                       pmax_bc(kset, jset), pmax_bd(lset, jset))
+             ELSE
+                log10_pmax_entry = 0.0_dp            
+             END IF 
+             IF(outer_set_ij_bound + outer_set_kl_bound + log10_pmax_entry .LT. log10_eps_schwarz) CYCLE
+             pmax_entry = 10 ** log10_pmax_entry
+             CALL hfx_libheric_build_pgf_pair_list(atom_pair_kl, bas_lck, bas_ldl, kset, lset, &
+                                                   screen_kl%pgf(:, :, lset, kset), screen_kl%R_pgf(:, :, lset, kset), &
+                                                   outer_set_ij_bound, log10_pmax_entry, log10_eps_schwarz, Q_list)
+             IF(Q_list%size .EQ. 0) CYCLE
+             CALL accelerator_context_set_set_ids(ctx, iset - 1, jset - 1, kset - 1, lset - 1, pmax_entry)
+
+             DO ishl = 1, bas_lai%nshell(iset)
+             DO jshl = 1, bas_lbj%nshell(jset)
+             DO kshl = 1, bas_lck%nshell(kset)
+             DO lshl = 1, bas_ldl%nshell(lset)
+                CALL accelerator_context_set_shell_ids(ctx, ishl - 1, jshl - 1, kshl - 1, lshl - 1)
+                DO B_off_idx = 1, SIZE(sorted_cells)
+                   max_ij_bound = hfx_libheric_eval_screening_model(screen_ij%set(jset, iset), sorted_cells(B_off_idx)%dist2)
+                   IF (max_ij_bound + outer_set_kl_bound + log10_pmax_entry < log10_eps_schwarz) EXIT
+                   rbb = rb + sorted_cells(B_off_idx)%cell_r 
+                   rabb2 = (ra(1) - rbb(1))**2 + (ra(2) - rbb(2))**2 + (ra(3) - rbb(3))**2
+                   set_ij_bound = hfx_libheric_eval_screening_model(screen_ij%set(jset, iset), rabb2)
+                   IF (set_ij_bound + outer_set_kl_bound + log10_pmax_entry < log10_eps_schwarz) CYCLE
+                   B_off = B_base_off + sorted_cells(B_off_idx)%cell
+                   CALL accelerator_context_set_B_offset(ctx, B_off(1), B_off(2), B_off(3))
+                   DO D_off_idx = 1, SIZE(sorted_cells)
+                      max_kl_bound = hfx_libheric_eval_screening_model(screen_kl%set(lset, kset), sorted_cells(D_off_idx)%dist2)
+                      IF (set_ij_bound + max_kl_bound + log10_pmax_entry < log10_eps_schwarz) EXIT
+                      rdd = rd + sorted_cells(D_off_idx)%cell_r 
+                      rcdd2 = (rc(1) - rdd(1))**2 + (rc(2) - rdd(2))**2 + (rc(3) - rdd(3))**2
+                      set_kl_bound = hfx_libheric_eval_screening_model(screen_kl%set(lset, kset), rcdd2)
+                      IF (set_ij_bound + set_kl_bound + log10_pmax_entry < log10_eps_schwarz) CYCLE
+                      D_off = D_base_off + sorted_cells(D_off_idx)%cell
+                      CALL accelerator_context_set_D_offset(ctx, D_off(1), D_off(2), D_off(3))
+                      DO P_idx = 1, P_list%size
+                         P_elem = P_list%pair_list(P_idx)
+                         pgf_ij_bound = hfx_libheric_eval_screening_model(P_elem%pgf_model, rabb2)
+                         IF(pgf_ij_bound + set_kl_bound + log10_pmax_entry < log10_eps_schwarz) CYCLE
+                         P = (P_elem%zet1 * ra + P_elem%zet2 * rbb) * P_elem%oozet12
+                         R_P = hfx_libheric_eval_screening_model(P_elem%R_model, rabb2)
+                         DO Q_idx = 1, Q_list%size
+                            Q_elem = Q_list%pair_list(Q_idx)
+                            pgf_kl_bound = hfx_libheric_eval_screening_model(Q_elem%pgf_model, rcdd2)
+                            IF(pgf_ij_bound + pgf_kl_bound + log10_pmax_entry < log10_eps_schwarz) CYCLE
+                            Q = (Q_elem%zet1 * rc + Q_elem%zet2 * rdd) * Q_elem%oozet12
+                            R_Q = hfx_libheric_eval_screening_model(Q_elem%R_model, rcdd2)
+                            IF (x_data%periodic_parameter%do_periodic) THEN
+                               temp = P - Q
+                               PQ = pbc(temp, cell)
+                               shift = -PQ + temp
+                               temp = MATMUL(cell%h_inv, shift)
+                               Q_base_off = (/ NINT(temp(1)), NINT(temp(2)), NINT(temp(3)) /)
+                            ELSE
+                               PQ = P - Q
+                               shift = 0.0
+                               Q_base_off = 0
+                            END IF
+                            QQ = Q + shift
+                            rpq2 = PQ(1)**2 + PQ(2)**2 + PQ(3)**2
+                            IF(has_cutoff)PQ_R_c_dist2 = (R_P + R_Q + R_c) ** 2
+                            IF (rpq2 > PQ_R_c_dist2) CYCLE
+                            CALL accelerator_context_set_exponent_ids(ctx, &
+                                                                      P_elem%pgf1 - 1, P_elem%pgf2 - 1, & 
+                                                                      Q_elem%pgf1 - 1, Q_elem%pgf2 - 1)
+                            DO Q_off_idx = 1, SIZE(sorted_cells)
+                               IF(sorted_cells(Q_off_idx)%dist2 .GT. PQ_R_c_dist2) EXIT
+                               QQQ = QQ + sorted_cells(Q_off_idx)%cell_r!x_data%neighbor_cells(Q_off_idx)%cell_r
+                               PQ = P - QQQ
+                               rpq2 = PQ(1)**2 + PQ(2)**2 + PQ(3)**2
+                               IF (rpq2 > PQ_R_c_dist2) CYCLE 
+                               Q_off = Q_base_off + sorted_cells(Q_off_idx)%cell
+                               CALL accelerator_context_set_Q_offset(ctx, Q_off(1), Q_off(2), Q_off(3)) 
+                               CALL accelerator_context_submit_peri(ctx)
+                               n_quartets = n_quartets + 1
+                            END DO 
+                         END DO
+                      END DO
+                   END DO
+                END DO
+            END DO
+            END DO
+            END DO
+            END DO
+         END DO 
+      END DO
+   END SUBROUTINE hfx_libheric_submit_shellset_quartets
 
    #:include "hfx_get_pmax_val.fypp"
 

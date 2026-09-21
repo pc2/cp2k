@@ -18,12 +18,14 @@ MODULE hfx_pair_list_methods
    USE gamma,                           ONLY: fgamma => fgamma_0
    USE hfx_types,                       ONLY: &
         hfx_basis_type, hfx_block_range_type, hfx_cell_type, hfx_pgf_list, hfx_pgf_product_list, &
-        hfx_potential_type, hfx_screen_coeff_type, pair_list_type, pair_set_list_type
+        hfx_potential_type, hfx_screen_coeff_type, pair_list_type, pair_set_list_type, powell_min_log, &
+        hfx_basis_type, hfx_libheric_basis_type, hfx_libheric_screening_model_type, hfx_libheric_screening_models
+   USE hfx_screening_methods,           ONLY: hfx_libheric_eval_screening_model
    USE input_constants,                 ONLY: &
         do_potential_TShPSC, do_potential_coulomb, do_potential_gaussian, do_potential_id, &
         do_potential_long, do_potential_mix_cl, do_potential_mix_cl_trunc, do_potential_mix_lg, &
         do_potential_short, do_potential_truncated
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp, int_8
    USE libint_wrapper,                  ONLY: prim_data_f_size
    USE mathconstants,                   ONLY: pi
    USE mp2_types,                       ONLY: pair_list_type_mp2
@@ -42,7 +44,15 @@ MODULE hfx_pair_list_methods
              build_atomic_pair_list, &
              pgf_product_list_size, &
              build_pair_list_pbc_pgf, &
-             bra_t, allocate_bra
+             bra_t, allocate_bra, &
+             hfx_libheric_build_pgf_pair_list, &
+             hfx_libheric_build_atom_pair_lists, &
+             hfx_libheric_free_atom_pair_lists, &
+             hfx_libheric_atom_pair_type, &
+             hfx_libheric_atom_pair_list_type, &
+             hfx_libheric_pgf_pair_type, &
+             hfx_libheric_pgf_pair_list_type
+             
 
    ! an initial estimate for the size of the product list
    INTEGER, SAVE :: pgf_product_list_size = 128
@@ -53,6 +63,45 @@ MODULE hfx_pair_list_methods
       INTEGER, ALLOCATABLE, DIMENSION(:, :)     :: pgf_idx, cell_idx
       INTEGER :: cell_cnt = 0, pgf_cnt = 0
    END TYPE Bra_t
+   
+   TYPE hfx_libheric_atom_params_type
+       INTEGER        :: atom_idx
+       INTEGER        :: kind_idx
+       REAL(dp)       :: R(3)
+   END TYPE
+
+   TYPE hfx_libheric_atom_pair_type
+       TYPE(hfx_libheric_atom_params_type)  :: atom1, atom2
+       REAL(dp)                             :: dist2  = -1.0_dp
+       INTEGER                              :: atom2_off(3)
+       INTEGER(int_8)                       :: set_bounds(2)
+   END TYPE
+   
+   TYPE hfx_libheric_set_pair_type
+       INTEGER   :: set1 = -1
+       INTEGER   :: set2 = -1
+   END TYPE
+
+   TYPE hfx_libheric_atom_pair_list_type
+       TYPE(hfx_libheric_atom_pair_type), & 
+          DIMENSION(:), ALLOCATABLE          :: atom_list
+       TYPE(hfx_libheric_set_pair_type), &
+          DIMENSION(:), ALLOCATABLE          :: set_list
+       INTEGER(int_8)                        :: atom_list_size = 0
+       INTEGER(int_8)                        :: set_list_size = 0
+   END TYPE
+
+   TYPE hfx_libheric_pgf_pair_type
+      INTEGER                                 :: pgf1 = 0, pgf2 = 0
+      REAL(dp)                                :: zet1, zet2, oozet12
+      TYPE(hfx_libheric_screening_model_type) :: pgf_model, R_model
+   END TYPE
+
+   TYPE hfx_libheric_pgf_pair_list_type
+      TYPE(hfx_libheric_pgf_pair_type), &
+         DIMENSION(:), POINTER             :: pair_list => NULL()
+      INTEGER                              :: size
+   END TYPE 
 
 CONTAINS
 
@@ -851,5 +900,215 @@ CONTAINS
       list%n_element = n_element
 
    END SUBROUTINE build_pair_list_mp2
+   
+! **************************************************************************************************
+!> \brief - This routine collects all non-screened pgf-pairs for a set-pair of an atom-pair for 
+!>          a specific angular momentum pair (la, lb)
+!> \param atom_pair_ij - pair containing atom i and atom j
+!> \param bas_lai, bas_lbj - basis-set for atom i/j and angular momentum la/lb
+!> \param iset, jset - set index into bas_lai/bas_lbj
+!> \param model_pgf, model_R_pgf - screening models for all related pgfs pairs 
+!> \param screen_bound_other - screening bound for the respective (ab| or |cd) pair
+!> \param pmax_entry - screening bound for the density matrix entry
+!> \param log10_eps_schwarz - screening threshold
+!> \param list - output list of all non-screened pgf-pairs
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_build_pgf_pair_list(atom_pair_ij, bas_lai, bas_lbj, iset, jset, & 
+                                               model_pgf, model_R_pgf, screen_bound_other, log10_pmax_entry, &
+                                               log10_eps_schwarz, list)
+      TYPE(hfx_libheric_atom_pair_type), INTENT(IN) :: atom_pair_ij
+      TYPE(hfx_libheric_basis_type), INTENT(IN)     :: bas_lai, bas_lbj
+      INTEGER, INTENT(IN)                           :: iset, jset
+      TYPE(hfx_libheric_screening_model_type), &
+         DIMENSION(:, :), INTENT(IN)                :: model_pgf, model_R_pgf
+      REAL(dp), INTENT(IN)                          :: screen_bound_other, log10_pmax_entry, log10_eps_schwarz
+      TYPE(hfx_libheric_pgf_pair_list_type), &
+          INTENT(INOUT)                             :: list
+
+      TYPE(hfx_libheric_atom_params_type)           :: atom1, atom2
+      REAL(dp)                                      :: pgf_bound
+      INTEGER                                       :: list_idx, ipgf, jpgf, handle
+      
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_build_pgf_pair_list'
+      CALL timeset(routineN, handle)
+
+    
+      atom1 = atom_pair_ij%atom1
+      atom2 = atom_pair_ij%atom2
+      list_idx = 0
+      DO ipgf = 1, bas_lai%npgf(iset)
+         DO jpgf = 1, bas_lbj%npgf(jset)
+            pgf_bound = hfx_libheric_eval_screening_model(model_pgf(jpgf, ipgf), atom_pair_ij%dist2)
+            IF (pgf_bound + screen_bound_other + log10_pmax_entry .LT. log10_eps_schwarz) CYCLE
+
+            list_idx = list_idx + 1
+            list%pair_list(list_idx)%pgf1 = ipgf
+            list%pair_list(list_idx)%pgf2 = jpgf
+            list%pair_list(list_idx)%zet1 = bas_lai%zet(ipgf, iset)
+            list%pair_list(list_idx)%zet2 = bas_lbj%zet(jpgf, jset)
+            list%pair_list(list_idx)%oozet12 = 1.0_dp / (bas_lai%zet(ipgf, iset) + bas_lbj%zet(jpgf, jset))
+            list%pair_list(list_idx)%pgf_model = model_pgf(jpgf, ipgf)
+            list%pair_list(list_idx)%R_model =   model_R_pgf(jpgf, ipgf)
+         END DO
+      END DO
+      list%size = list_idx
+      CALL timestop(handle)
+
+   END SUBROUTINE hfx_libheric_build_pgf_pair_list 
+   
+! **************************************************************************************************
+!> \brief - This routine collects all non-screened atom-pairs and set-pairs therein for all 
+!>          angular momentum pairs (la, lb)
+!> \param natom - number of atoms in the simulated system
+!> \param nkind - number of unique basis sets 
+!> \param l_max - maximum angular momentum
+!> \param atom_pairs - 2D array containing output lists of atom-pairs and set-pairs for each (la, lb)
+!> \param kind_of - map of atom index to atom kind
+!> \param particle_set - used to access position vector of atoms
+!> \param basis_parameter_l - all hfx_libheric basis sets
+!> \param do_periodic - determines whether atoms interact with their pbc neighbors
+!> \param screen - contains all coefficients for screening tests
+!> \param log10_eps_schwarz - screening threshold
+!> \param cell - used to apply pbc in case of do_periodic
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_build_atom_pair_lists(natom, nkind, l_max, atom_pairs, kind_of, particle_set, &
+                                                 basis_parameter_l, do_periodic, screen, log10_eps_schwarz, cell)
+      INTEGER, INTENT(IN)                                  :: natom, nkind, l_max
+      TYPE(hfx_libheric_atom_pair_list_type), &
+          DIMENSION(:, :), ALLOCATABLE, INTENT(OUT)        :: atom_pairs
+      INTEGER, INTENT(IN)                                  :: kind_of(*)
+      TYPE(particle_type), DIMENSION(:), INTENT(IN), &
+         POINTER                                           :: particle_set
+      TYPE(hfx_libheric_basis_type), &
+         DIMENSION(nkind, 0:l_max), INTENT(IN)             :: basis_parameter_l
+      LOGICAL, INTENT(IN)                                  :: do_periodic
+      TYPE(hfx_libheric_screening_models), INTENT(IN)      :: screen
+      REAL(KIND=dp), INTENT(IN)                            :: log10_eps_schwarz
+      TYPE(cell_type), POINTER                             :: cell
+      
+      INTEGER                                              :: iatom, ikind, jatom, jkind, &
+                                                              la, lb, iset, jset, off(3), handle
+      INTEGER(int_8)                                       :: atom_idx, set_idx, new_size_estimate, &
+                                                              atom_size_estimate, set_size_estimate, &
+                                                              prev_set_idx
+      REAL(KIND=dp)                                        :: coeffs_kind_max0, rab2
+      REAL(KIND=dp), DIMENSION(3)                          :: B11, pbc_B, ra, rb, temp
+      TYPE(hfx_libheric_set_pair_type), &
+          DIMENSION(:), ALLOCATABLE                        :: tmp_set_list
+      TYPE(hfx_libheric_atom_pair_type), &
+          DIMENSION(:), ALLOCATABLE                        :: tmp_atom_list
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_build_atom_pair_lists'
+
+      CALL timeset(routineN, handle)
+
+      coeffs_kind_max0 = MAXVAL(screen%coeffs(:, :, :, :)%kind%max)
+      ALLOCATE(atom_pairs(0:l_max, 0:l_max))
+      DO la = 0, l_max 
+         DO lb = 0, l_max
+            ASSOCIATE(atom_pairs_ll => atom_pairs(lb, la))
+            !! Initial size guess: Each atom will be at least paired with itself
+            atom_size_estimate = natom
+            set_size_estimate = natom
+            ALLOCATE(atom_pairs_ll%atom_list(atom_size_estimate))
+            ALLOCATE(atom_pairs_ll%set_list(set_size_estimate)) 
+            atom_idx = 0
+            set_idx = 0
+            DO iatom = 1, natom
+               ikind = kind_of(iatom)
+               ra = particle_set(iatom)%r(:)
+               DO jatom = iatom, natom
+                  jkind = kind_of(jatom)
+                  rb = particle_set(jatom)%r(:)
+                  ASSOCIATE(coeff => screen%coeffs(jkind, ikind, lb, la))
+                  IF (do_periodic) THEN
+                     temp = rb - ra
+                     pbc_B = pbc(temp, cell)
+                     B11 = ra + pbc_B
+                     temp = matmul(cell%h_inv, B11 - rb)
+                     off = (/ NINT(temp(1)), NINT(temp(2)), NINT(temp(3)) /)
+                     rab2 = (ra(1) - B11(1))**2 + (ra(2) - B11(2))**2 + (ra(3) - B11(3))**2
+                  ELSE
+                     rab2 = (ra(1) - rb(1))**2 + (ra(2) - rb(2))**2 + (ra(3) - rb(3))**2
+                     B11 = rb ! ra - rb
+                     off = (/ 0, 0, 0 /)
+                  END IF
+                  IF (hfx_libheric_eval_screening_model(coeff%kind, rab2) + coeffs_kind_max0 < log10_eps_schwarz) CYCLE
+                  
+                  prev_set_idx = set_idx 
+                  DO iset = 1, basis_parameter_l(ikind, la)%nset
+                     DO jset = 1, basis_parameter_l(jkind, lb)%nset
+                        IF (hfx_libheric_eval_screening_model(coeff%set(jset, iset), rab2) + coeffs_kind_max0 < log10_eps_schwarz)&
+                           CYCLE
+                        set_idx = set_idx + 1
+                        IF(set_idx > set_size_estimate) THEN
+                            new_size_estimate = 3 * set_size_estimate / 2
+                            ALLOCATE(tmp_set_list(new_size_estimate))
+                            tmp_set_list(1:set_size_estimate) = atom_pairs_ll%set_list
+                            CALL move_alloc(tmp_set_list, atom_pairs_ll%set_list)
+                            set_size_estimate = new_size_estimate
+                        END IF
+                        atom_pairs_ll%set_list(set_idx)%set1 = iset
+                        atom_pairs_ll%set_list(set_idx)%set2 = jset
+                     END DO
+                  END DO
+                  END ASSOCIATE
+                  IF(prev_set_idx .EQ. set_idx) CYCLE
+                  atom_idx = atom_idx + 1
+                  IF(atom_idx > atom_size_estimate) THEN
+                      new_size_estimate = 3 * atom_size_estimate / 2
+                      ALLOCATE(tmp_atom_list(new_size_estimate))
+                      tmp_atom_list(1:atom_size_estimate) = atom_pairs_ll%atom_list
+                      CALL move_alloc(tmp_atom_list, atom_pairs_ll%atom_list)
+                      atom_size_estimate = new_size_estimate
+                  END IF
+                  atom_pairs_ll%atom_list(atom_idx)%atom1 = hfx_libheric_atom_params_type(iatom, ikind, ra)
+                  atom_pairs_ll%atom_list(atom_idx)%atom2 = hfx_libheric_atom_params_type(jatom, jkind, B11)
+                  atom_pairs_ll%atom_list(atom_idx)%atom2_off = off
+                  atom_pairs_ll%atom_list(atom_idx)%dist2 = rab2
+                  atom_pairs_ll%atom_list(atom_idx)%set_bounds(1) = prev_set_idx + 1
+                  atom_pairs_ll%atom_list(atom_idx)%set_bounds(2) = set_idx
+               END DO
+            END DO
+            atom_pairs_ll%atom_list_size = atom_idx
+            atom_pairs_ll%set_list_size = set_idx
+            END ASSOCIATE
+         END DO
+      END DO
+      CALL timestop(handle)
+   END SUBROUTINE hfx_libheric_build_atom_pair_lists
+
+! **************************************************************************************************
+!> \brief - free all atom_pair lists created by hfx_libheric_build_atom_pair_lists 
+!> \param l_max - maximum angular momentum
+!> \param atom_pairs - 2D array containing output lists of atom-pairs and set-pairs for each (la, lb)
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_free_atom_pair_lists(l_max, atom_pairs)
+      INTEGER, INTENT(IN)                                  :: l_max
+      TYPE(hfx_libheric_atom_pair_list_type), &
+          DIMENSION(:, :), ALLOCATABLE, INTENT(INOUT)      :: atom_pairs
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_free_atom_pair_lists'
+      INTEGER :: la, lb, handle
+
+      CALL timeset(routineN, handle)
+      DO la = 0, l_max
+         DO lb = 0, l_max
+            DEALLOCATE(atom_pairs(lb, la)%atom_list)
+            DEALLOCATE(atom_pairs(lb, la)%set_list)
+         END DO
+      END DO
+      DEALLOCATE(atom_pairs)
+
+      CALL timestop(handle)
+   END SUBROUTINE hfx_libheric_free_atom_pair_lists
 
 END MODULE hfx_pair_list_methods

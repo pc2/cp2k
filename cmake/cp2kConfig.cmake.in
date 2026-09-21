@@ -109,6 +109,10 @@ if(NOT TARGET cp2k::cp2k)
   if(CP2K_USE_LIBINT2)
     find_dependency(Libint2 REQUIRED)
   endif()
+  
+  if(@CP2K_USE_LIBHERIC@)
+    find_dependency(libheric REQUIRED CONFIG)
+  endif()
 
   set(CP2K_USE_LIBFCI @CP2K_USE_LIBFCI@)
   if(CP2K_USE_LIBFCI)

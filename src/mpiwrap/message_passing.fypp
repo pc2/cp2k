@@ -4469,6 +4469,138 @@
    END SUBROUTINE mp_rget_${nametype1}$v
 
 ! **************************************************************************************************
+!> \brief Single-sided get function for vector data; The calling rank (origin) pulls data from the
+!>        source rank's window buffer. 
+!> \param base   Array into which data is pulled
+!> \param source MPI-Rank from which data is pulled
+!> \param win    MPI_Win linking origin and source ranks
+!> \param disp   (Optional) Offset into linked array on the source rank; Note: Offset into the array
+!>               on the origin rank (base) must be specified before calling, e.g. by passing 
+!>               base(off:), where off is an offset into the base array; defaults to 0
+!> \param len    number of elements that should be transfered; defaults to SIZE(base) 
+!> \par History
+!>      02.2015 created [Alfio Lazzaro]
+!>      09.2026 added get/put functionality [Johannes Menzel]
+!> \note
+!>      arrays can be pointers or assumed shape, but they must be contiguous!
+! **************************************************************************************************
+   SUBROUTINE mp_get_${nametype1}$v(base, source, win, disp, len)
+      ${type1}$, DIMENSION(:), CONTIGUOUS, INTENT(INOUT)  :: base
+      INTEGER, INTENT(IN)                                 :: source
+      CLASS(mp_win_type), INTENT(IN)                      :: win
+      INTEGER, INTENT(IN), OPTIONAL                       :: disp, len
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'mp_get_${nametype1}$v'
+
+      INTEGER                                  :: handle
+#if defined(__parallel)
+      INTEGER                                  :: ierr, custom_len
+      INTEGER(kind=mpi_address_kind)           :: disp_aint
+      MPI_DATA_TYPE :: handle_origin_datatype, handle_target_datatype
+#endif
+
+      CALL mp_timeset(routineN, handle)
+
+#if defined(__parallel)
+      custom_len = SIZE(base)
+      IF (PRESENT(len)) THEN
+         custom_len = len
+      END IF
+
+      disp_aint = 0
+      IF (PRESENT(disp)) THEN
+         disp_aint = INT(disp, KIND=mpi_address_kind)
+      END IF
+      
+      handle_origin_datatype = ${mpi_type1}$
+      handle_target_datatype = ${mpi_type1}$
+      
+      IF (custom_len > 0) THEN
+         CALL mpi_get(base(1), custom_len, handle_origin_datatype, source, disp_aint, &
+                      custom_len, handle_target_datatype, win%handle, ierr)
+      ELSE
+         ierr = 0
+      END IF
+      IF (ierr /= 0) CALL mp_stop(ierr, "mpi_get @ "//routineN)
+
+      CALL add_perf(perf_id=17, count=1, msg_size=SIZE(base)*${bytes1}$)
+#else
+      MARK_USED(base)
+      MARK_USED(source)
+      MARK_USED(win)
+      MARK_USED(disp)
+      MARK_USED(len)
+#endif
+      CALL mp_timestop(handle)
+   END SUBROUTINE mp_get_${nametype1}$v
+
+! **************************************************************************************************
+!> \brief Single-sided put function for vector data; The calling rank (origin) places data into the
+!>        target rank's window buffer. 
+!> \param base   Array on calling rank from which data is taken
+!> \param target MPI-Rank to which data is transfered 
+!> \param win    MPI_Win linking origin and target ranks
+!> \param disp   (Optional) Offset into linked array on the target rank; Note: Offset into the array
+!>               on the origin rank (base) must be specified before calling, e.g. by passing 
+!>               base(off:), where off is an offset into the base array; defaults to 0
+!> \param len    number of elements that should be transfered; defaults to SIZE(base) 
+!> \par History
+!>      02.2015 created [Alfio Lazzaro]
+!>      09.2026 added get/put functionality [Johannes Menzel]
+!> \note
+!>      arrays can be pointers or assumed shape, but they must be contiguous!
+! **************************************************************************************************
+   SUBROUTINE mp_put_${nametype1}$v(base, target, win, disp, len)
+      ${type1}$, DIMENSION(:), CONTIGUOUS, INTENT(INOUT)  :: base
+      INTEGER, INTENT(IN)                                 :: target
+      CLASS(mp_win_type), INTENT(IN)                      :: win
+      INTEGER, INTENT(IN), OPTIONAL                       :: disp, len
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'mp_put_${nametype1}$v'
+
+      INTEGER                                  :: handle
+#if defined(__parallel)
+      INTEGER                                  :: ierr, custom_len
+      INTEGER(kind=mpi_address_kind)           :: disp_aint
+      MPI_DATA_TYPE :: handle_origin_datatype, handle_target_datatype
+#endif
+
+      CALL mp_timeset(routineN, handle)
+
+#if defined(__parallel)
+      custom_len = SIZE(base)
+      IF (PRESENT(len)) THEN
+         custom_len = len
+      END IF
+
+      disp_aint = 0
+      IF (PRESENT(disp)) THEN
+         disp_aint = INT(disp, KIND=mpi_address_kind)
+      END IF
+      
+      handle_origin_datatype = ${mpi_type1}$
+      handle_target_datatype = ${mpi_type1}$
+      
+      IF (custom_len > 0) THEN
+         CALL mpi_put(base(1), custom_len, handle_origin_datatype, target, disp_aint, &
+                      custom_len, handle_target_datatype, win%handle, ierr)
+      ELSE
+         ierr = 0
+      END IF
+      IF (ierr /= 0) CALL mp_stop(ierr, "mpi_get @ "//routineN)
+
+      CALL add_perf(perf_id=16, count=1, msg_size=SIZE(base)*${bytes1}$)
+#else
+      MARK_USED(base)
+      MARK_USED(target)
+      MARK_USED(win)
+      MARK_USED(disp)
+      MARK_USED(len)
+#endif
+      CALL mp_timestop(handle)
+   END SUBROUTINE mp_put_${nametype1}$v
+
+! **************************************************************************************************
 !> \brief ...
 !> \param count ...
 !> \param lengths ...

@@ -59,7 +59,8 @@ MODULE hfx_admm_utils
    USE distribution_2d_types,           ONLY: distribution_2d_type
    USE external_potential_types,        ONLY: copy_potential
    USE hfx_derivatives,                 ONLY: derivatives_four_center
-   USE hfx_energy_potential,            ONLY: integrate_four_center
+   USE hfx_energy_potential,            ONLY: integrate_four_center, &
+                                              hfx_libheric_integrate_four_center
    USE hfx_pw_methods,                  ONLY: pw_hfx
    USE hfx_ri,                          ONLY: hfx_ri_update_forces,&
                                               hfx_ri_update_ks
@@ -73,7 +74,7 @@ MODULE hfx_admm_utils
         do_admm_aux_exch_func_pbex_libxc, do_admm_aux_exch_func_sx_libxc, &
         do_admm_basis_projection, do_admm_charge_constrained_projection, do_admm_purify_none, &
         do_potential_coulomb, do_potential_id, do_potential_long, do_potential_mix_cl, &
-        do_potential_mix_cl_trunc, do_potential_short, do_potential_truncated, &
+        do_potential_mix_cl_trunc, do_potential_short, do_potential_truncated, hfx_library_is_libheric, &
         xc_funct_no_shortcut, xc_none
    USE input_section_types,             ONLY: section_vals_duplicate,&
                                               section_vals_get,&
@@ -1282,9 +1283,14 @@ CONTAINS
          ELSE
 
             DO ispin = 1, mspin
-               CALL integrate_four_center(qs_env, x_data, matrix_ks_orb, eh1, rho_ao_orb, hfx_sections, &
-                                          para_env, s_mstruct_changed, irep, distribute_fock_matrix, &
-                                          ispin=ispin)
+               IF(x_data(irep, 1)%general_parameter%hfx_library .EQ. hfx_library_is_libheric) THEN
+                  CALL hfx_libheric_integrate_four_center(qs_env, x_data(irep, 1), matrix_ks_orb, eh1, &
+                                                          rho_ao_orb, hfx_sections, para_env)
+               ELSE
+                  CALL integrate_four_center(qs_env, x_data, matrix_ks_orb, eh1, rho_ao_orb, hfx_sections, &
+                                             para_env, s_mstruct_changed, irep, distribute_fock_matrix, &
+                                             ispin=ispin)
+               END IF
                ehfx = ehfx + eh1
             END DO
          END IF

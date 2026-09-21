@@ -19,7 +19,9 @@ MODULE hfx_types
                                               get_atomic_kind_set
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_p_type,&
-                                              gto_basis_set_type
+                                              gto_basis_set_type, &
+                                              copy_gto_basis_set, &
+                                              deallocate_gto_basis_set
    USE bibliography,                    ONLY: bussy2023,&
                                               cite_reference,&
                                               guidon2008,&
@@ -78,6 +80,7 @@ MODULE hfx_types
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: a_bohr
    USE qs_integral_utils,               ONLY: basis_set_list_setup
+   USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
                                               qs_kind_type
@@ -87,6 +90,7 @@ MODULE hfx_types
         split_block_sizes
    USE string_utilities,                ONLY: compress
    USE t_c_g0,                          ONLY: free_C0
+   USE util,                            ONLY: sort
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 
@@ -110,7 +114,11 @@ MODULE hfx_types
              alloc_containers, dealloc_containers, hfx_task_list_type, init_t_c_g0_lmax, &
              hfx_create_neighbor_cells, hfx_create_basis_types, hfx_release_basis_types, &
              hfx_ri_type, hfx_compression_type, block_ind_type, hfx_ri_init, hfx_ri_release, &
-             compare_hfx_sections
+             compare_hfx_sections, &
+             hfx_libheric_cell_type, hfx_libheric_basis_type, hfx_libheric_screening_model_type, &
+             hfx_libheric_screening_models, hfx_libheric_screening_kkll_models, &
+             hfx_libheric_sorted_cells_from_hfx_cells, &
+             hfx_libheric_create_basis_types, hfx_libheric_free_basis_types
 
 #define CACHE_SIZE 1024
 #define BITS_MAX_VAL 6
@@ -209,6 +217,13 @@ MODULE hfx_types
       REAL(dp)                                 :: cell(3) = 0.0_dp
       REAL(dp)                                 :: cell_r(3) = 0.0_dp
    END TYPE hfx_cell_type
+   
+! **************************************************************************************************
+   TYPE hfx_libheric_cell_type
+      INTEGER                                  :: cell(3) = 0
+      REAL(dp)                                 :: cell_r(3) = 0.0_dp
+      REAL(dp)                                 :: dist2
+   END TYPE hfx_libheric_cell_type
 
 ! **************************************************************************************************
    TYPE hfx_distribution
@@ -284,6 +299,25 @@ MODULE hfx_types
       REAL(dp), DIMENSION(:, :), POINTER        :: pgf_radius => NULL()
       REAL(dp)                                 :: kind_radius = 0.0_dp
    END TYPE hfx_basis_type
+   
+! **************************************************************************************************
+   TYPE hfx_libheric_basis_type
+      INTEGER,  DIMENSION(:),       ALLOCATABLE :: npgf
+      INTEGER                                   :: nset = 0
+      !! Index back into hfx_basis_type
+      INTEGER,  DIMENSION(:),       ALLOCATABLE :: global_set
+      INTEGER,  DIMENSION(:, :),    ALLOCATABLE :: global_shl
+      REAL(dp), DIMENSION(:, :),    ALLOCATABLE :: zet
+      REAL(dp), DIMENSION(:, :, :), ALLOCATABLE :: gcc
+      REAL(dp), DIMENSION(:, :),    ALLOCATABLE :: sphi
+      INTEGER,  DIMENSION(:),       ALLOCATABLE :: nsgf
+      INTEGER,  DIMENSION(:, :),    ALLOCATABLE :: first_sgf
+      INTEGER                                   :: nsgf_total = 0
+      INTEGER,  DIMENSION(:),       ALLOCATABLE :: nshell
+      REAL(dp), DIMENSION(:),       ALLOCATABLE :: set_radius
+      REAL(dp), DIMENSION(:, :),    ALLOCATABLE :: pgf_radius
+      REAL(dp)                                  :: kind_radius = 0.0_dp
+   END TYPE hfx_libheric_basis_type
 
 ! **************************************************************************************************
    TYPE hfx_basis_info_type
@@ -296,6 +330,28 @@ MODULE hfx_types
    TYPE hfx_screen_coeff_type
       REAL(dp)                                 :: x(2) = 0.0_dp
    END TYPE hfx_screen_coeff_type
+   
+! **************************************************************************************************
+   TYPE hfx_libheric_screening_model_type
+      REAL(dp)                                 :: x(4) = 0.0_dp
+      REAL(dp)                                 :: max = 0.0_dp
+      REAL(dp)                                 :: cutoff2 = 0.0_dp
+      REAL(dp)                                 :: y_min = 0.0_dp
+   END TYPE 
+
+! **************************************************************************************************
+   TYPE hfx_libheric_screening_kkll_models
+      !! specific kind-kind l-l models
+      TYPE(hfx_libheric_screening_model_type)                                     :: kind
+      TYPE(hfx_libheric_screening_model_type), DIMENSION(:, :), ALLOCATABLE       :: set
+      TYPE(hfx_libheric_screening_model_type), DIMENSION(:, :, :, :), ALLOCATABLE :: pgf
+      TYPE(hfx_libheric_screening_model_type), DIMENSION(:, :, :, :), ALLOCATABLE :: R_pgf
+   END TYPE 
+
+! **************************************************************************************************
+   TYPE hfx_libheric_screening_models
+      TYPE(hfx_libheric_screening_kkll_models), DIMENSION(:, :, :, :), ALLOCATABLE :: coeffs
+   END TYPE 
 
 ! **************************************************************************************************
    TYPE hfx_p_kind
@@ -1863,6 +1919,165 @@ CONTAINS
    END SUBROUTINE hfx_release_basis_types
 
 ! **************************************************************************************************
+!> \brief - This routine allocates and initializes hfx_libheric_basis_parameter types, i.e.
+!>          hfx_basis_parameter types constraint to a specific angular momentum l
+!> \param dft_control - needed for eps_pgf_orb to reinitialize radii
+!> \param basis_parameter_l - ...
+!> \param l_max - maximum angular momentum to consider
+!> \param qs_kind_set - contains ORB basis set used to construct hfx_libheric_basis_parameter
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_create_basis_types(dft_control, basis_parameter_l, l_max, qs_kind_set)
+      TYPE(dft_control_type), POINTER, INTENT(IN)            :: dft_control
+      TYPE(hfx_libheric_basis_type), DIMENSION(:, :), &
+         ALLOCATABLE, INTENT(OUT)                            :: basis_parameter_l
+      INTEGER, INTENT(IN)                                    :: l_max
+      TYPE(qs_kind_type), DIMENSION(:), POINTER, INTENT(IN)  :: qs_kind_set
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_create_basis_types'
+
+      INTEGER                                            :: l, &
+                                                            ikind, nkind, &
+                                                            iset, iset_red, &
+                                                            ishl, ishl_red, max_shl, &
+                                                            ipgf, first_pgf, first_pgf_red, max_pgf, &
+                                                            isgf, sgf_ctr, &
+                                                            handle 
+      TYPE(gto_basis_set_type), POINTER                  :: orb_basis_a, orb_basis_reduced
+
+      CALL timeset(routineN, handle)
+
+      nkind = SIZE(qs_kind_set, 1)
+      ALLOCATE (basis_parameter_l(nkind, 0:l_max))
+
+      DO ikind = 1, nkind
+         CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_a, basis_type="ORB")
+         NULLIFY(orb_basis_reduced)
+         CALL copy_gto_basis_set(orb_basis_a, orb_basis_reduced)
+         DO l = 0, l_max
+             iset_red = 0
+             sgf_ctr = 1
+             DO iset = 1, orb_basis_a%nset
+                !! Extract sets containg GTOs with angular momentum l
+                IF(orb_basis_a%lmin(iset) .LE. l .AND. l .LE. orb_basis_a%lmax(iset)) THEN
+                    iset_red = iset_red + 1
+                    ishl_red = 0
+                    DO ishl = 1, orb_basis_a%nshell(iset)
+                       !! Extract shells with angular momentum l
+                       IF(orb_basis_a%l(ishl, iset) .EQ. l) THEN
+                          ishl_red = ishl_red + 1
+                          !! Clear sphi -> original sphi might contain angular momenta != l
+                          orb_basis_reduced%sphi(1:SIZE(orb_basis_reduced%sphi, 1), sgf_ctr:sgf_ctr+nso(l)-1) = 0
+                          orb_basis_reduced%l(ishl_red, iset_red) = l
+                          DO ipgf = 1, orb_basis_a%npgf(iset)
+                             orb_basis_reduced%gcc(ipgf, ishl_red, iset_red) = orb_basis_a%gcc(ipgf, ishl, iset)
+                             DO isgf = 0, nso(l) - 1
+                                first_pgf = 1 + (ipgf - 1) * ncoset(orb_basis_a%lmax(iset)) + ncoset(l - 1)
+                                first_pgf_red = 1 + (ipgf - 1) * nco(l)
+                                orb_basis_reduced%sphi(first_pgf_red:first_pgf_red + nco(l) - 1, sgf_ctr + isgf) = &
+                                    orb_basis_a%sphi(first_pgf:first_pgf + nco(l) - 1, orb_basis_a%first_sgf(ishl, iset) + isgf)
+                             END DO
+                          END DO
+                          orb_basis_reduced%first_sgf(ishl_red, iset_red) = sgf_ctr
+                          sgf_ctr = sgf_ctr + nso(l)
+                       END IF
+                    END DO
+                    orb_basis_reduced%nshell(iset_red) = ishl_red
+                    orb_basis_reduced%npgf(iset_red)   = orb_basis_a%npgf(iset)
+                    orb_basis_reduced%zet(:, iset_red) = orb_basis_a%zet(:, iset)
+                    orb_basis_reduced%nsgf_set(iset_red)   = ishl_red * nso(l)
+
+                END IF
+             END DO
+             orb_basis_reduced%nset = iset_red
+             !! Reinitialize radii since they might be lower for a specific angular momentum l
+             CALL init_interaction_radii_orb_basis(orb_basis_reduced, dft_control%qs_control%eps_pgf_orb)
+           
+             max_shl = MAXVAL(orb_basis_reduced%nshell(1:iset_red))
+             max_pgf = MAXVAL(orb_basis_reduced%npgf(1:iset_red))
+
+             ASSOCIATE(bp => basis_parameter_l(ikind, l)) 
+
+               ALLOCATE(bp%npgf(iset_red))
+               ALLOCATE(bp%zet(max_pgf, iset_red))
+               ALLOCATE(bp%gcc(max_pgf, max_shl, iset_red))
+               ALLOCATE(bp%sphi(max_pgf * nco(l), sgf_ctr))
+               ALLOCATE(bp%nsgf(iset_red))
+               ALLOCATE(bp%first_sgf(max_shl, iset_red))
+               ALLOCATE(bp%nshell(iset_red))
+               ALLOCATE(bp%set_radius(iset_red))
+               ALLOCATE(bp%pgf_radius(max_pgf, iset_red))
+               ALLOCATE(bp%global_set(iset_red))
+               ALLOCATE(bp%global_shl(max_shl, iset_red))
+               
+               bp%npgf(:)          = orb_basis_reduced%npgf(1:iset_red)
+               bp%nset             = orb_basis_reduced%nset
+               bp%zet(:, :)        = orb_basis_reduced%zet(1:max_pgf ,1:iset_red)
+               bp%gcc(:, :, :)     = orb_basis_reduced%gcc(1:max_pgf, 1:max_shl, 1:iset_red)
+               bp%sphi(:, :)       = orb_basis_reduced%sphi(1:max_pgf * nco(l), 1:sgf_ctr)
+               bp%nsgf(:)          = orb_basis_reduced%nsgf_set(1:iset_red)
+               bp%first_sgf(:, :)  = orb_basis_reduced%first_sgf(1:max_shl, 1:iset_red)
+               bp%nsgf_total       = SUM(orb_basis_reduced%nsgf_set(1:iset_red))
+               bp%nshell(:)        = orb_basis_reduced%nshell(1:iset_red)
+               bp%set_radius(:)    = orb_basis_reduced%set_radius(1:iset_red)
+               bp%pgf_radius(:, :) = orb_basis_reduced%pgf_radius(1:max_pgf, 1:iset_red)
+               bp%kind_radius      = orb_basis_reduced%kind_radius
+             
+               iset_red = 0
+               DO iset = 1, orb_basis_a%nset
+                  IF(orb_basis_a%lmin(iset) .LE. l .AND. l .LE. orb_basis_a%lmax(iset)) THEN
+                     iset_red = iset_red + 1
+                     ishl_red = 0
+                     bp%global_set(iset_red) = iset
+                     bp%global_shl(:, iset_red) = -1
+                     DO ishl = 1, orb_basis_a%nshell(iset)
+                        IF(orb_basis_a%l(ishl, iset) .EQ. l) THEN
+                           ishl_red = ishl_red + 1
+                           bp%global_shl(ishl_red, iset_red) = ishl
+                        END IF
+                    END DO
+                  END IF
+               END DO
+            END ASSOCIATE
+         END DO
+         CALL deallocate_gto_basis_set(orb_basis_reduced)
+      END DO
+      CALL timestop(handle)
+
+   END SUBROUTINE hfx_libheric_create_basis_types
+
+! **************************************************************************************************
+!> \brief Deallocate all basis_sets
+!> \param basis_parameter_l - all basis sets to deallocate
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_free_basis_types(basis_parameter_l)
+      TYPE(hfx_libheric_basis_type), DIMENSION(:, :), ALLOCATABLE :: basis_parameter_l
+
+      INTEGER                                            :: l, ikind
+
+      IF(ALLOCATED(basis_parameter_l)) THEN
+         DO l = LBOUND(basis_parameter_l, 2), UBOUND(basis_parameter_l, 2)
+            DO ikind = 1, SIZE(basis_parameter_l, 1)
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%npgf))DEALLOCATE(basis_parameter_l(ikind, l)%npgf) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%zet ))DEALLOCATE(basis_parameter_l(ikind, l)%zet ) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%gcc ))DEALLOCATE(basis_parameter_l(ikind, l)%gcc ) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%sphi))DEALLOCATE(basis_parameter_l(ikind, l)%sphi) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%nsgf))DEALLOCATE(basis_parameter_l(ikind, l)%nsgf) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%first_sgf ))DEALLOCATE(basis_parameter_l(ikind, l)%first_sgf ) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%nshell    ))DEALLOCATE(basis_parameter_l(ikind, l)%nshell    ) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%set_radius))DEALLOCATE(basis_parameter_l(ikind, l)%set_radius) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%pgf_radius))DEALLOCATE(basis_parameter_l(ikind, l)%pgf_radius)
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%global_set))DEALLOCATE(basis_parameter_l(ikind, l)%global_set) 
+                IF(ALLOCATED(basis_parameter_l(ikind, l)%global_shl))DEALLOCATE(basis_parameter_l(ikind, l)%global_shl) 
+            END DO 
+         END DO
+         DEALLOCATE (basis_parameter_l)
+      END IF
+   END SUBROUTINE hfx_libheric_free_basis_types
+
+! **************************************************************************************************
 !> \brief - Parses the memory section
 !> \param memory_parameter ...
 !> \param hf_sub_section ...
@@ -2583,6 +2798,49 @@ CONTAINS
       END IF
 
    END FUNCTION point_is_in_quadrilateral
+   
+! **************************************************************************************************
+!> \brief - creates hfx_libheric_cells from the hfx_cells and sorts them by distance of cell
+!>          center to the origin
+!> \param sorted_cells - hfx_libheric_cells sorted by distance to origin
+!> \param hfx_cells ...
+!> \param cell - needed for hmat
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_sorted_cells_from_hfx_cells(sorted_cells, hfx_cells, cell)
+      TYPE(hfx_libheric_cell_type), DIMENSION(:), ALLOCATABLE, INTENT(OUT) :: sorted_cells
+      TYPE(hfx_cell_type), DIMENSION(:), INTENT(IN)                        :: hfx_cells
+      TYPE(cell_type), INTENT(IN)                                          :: cell
+
+      REAL(dp)                            :: dist_e1(3), dist_e2(3), dist_e3(3), dist(3)
+      REAL(dp), DIMENSION(:), ALLOCATABLE :: min_cell_dist2
+      INTEGER, DIMENSION(:), ALLOCATABLE  :: sort_idx
+      INTEGER                             :: off_idx
+
+      ALLOCATE(sorted_cells(SIZE(hfx_cells)))
+      ALLOCATE(min_cell_dist2(SIZE(hfx_cells)))
+      min_cell_dist2(1) = 0.0
+      ALLOCATE(sort_idx(SIZE(hfx_cells)))
+      DO off_idx = 2, SIZE(hfx_cells)
+          dist_e1 = MAX(ABS(hfx_cells(off_idx)%cell(1)) - 0.5_dp, 0.0_dp) * cell%hmat(:, 1)
+          dist_e2 = MAX(ABS(hfx_cells(off_idx)%cell(2)) - 0.5_dp, 0.0_dp) * cell%hmat(:, 2)
+          dist_e3 = MAX(ABS(hfx_cells(off_idx)%cell(3)) - 0.5_dp, 0.0_dp) * cell%hmat(:, 3)
+          dist = dist_e1 + dist_e2 + dist_e3
+          
+
+          min_cell_dist2(off_idx) = dist(1) * dist(1) + dist(2) * dist(2) + dist(3) * dist(3)
+      END DO
+      CALL sort(min_cell_dist2, SIZE(min_cell_dist2), sort_idx)
+      DO off_idx = 1, SIZE(hfx_cells)
+          sorted_cells(off_idx)%cell_r = hfx_cells(sort_idx(off_idx))%cell_r
+          sorted_cells(off_idx)%cell = (/ NINT(hfx_cells(sort_idx(off_idx))%cell(1)), &
+                                          NINT(hfx_cells(sort_idx(off_idx))%cell(2)), &
+                                          NINT(hfx_cells(sort_idx(off_idx))%cell(3)) /)
+          sorted_cells(off_idx)%dist2 = min_cell_dist2(off_idx)
+      END DO
+   END SUBROUTINE hfx_libheric_sorted_cells_from_hfx_cells
 
 ! **************************************************************************************************
 !> \brief - This routine deletes all list entries in a container in order to

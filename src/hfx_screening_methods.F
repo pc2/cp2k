@@ -15,17 +15,22 @@ MODULE hfx_screening_methods
    USE ao_util,                         ONLY: exp_radius_very_extended
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE hfx_libint_interface,            ONLY: evaluate_eri_screen
-   USE hfx_types,                       ONLY: hfx_basis_type,&
+   USE hfx_types,                       ONLY: hfx_type, &
+                                              hfx_basis_type,&
                                               hfx_p_kind,&
                                               hfx_potential_type,&
                                               hfx_screen_coeff_type,&
                                               log_zero,&
-                                              powell_min_log
+                                              powell_min_log, &
+                                              hfx_libheric_basis_type,&
+                                              hfx_libheric_screening_model_type,&
+                                              hfx_libheric_screening_models
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE libint_wrapper,                  ONLY: cp_libint_t
+   USE libheric_interface,              ONLY: libheric_optimize_screening_function => optimize_screening_function
    USE machine,                         ONLY: default_output_unit
-   USE orbital_pointers,                ONLY: ncoset
+   USE orbital_pointers,                ONLY: ncoset, nco
    USE powell,                          ONLY: opt_state_type,&
                                               powell_optimize
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -39,7 +44,10 @@ MODULE hfx_screening_methods
 
    PUBLIC :: update_pmax_mat, &
              calc_screening_functions, &
-             calc_pair_dist_radii
+             calc_pair_dist_radii, &
+             hfx_libheric_init_screening_models, &
+             hfx_libheric_free_screening_models, &
+             hfx_libheric_eval_screening_model
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'hfx_screening_methods'
 
@@ -880,7 +888,6 @@ CONTAINS
 !> \param i 2d index
 !> \param j 2d index
 !> \param N matrix size
-!> \return ...
 !> \par History
 !>      03.2009 created [Manuel Guidon]
 !> \author Manuel Guidon
@@ -896,5 +903,342 @@ CONTAINS
       get_1D_idx = min_ij*N + MAX(i, j) - (min_ij - 1)*min_ij/2 - N
 
    END FUNCTION get_1D_idx
+
+! **************************************************************************************************
+!> \brief Evaluate screening function 
+!> \param model - min(max(y_data), ax^8 + bx^4 + cx^2 + d); max(y_data) is the maximum value of the
+!>                sampled data used to create the model
+!> \param x2 - distance squared
+!> \param y_min - default value if x2 is out of valid range i.e. [0, model%cutoff2]
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+PURE FUNCTION hfx_libheric_eval_screening_model(model, x2) RESULT(f)
+   TYPE(hfx_libheric_screening_model_type), INTENT(IN) :: model
+   REAL(dp), INTENT(IN)                                :: x2
+   REAL(dp)                                            :: f
+   
+   REAL(dp)                                       :: x4, x8
+   x4 = x2 * x2
+   x8 = x4 * x4
+   f = MERGE(MIN(model%max, model%x(1) + x2 * model%x(2) + x4 * model%x(3) + x8 * model%x(4)), model%y_min, x2 .LT. model%cutoff2)
+END FUNCTION hfx_libheric_eval_screening_model
+
+! **************************************************************************************************
+!> \brief Compare error statistics (mean absolute error, mean squared error, max error) of new model
+!>        to old model, and check if new model is a true upper bound to the fitted data
+!> \param model_str - model identifier i.e. (la, lb, ikind, jkind, [iset, jset, [ipgf, jpgf]])
+!> \param model - see hfx_libheric_eval_screen_model docs
+!> \param ref_model - old model
+!> \param n_data - number of data samples used to create model
+!> \param x_data, y_data - data samples used to create model
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_model, n_data, x_data, y_data)
+      CHARACTER(LEN=*), INTENT(IN)                        :: model_str
+      TYPE(hfx_libheric_screening_model_type), INTENT(IN) :: model
+      TYPE(hfx_screen_coeff_type), INTENT(IN)             :: ref_model
+      INTEGER, INTENT(IN)                                 :: n_data
+      REAL(dp), DIMENSION(:), INTENT(IN)                  :: x_data, y_data
+      
+      REAL(dp) :: mae_err, mse_err, inf_err, f, &
+                  mae_ref, mse_ref, inf_ref, f_ref, &
+                  ref_bad_fit_severity, new_bad_fit_severity, &
+                  y_range
+      INTEGER  :: i, ref_bad_fit_idx, new_bad_fit_idx
+      CHARACTER(:), ALLOCATABLE :: error_str 
+
+
+      mae_err = 0.0_dp
+      mae_ref = 0.0_dp
+      mse_err = 0.0_dp
+      mse_ref = 0.0_dp
+      inf_err = 0.0_dp
+      inf_ref = 0.0_dp
+      
+      ref_bad_fit_idx = -1
+      ref_bad_fit_severity = 0.0_dp
+      new_bad_fit_idx = -1
+      new_bad_fit_severity = 0.0_dp
+
+      y_range = MAXVAL(y_data(1:n_data)) - MINVAL(y_data(1:n_data))
+      DO i = 1, n_data
+         f = hfx_libheric_eval_screening_model(model, x_data(i) ** 2)
+         mae_err = mae_err + ABS(y_data(i) - f)
+         mse_err = mse_err + (y_data(i) - f) ** 2
+         inf_err = MAX(inf_err, ABS(y_data(i) - f))
+         IF((y_data(i) - f) / y_range > new_bad_fit_severity) THEN
+            new_bad_fit_severity = (y_data(i) - f) / y_range
+            new_bad_fit_idx = i
+         END IF
+
+         f_ref = ref_model%x(1) * x_data(i) ** 2 + ref_model%x(2)
+         mae_ref = mae_ref + ABS(y_data(i) - f_ref)
+         mse_ref = mse_ref + (y_data(i) - f_ref) ** 2
+         inf_ref = MAX(inf_ref, ABS(y_data(i) - f_ref))
+         IF((y_data(i) - f) / y_range > ref_bad_fit_severity) THEN
+            ref_bad_fit_severity = (y_data(i) - f) / y_range
+            ref_bad_fit_idx = i
+         END IF 
+      END DO
+
+      mae_err = mae_err / (y_range * n_data) 
+      mae_ref = mae_ref / (y_range * n_data) 
+      mse_err = mse_err / (y_range * n_data) 
+      mse_ref = mse_ref / (y_range * n_data) 
+      inf_err = mse_err / y_range 
+      inf_ref = mse_ref / y_range
+
+      IF(new_bad_fit_severity .GT. 1e-6) THEN
+         ALLOCATE(CHARACTER(2 * n_data * 30 + 4096) :: error_str)
+         WRITE(error_str, "(A,*(ES28.20,2X))") "x = vec([", x_data
+         WRITE(error_str, "(A,/)") "])"
+         WRITE(error_str, "(A,*(ES28.20,2X))") "y = vec([", y_data
+         WRITE(error_str, "(A,/)") "])"
+         WRITE(error_str, "(A,/,T3,5(A,ES16.8),A,/)") &
+            TRIM(model_str), "model = min(" ,model%max, ", ", &
+            model%x(4), " * x^8 + ", model%x(3), " * x^4 + ", model%x(2), " * x^2 + ", model%x(1), ")"
+         WRITE(error_str, "(T6,A,I3,2(A,ES14.6),/)") "new model is bad fit for y(", new_bad_fit_idx, &
+                                           ") with severity = ", new_bad_fit_severity
+         WRITE(error_str, "(T6,3(A,ES14.6),/)") "mae_err = ", mae_err, ", mse_err = ", mse_err, ", inf_err = ", inf_err
+         CALL cp_abort(__LOCATION__, TRIM(error_str))
+      ELSE IF(mae_err .GT. mae_ref .OR. mse_err .GT. mse_ref .OR. inf_err .GT. inf_ref) THEN
+         ALLOCATE(CHARACTER(2 * n_data * 30 + 4096) :: error_str)
+         WRITE(error_str, "(A,*(ES28.20,2X))") "x = vec([", x_data
+         WRITE(error_str, "(A,/)") "])"
+         WRITE(error_str, "(A,*(ES28.20,2X))") "y = vec([", y_data
+         WRITE(error_str, "(A,/)") "])"
+         WRITE(error_str, "(A,/,T3,5(A,ES16.8),A,/)") &
+            TRIM(model_str), "model = min(" ,model%max, ", ", &
+            model%x(4), " * x^8 + ", model%x(3), " * x^4 + ", model%x(2), " * x^2 + ", model%x(1), ")"
+         WRITE(error_str, "(T3,2(A,ES16.8,/))") "ref_model = ", ref_model%x(1), " * x^2 + ", ref_model%x(2)
+         WRITE(error_str, "(T3,A,/)") "Reference model is better fit in at least one metric"
+         IF(ref_bad_fit_severity > 1e-6) &
+            WRITE(*, "(T6,A,I3,2(A,ES14.6),/)") "reference model is bad fit for y(", ref_bad_fit_idx, &
+                                              ") with severity = ", ref_bad_fit_severity
+         WRITE(error_str, "(T6,3(A,ES14.6),/)") "mae_err = ", mae_err, ", mse_err = ", mse_err, ", inf_err = ", inf_err
+         WRITE(error_str, "(T6,3(A,ES14.6),/)") "mae_ref = ", mae_ref, ", mse_ref = ", mse_ref, ", inf_ref = ", inf_ref
+         CALL cp_warn(__LOCATION__, TRIM(error_str))
+      END IF
+      
+   END SUBROUTINE hfx_libheric_display_screening_model_error
+   
+! **************************************************************************************************
+!> \brief Initialize screening parameters per angular momentum pair (la, lb); the model is documented
+!>        in hfx_libheric_eval_screen_model
+!> \param x_data - contains old models to compare the models to
+!> \param nkind - number unique basis sets
+!> \param l_max - maximum angular momentum
+!> \param basis_parameter_l - all hfx_libheric basis sets
+!> \param screen - all screening parameters, i.e. for (R_pgf, pgf, sets, kinds)
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_init_screening_models(x_data, nkind, l_max, basis_parameter_l, screen)
+      TYPE(hfx_type), INTENT(IN)                  :: x_data
+      INTEGER, INTENT(IN)                         :: nkind, l_max
+      TYPE(hfx_libheric_basis_type), &
+          DIMENSION(1:nkind,0:l_max), INTENT(IN)  :: basis_parameter_l
+      TYPE(hfx_libheric_screening_models), &
+          INTENT(OUT)                             :: screen
+
+      
+      INTEGER, PARAMETER                          :: GRID_SIZE = 100
+
+      REAL(dp), DIMENSION(0:GRID_SIZE, 2)         :: opt_data_kind, opt_data_set, opt_data_pgf
+     
+      REAL(dp), DIMENSION(:), POINTER             :: p_work
+      REAL(dp)                                    :: max_val, log_max_val, R1, & 
+                                                     ra(3), rb(3), rp(3), chi, ff, rab2, prefactor, &
+                                                     max_contraction_a, max_contraction_b, &
+                                                     pgf_radius, set_radius, kind_radius
+      INTEGER                                     :: la, lb, ikind, jkind, iset, jset, ncoa, ncob, sgfa, sgfb, &
+                                                     ipgf, jpgf, i, n_data, handle
+      CHARACTER(len=256)                          :: model_params
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_init_screening_models'
+
+      CALL timeset(routineN, handle)
+
+
+      ALLOCATE(screen%coeffs(nkind, nkind, 0:l_max, 0:l_max))
+
+      ra(:) = 0.0_dp
+      rb(:) = 0.0_dp
+      rp(:) = 0.0_dp
+
+      DO la = 0, l_max
+      DO lb = 0, l_max
+         DO ikind = 1, nkind
+         DO jkind = 1, nkind
+            opt_data_kind = -HUGE(max_val)
+            ASSOCIATE(bas_lai => basis_parameter_l(ikind, la), bas_lbj => basis_parameter_l(jkind, lb), &
+                      coeff => screen%coeffs(jkind, ikind, lb, la))
+            ALLOCATE(coeff%set(bas_lbj%nset, bas_lai%nset))
+            ALLOCATE(coeff%pgf  (MAXVAL(bas_lbj%npgf), MAXVAL(bas_lai%npgf), bas_lbj%nset, bas_lai%nset))
+            ALLOCATE(coeff%R_pgf(MAXVAL(bas_lbj%npgf), MAXVAL(bas_lai%npgf), bas_lbj%nset, bas_lai%nset))
+            kind_radius = bas_lai%kind_radius + bas_lbj%kind_radius
+            DO iset = 1, bas_lai%nset
+            DO jset = 1, bas_lbj%nset
+               ASSOCIATE(isetg => bas_lai%global_set(iset), jsetg => bas_lbj%global_set(jset)) 
+               set_radius = bas_lai%set_radius(iset) + bas_lbj%set_radius(jset)
+               opt_data_set = -HUGE(max_val)
+               ncoa = bas_lai%npgf(iset) * nco(la)
+               ncob = bas_lbj%npgf(jset) * nco(lb)
+               sgfa = bas_lai%first_sgf(1, iset)
+               sgfb = bas_lbj%first_sgf(1, jset)
+               max_contraction_a = MAXVAL([(SUM(ABS(bas_lai%sphi(1:ncoa, i))), i=sgfa, sgfa + bas_lai%nsgf(iset) - 1)])
+               max_contraction_b = MAXVAL([(SUM(ABS(bas_lbj%sphi(1:ncob, i))), i=sgfb, sgfb + bas_lbj%nsgf(jset) - 1)])
+               DO ipgf = 1, bas_lai%npgf(iset)
+               DO jpgf = 1, bas_lbj%npgf(jset)
+                  pgf_radius = bas_lai%pgf_radius(ipgf, iset) + bas_lbj%pgf_radius(jpgf, jset)
+                  opt_data_pgf = -HUGE(max_val)
+                  DO i = 0, GRID_SIZE 
+                     !! ra is set to the origin, and rb only moves along the x-axis
+                     rb(1) = (pgf_radius * i) / REAL(GRID_SIZE, KIND=dp)
+                     chi = bas_lai%zet(ipgf, iset) + bas_lbj%zet(jpgf, jset)
+                     ff = bas_lbj%zet(jpgf, jset) / chi
+                     rab2 = rb(1) ** 2
+                     prefactor = EXP(-bas_lai%zet(ipgf, iset) * ff * rab2)
+                     rp(1) = ff*rb(1)
+                     opt_data_pgf(i, 1) = rb(1)
+                     opt_data_pgf(i, 2) = exp_radius_very_extended(la, la, lb, lb, ra=ra, rb=rb, rp=rp, &
+                                                                   zetp=chi, eps=x_data%screening_parameter%eps_schwarz, &
+                                                                   prefactor=prefactor, cutoff=1.0_dp, epsabs=1.0E-12_dp)
+
+                  END DO
+                  n_data = GRID_SIZE + 1
+                  CALL libheric_optimize_screening_function(opt_data_pgf(0, 1), opt_data_pgf(0, 2), n_data, 0.0_dp, &
+                                                            coeff%R_pgf(jpgf, ipgf, jset, iset)%x(1), 4)
+                  coeff%R_pgf(jpgf, ipgf, jset, iset)%cutoff2 = ((pgf_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
+                  coeff%R_pgf(jpgf, ipgf, jset, iset)%max     = MAXVAL(opt_data_pgf(:, 2)) 
+                  coeff%R_pgf(jpgf, ipgf, jset, iset)%y_min   = 0.0_dp
+                  WRITE(model_params, "(A,4(I1,A),6(I2,A))") "(la=", la, ", lb=", lb, ", ikind=", ikind, ", jkind=", jkind, &
+                                                             ", iset=", iset, "(", isetg, &
+                                                             "), jset=", jset, "(", jsetg, &
+                                                             "), ipgf=", ipgf, ", jpgf=", jpgf,")"
+                  CALL hfx_libheric_display_screening_model_error(model_params, coeff%R_pgf(jpgf, ipgf, jset, iset), &
+                                                                  x_data%pair_dist_radii_pgf(jpgf, ipgf, jsetg, &
+                                                                                             isetg, jkind, ikind), &
+                                                                  n_data, opt_data_pgf(:, 1), opt_data_pgf(:, 2)) 
+                  opt_data_pgf = -HUGE(max_val)
+                  ASSOCIATE(rad_x => coeff%R_pgf(jpgf, ipgf, jset, iset)%x, &
+                            zeta => bas_lai%zet(ipgf, iset), zetb => bas_lbj%zet(jpgf, jset))
+                  DO i = 0, GRID_SIZE 
+                     !! ra is set to the origin, and rb only moves along the x-axis
+                     !! Collect data for pgf_coeff optimization
+                     rb(1) = (pgf_radius * i) / REAL(GRID_SIZE, KIND=dp)
+                     R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
+                     max_val = 0.0_dp 
+                     CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
+                                              la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
+                     max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
+                     log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
+                     log_max_val = MAX(log_max_val, powell_min_log)
+                     opt_data_pgf(i, 1) = rb(1)
+                     opt_data_pgf(i, 2) = log_max_val
+
+                     !! Collect data for set_coeff optimization
+                     rb(1) = REAL(i, dp) / REAL(GRID_SIZE, dp) * set_radius
+                     R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
+                     max_val = 0.0_dp 
+                     CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
+                                              la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
+                     max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
+                     log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
+                     log_max_val = MAX(log_max_val, powell_min_log)
+                     opt_data_set(i, 1) = rb(1)
+                     opt_data_set(i, 2) = MAX(log_max_val, opt_data_set(i, 2))
+                     
+                     !! Collect data for kind_coeff optimization
+                     rb(1) = (kind_radius * i) / REAL(GRID_SIZE, KIND=dp)
+                     R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
+                     max_val = 0.0_dp 
+                     CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
+                                              la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
+                     max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
+                     log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
+                     log_max_val = MAX(log_max_val, powell_min_log)
+                     opt_data_kind(i, 1) = rb(1)
+                     opt_data_kind(i, 2) = MAX(log_max_val, opt_data_kind(i, 2))
+                  END DO
+                  END ASSOCIATE
+                  
+                  n_data = GRID_SIZE + 1
+                  CALL libheric_optimize_screening_function(opt_data_pgf(0, 1), opt_data_pgf(0, 2), n_data, powell_min_log, &
+                                                            coeff%pgf(jpgf, ipgf, jset, iset)%x(1), 4)
+                  coeff%pgf(jpgf, ipgf, jset, iset)%cutoff2 = ((pgf_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
+                  coeff%pgf(jpgf, ipgf, jset, iset)%max     = MAXVAL(opt_data_pgf(:, 2)) 
+                  coeff%pgf(jpgf, ipgf, jset, iset)%y_min   = powell_min_log
+                  CALL hfx_libheric_display_screening_model_error(model_params, coeff%pgf(jpgf, ipgf, jset, iset), &
+                                                                  x_data%screen_funct_coeffs_pgf(jpgf, ipgf, jsetg, &
+                                                                                                 isetg, jkind, ikind), &
+                                                                  n_data, opt_data_pgf(:, 1), opt_data_pgf(:, 2)) 
+
+               END DO
+               END DO
+               n_data = GRID_SIZE + 1
+               CALL libheric_optimize_screening_function(opt_data_set(0, 1), opt_data_set(0, 2), n_data, powell_min_log, &
+                                                             coeff%set(jset, iset)%x(1), 4)
+               coeff%set(jset, iset)%cutoff2 = ((set_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
+               coeff%set(jset, iset)%max     = MAXVAL(opt_data_set(:, 2)) 
+               coeff%set(jset, iset)%y_min   = powell_min_log
+               WRITE(model_params, "(A,4(I1,A),4(I2,A))") "(la=", la, ", lb=", lb, ", ikind=", ikind, ", jkind=", jkind, &
+                                                          ", iset=", iset, "(", isetg, &
+                                                          "), jset=", jset, "(", jsetg, &
+                                                          "))"
+               CALL hfx_libheric_display_screening_model_error(model_params, coeff%set(jset, iset), &
+                                                               x_data%screen_funct_coeffs_set(jsetg, isetg, jkind, ikind), &
+                                                               n_data, opt_data_set(:, 1), opt_data_set(:, 2)) 
+               END ASSOCIATE
+            END DO
+            END DO
+            n_data = GRID_SIZE + 1
+            CALL libheric_optimize_screening_function(opt_data_kind(0, 1), opt_data_kind(0, 2), n_data, powell_min_log, &
+                                             coeff%kind%x(1), 4)
+            coeff%kind%cutoff2 = ((kind_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
+            coeff%kind%max     = MAXVAL(opt_data_kind(:, 2)) 
+            coeff%kind%y_min   = powell_min_log
+            WRITE(model_params, "(A,4(I1,A))") "(la=", la, ", lb=", lb, ", ikind=", ikind, ", jkind=", jkind, ")"
+            CALL hfx_libheric_display_screening_model_error(model_params, coeff%kind, &
+                                                            x_data%screen_funct_coeffs_kind(jkind, ikind), &
+                                                            n_data, opt_data_kind(:, 1), opt_data_kind(:, 2)) 
+
+            END ASSOCIATE
+         END DO
+         END DO
+     END DO
+     END DO
+     CALL timestop(handle)
+   END SUBROUTINE hfx_libheric_init_screening_models
+   
+! **************************************************************************************************
+!> \brief Deallocate memory of all screening parameters  
+!> \param screen - all screening parameters 
+!> \par History
+!>      09.2026 created [Johannes Menzel]
+!> \author Johannes Menzel
+! **************************************************************************************************
+   SUBROUTINE hfx_libheric_free_screening_models(screen)
+      TYPE(hfx_libheric_screening_models), INTENT(INOUT) :: screen
+      INTEGER :: la, lb, ikind, jkind
+      IF(ALLOCATED(screen%coeffs)) THEN 
+         DO la = 0, UBOUND(screen%coeffs, 4)
+         DO lb = 0, UBOUND(screen%coeffs, 3)
+         DO ikind = 1, UBOUND(screen%coeffs, 2)
+         DO jkind = 1, UBOUND(screen%coeffs, 1)
+            IF(ALLOCATED(screen%coeffs(jkind, ikind, lb, la)%set))   DEALLOCATE(screen%coeffs(jkind, ikind, lb, la)%set)
+            IF(ALLOCATED(screen%coeffs(jkind, ikind, lb, la)%pgf))   DEALLOCATE(screen%coeffs(jkind, ikind, lb, la)%pgf)
+            IF(ALLOCATED(screen%coeffs(jkind, ikind, lb, la)%R_pgf)) DEALLOCATE(screen%coeffs(jkind, ikind, lb, la)%R_pgf)
+         END DO
+         END DO
+         END DO
+         END DO
+         DEALLOCATE(screen%coeffs)
+      END IF
+   END SUBROUTINE hfx_libheric_free_screening_models
 
 END MODULE hfx_screening_methods

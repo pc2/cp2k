@@ -660,6 +660,16 @@ MODULE message_passing
          mp_rget_rv, mp_rget_dv, mp_rget_cv, mp_rget_zv
       GENERIC, PUBLIC :: rget => mp_rget_iv, mp_rget_lv, &
          mp_rget_rv, mp_rget_dv, mp_rget_cv, mp_rget_zv
+      
+      PROCEDURE, PRIVATE, PASS(win), NON_OVERRIDABLE :: mp_get_iv, mp_get_lv, &
+         mp_get_rv, mp_get_dv, mp_get_cv, mp_get_zv
+      GENERIC, PUBLIC :: get => mp_get_iv, mp_get_lv, &
+         mp_get_rv, mp_get_dv, mp_get_cv, mp_get_zv
+      
+      PROCEDURE, PRIVATE, PASS(win), NON_OVERRIDABLE :: mp_put_iv, mp_put_lv, &
+         mp_put_rv, mp_put_dv, mp_put_cv, mp_put_zv
+      GENERIC, PUBLIC :: put => mp_put_iv, mp_put_lv, &
+         mp_put_rv, mp_put_dv, mp_put_cv, mp_put_zv
 
       PROCEDURE, PUBLIC, PASS(win), NON_OVERRIDABLE :: free => mp_win_free
       PROCEDURE, PUBLIC, PASS(win_new), NON_OVERRIDABLE :: mp_win_assign
@@ -667,7 +677,10 @@ MODULE message_passing
 
       PROCEDURE, PUBLIC, PASS(win), NON_OVERRIDABLE :: lock_all => mp_win_lock_all
       PROCEDURE, PUBLIC, PASS(win), NON_OVERRIDABLE :: unlock_all => mp_win_unlock_all
+      PROCEDURE, PUBLIC, PASS(win), NON_OVERRIDABLE :: lock_exc => mp_win_lock_exc
+      PROCEDURE, PUBLIC, PASS(win), NON_OVERRIDABLE :: unlock => mp_win_unlock
       PROCEDURE, PUBLIC, PASS(win), NON_OVERRIDABLE :: flush_all => mp_win_flush_all
+      PROCEDURE, PUBLIC, PASS(win), NON_OVERRIDABLE :: flush => mp_win_flush
    END TYPE
 
    TYPE mp_file_type
@@ -4786,6 +4799,30 @@ CONTAINS
       END SUBROUTINE mp_win_flush_all
 
 ! **************************************************************************************************
+!> \brief Window flush
+!> \param win ...
+! **************************************************************************************************
+      SUBROUTINE mp_win_flush(rank, win)
+         CLASS(mp_win_type), INTENT(IN)                     :: win
+         INTEGER, INTENT(IN)                                :: rank
+
+         CHARACTER(len=*), PARAMETER :: routineN = 'mp_win_flush'
+
+         INTEGER                                            :: handle, ierr
+
+         ierr = 0
+         CALL mp_timeset(routineN, handle)
+
+#if defined(__parallel)
+         CALL mpi_win_flush(rank, win%handle, ierr)
+         IF (ierr /= 0) CALL mp_stop(ierr, "mpi_win_flush @ "//routineN)
+#else
+         MARK_USED(win)
+#endif
+         CALL mp_timestop(handle)
+      END SUBROUTINE mp_win_flush
+
+! **************************************************************************************************
 !> \brief Window lock
 !> \param win ...
 ! **************************************************************************************************
@@ -4836,6 +4873,60 @@ CONTAINS
 #endif
          CALL mp_timestop(handle)
       END SUBROUTINE mp_win_unlock_all
+
+! **************************************************************************************************
+!> \brief Window lock
+!> \param win ...
+! **************************************************************************************************
+      SUBROUTINE mp_win_lock_exc(win, rank)
+         CLASS(mp_win_type), INTENT(IN)                     :: win
+         INTEGER, INTENT(IN)                                :: rank
+
+         CHARACTER(len=*), PARAMETER :: routineN = 'mp_win_lock_exc'
+
+         INTEGER                                            :: handle, ierr
+
+         ierr = 0
+         CALL mp_timeset(routineN, handle)
+
+#if defined(__parallel)
+
+         CALL mpi_win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win%handle, ierr)
+         IF (ierr /= 0) CALL mp_stop(ierr, "mpi_win_lock_exc @ "//routineN)
+
+         CALL add_perf(perf_id=19, count=1)
+#else
+         MARK_USED(win)
+#endif
+         CALL mp_timestop(handle)
+      END SUBROUTINE mp_win_lock_exc
+
+! **************************************************************************************************
+!> \brief Window lock
+!> \param win ...
+! **************************************************************************************************
+      SUBROUTINE mp_win_unlock(win, rank)
+         CLASS(mp_win_type), INTENT(IN)                     :: win
+         INTEGER, INTENT(IN)                                :: rank
+
+         CHARACTER(len=*), PARAMETER :: routineN = 'mp_win_unlock'
+
+         INTEGER                                            :: handle, ierr
+
+         ierr = 0
+         CALL mp_timeset(routineN, handle)
+
+#if defined(__parallel)
+
+         CALL mpi_win_unlock(rank, win%handle, ierr)
+         IF (ierr /= 0) CALL mp_stop(ierr, "mpi_win_unlock @ "//routineN)
+
+         CALL add_perf(perf_id=19, count=1)
+#else
+         MARK_USED(win)
+#endif
+         CALL mp_timestop(handle)
+      END SUBROUTINE mp_win_unlock
 
 ! **************************************************************************************************
 !> \brief Starts a timer region

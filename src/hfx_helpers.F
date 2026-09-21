@@ -17,7 +17,9 @@ MODULE hfx_helpers
    PRIVATE
 
    PUBLIC :: count_cells_perd, &
-             next_image_cell_perd
+             next_image_cell_perd, &
+             hfx_libheric_idx_to_quartet_class, &
+             hfx_libheric_quartet_class_to_idx
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'hfx_helpers'
 
@@ -83,6 +85,24 @@ CONTAINS
          shell = shell + 1
       END DO outer
    END SUBROUTINE next_image_cell_perd
+   
+   FUNCTION hfx_libheric_quartet_class_to_idx(la, lb, lc, ld, l_max)
+       INTEGER, INTENT(IN) :: la, lb, lc, ld, l_max
+       INTEGER             :: hfx_libheric_quartet_class_to_idx
+       hfx_libheric_quartet_class_to_idx = la * ((l_max + 1) ** 3) &
+                                         + lb * ((l_max + 1) ** 2) &
+                                         + lc * ((l_max + 1) ** 1) &
+                                         + ld * ((l_max + 1) ** 0) + 1 
+   END FUNCTION hfx_libheric_quartet_class_to_idx 
+   
+   FUNCTION hfx_libheric_idx_to_quartet_class(q_idx, l_max)
+       INTEGER, INTENT(IN) :: q_idx, l_max
+       INTEGER             :: hfx_libheric_idx_to_quartet_class(4)
+       hfx_libheric_idx_to_quartet_class(1) = MODULO((q_idx - 1) / ((l_max + 1) ** 3), (l_max + 1))
+       hfx_libheric_idx_to_quartet_class(2) = MODULO((q_idx - 1) / ((l_max + 1) ** 2), (l_max + 1))
+       hfx_libheric_idx_to_quartet_class(3) = MODULO((q_idx - 1) / ((l_max + 1) ** 1), (l_max + 1))
+       hfx_libheric_idx_to_quartet_class(4) = MODULO((q_idx - 1) / ((l_max + 1) ** 0), (l_max + 1))
+   END FUNCTION hfx_libheric_idx_to_quartet_class
 
 ! **************************************************************************************************
 

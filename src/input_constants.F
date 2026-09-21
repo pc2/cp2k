@@ -872,6 +872,7 @@ MODULE input_constants
 
    INTEGER, PARAMETER, PUBLIC               :: hfx_library_is_libint = 1, &
                                                hfx_library_is_libGint = 2, &
+                                               hfx_library_is_libheric = 3, &
                                                hfx_library_is_both = 12
 
    ! mode selctive vibrational analysis

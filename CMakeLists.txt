@@ -128,6 +128,7 @@ option(CP2K_USE_HDF5 "Enable HDF5 support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBFCI "Enable LibFCI active-space solver support"
        ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBINT2 "Enable Libint2 support" ${CP2K_USE_EVERYTHING})
+option(CP2K_USE_LIBHERIC "Enable libheric support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBTORCH "Enable LibTorch support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_LIBXC "Enable LibXC support" ${CP2K_USE_EVERYTHING})
 option(CP2K_USE_GAUXC "Enable GauXC support" ${CP2K_USE_EVERYTHING})
@@ -834,6 +835,16 @@ if(CP2K_USE_LIBINT2)
   include_directories(BEFORE ${_libint2_include_dirs} "${_libint2_mod_dir}")
 endif()
 
+# libheric
+if(CP2K_USE_LIBHERIC)
+  find_package(libheric REQUIRED CONFIG)
+  get_target_property(CP2K_LIBHERIC_LINK_LIBRARIES libheric::libheric
+                      LOCATION)
+  get_target_property(CP2K_LIBHERIC_INCLUDE_DIRS libheric::libheric 
+                      INTERFACE_INCLUDE_DIRECTORIES)
+
+endif()  
+
 if(CP2K_USE_LIBGINT)
   find_package(LibGint REQUIRED)
 endif()
@@ -1209,6 +1220,12 @@ if(CP2K_USE_LIBINT2)
   message("  - Libint2\n"
           "    - Include directories: ${CP2K_LIBINT2_INCLUDE_DIRS}\n"
           "    - Libraries: ${CP2K_LIBINT2_LINK_LIBRARIES}\n")
+endif()
+
+if(CP2K_USE_LIBHERIC)
+  message(" - libheric\n"
+          "   - include directories: ${CP2K_LIBHERIC_INCLUDE_DIRS}\n"
+          "   - libraries: ${CP2K_LIBHERIC_LINK_LIBRARIES}\n\n")
 endif()
 
 if(CP2K_USE_LIBGINT)
