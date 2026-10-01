@@ -63,6 +63,8 @@ list(
   atoms_input.F
   atom_types.F
   atom_upf.F
+  upf_projector_integrals.F
+  upf_local_integrals.F
   atom_utils.F
   atom_xc.F
   auto_basis.F
@@ -74,9 +76,13 @@ list(
   bse_main.F
   bse_full_diag.F
   bse_iterative.F
+  bse_davidson.F
+  bse_matvec.F
   bse_print.F
   bse_properties.F
   bse_util.F
+  bse_types.F
+  bse_input.F
   bsse.F
   casino_utils.F
   cell_methods.F
@@ -184,6 +190,8 @@ list(
   f77_interface.F
   farming_methods.F
   farming_types.F
+  fde_main.F
+  fde_methods.F
   fist_efield_methods.F
   fist_efield_types.F
   fist_energy_types.F
@@ -288,6 +296,7 @@ list(
   input_cp2k_embed.F
   input_cp2k_exstate.F
   input_cp2k_external.F
+  input_cp2k_fde.F
   input_cp2k_field.F
   input_cp2k_force_eval.F
   input_cp2k_free_energy.F
@@ -707,6 +716,7 @@ list(
   qs_mo_types.F
   qs_neighbor_lists.F
   qs_neighbor_list_types.F
+  qs_nlcc_methods.F
   qs_nl_hash_table_types.F
   qs_nonscf.F
   qs_nonscf_utils.F
@@ -807,6 +817,7 @@ list(
   rpa_gw_im_time_util.F
   rpa_gw_kpoints_util.F
   rpa_gw_sigma_x.F
+  rpa_gw_static_cohsex.F
   rpa_im_time.F
   rpa_main.F
   rpa_sigma_functional.F
@@ -1428,6 +1439,7 @@ list(
   xc/xc_fxc_kernel.F
   xc/xc_gauxc_cache.F
   xc/xc_gauxc_functional.F
+  xc/xc_gauxc_gradient_policy.F
   xc/xc_gauxc_interface.F
   xc/xc_hcth.F
   xc/xc_input_constants.F
@@ -1581,6 +1593,11 @@ set(CP2K_PROGS_F
     common/gemm_square_unittest.F
     common/memory_utilities_unittest.F
     common/parallel_rng_types_unittest.F
+    atom_upf_unittest.F
+    upf_projector_integrals_unittest.F
+    upf_local_integrals_unittest.F
+    gapw_background_unittest.F
+    gapw_1c_basis_unittest.F
     kpoint_lattice_fft_unittest.F
     kpoint_smearing_unittest.F
     topology_wilson_unittest.F
@@ -1898,6 +1915,12 @@ if(CP2K_DATA_DIR STREQUAL "default")
 endif()
 
 target_link_libraries(cp2k PUBLIC cp2k_link_libs)
+
+if(CP2K_USE_ACCEL MATCHES "CUDA"
+   AND CP2K_LIBXC_CUDA_SUPPORT
+   AND NOT CP2K_ENABLE_LIBXC_GPU)
+  target_compile_definitions(cp2k PUBLIC __NO_OFFLOAD_LIBXC)
+endif()
 target_compile_definitions(
   cp2k
   PUBLIC
@@ -1922,6 +1945,7 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_SIRIUS}>:__SIRIUS>
     $<$<BOOL:${CP2K_USE_LIBVDWXC}>:__LIBVDWXC>
     $<$<BOOL:${CP2K_USE_GAUXC}>:__GAUXC>
+    $<$<AND:$<BOOL:${CP2K_USE_GAUXC}>,$<BOOL:${CP2K_GAUXC_HAS_ONEDFT_GRADIENT_FIX}>>:__GAUXC_ONEDFT_GRADIENT_FIX>
     # GauXC's CMake package exports CUTLASS even when its Fortran config does
     # not.
     $<$<AND:$<BOOL:${CP2K_USE_GAUXC}>,$<BOOL:${GAUXC_HAS_CUTLASS}>>:GAUXC_HAS_CUTLASS>
@@ -2004,6 +2028,11 @@ list(
   "gemm_square_unittest"
   "memory_utilities_unittest"
   "parallel_rng_types_unittest"
+  "atom_upf_unittest"
+  "upf_projector_integrals_unittest"
+  "upf_local_integrals_unittest"
+  "gapw_background_unittest"
+  "gapw_1c_basis_unittest"
   "kpoint_lattice_fft_unittest"
   "kpoint_smearing_unittest"
   "topology_wilson_unittest"
@@ -2042,6 +2071,12 @@ add_executable(orbital_transformation_matrices_unittest
 add_executable(gemm_square_unittest common/gemm_square_unittest.F)
 add_executable(memory_utilities_unittest common/memory_utilities_unittest.F)
 add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
+add_executable(atom_upf_unittest atom_upf_unittest.F)
+add_executable(upf_projector_integrals_unittest
+               upf_projector_integrals_unittest.F)
+add_executable(upf_local_integrals_unittest upf_local_integrals_unittest.F)
+add_executable(gapw_background_unittest gapw_background_unittest.F)
+add_executable(gapw_1c_basis_unittest gapw_1c_basis_unittest.F)
 add_executable(kpoint_lattice_fft_unittest kpoint_lattice_fft_unittest.F)
 add_executable(kpoint_smearing_unittest kpoint_smearing_unittest.F)
 add_executable(topology_wilson_unittest topology_wilson_unittest.F)
@@ -2107,6 +2142,12 @@ foreach(_app ${__CP2K_APPS})
   if(CP2K_USE_ACCEL MATCHES HIP)
     set_property(TARGET ${_app} PROPERTY HIP_ARCHITECTURES
                                          "${CMAKE_HIP_ARCHITECTURES}")
+  endif()
+
+  if(CP2K_USE_ACCEL MATCHES "CUDA"
+     AND CP2K_LIBXC_CUDA_SUPPORT
+     AND NOT CP2K_ENABLE_LIBXC_GPU)
+    target_compile_definitions(${_app} PUBLIC __NO_OFFLOAD_LIBXC)
   endif()
 
   target_link_libraries(${_app} PUBLIC cp2k)

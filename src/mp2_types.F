@@ -12,6 +12,8 @@
 !> \author MDB
 ! **************************************************************************************************
 MODULE mp2_types
+   USE bse_types,                       ONLY: bse_env_release,&
+                                              bse_env_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
                                               dbcsr_type
    USE cp_eri_mme_interface,            ONLY: cp_eri_mme_finalize,&
@@ -21,7 +23,7 @@ MODULE mp2_types
                                               hfx_type,&
                                               pair_list_element_type
    USE input_constants,                 ONLY: &
-        do_eri_mme, eri_default, gw_pade_approx, kp_weights_W_auto, mp2_method_direct, &
+        cohsex_off, do_eri_mme, eri_default, gw_pade_approx, kp_weights_W_auto, mp2_method_direct, &
         mp2_method_gpw, mp2_method_none, mp2_ri_optimize_basis, ri_mp2_laplace, ri_mp2_method_gpw, &
         ri_rpa_g0w0_crossing_z_shot, ri_rpa_method_gpw, rpa_exchange_none, soc_none, &
         wfc_mm_style_gemm
@@ -240,7 +242,12 @@ MODULE mp2_types
                                                             soc_type = soc_none
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: xkp_special_kp
       TYPE(dbcsr_p_type), DIMENSION(:), ALLOCATABLE      :: matrix_sigma_x_minus_vxc, &
-                                                            matrix_ks
+                                                            matrix_ks, &
+                                                            matrix_vxc
+      LOGICAL                                            :: do_static_cohsex = .FALSE.
+      INTEGER                                            :: cohsex_flavor = cohsex_off
+      REAL(KIND=dp)                                      :: scale_cohsex_occ = 1.0_dp, &
+                                                            scale_cohsex_virt = 1.0_dp
       REAL(KIND=dp)                                      :: broadening_print_loc_bandgap = 0.0_dp, &
                                                             energy_window_print_loc_bandgap = 0.0_dp, &
                                                             ldos_thresh_print_loc_bandgap = 0.0_dp, &
@@ -298,48 +305,6 @@ MODULE mp2_types
       INTEGER                                            :: max_parallel_comm = 0
    END TYPE grad_util
 
-   TYPE bse_type
-      INTEGER                                            :: bse_spin_config = 0, &
-                                                            bse_diag_method = 0, &
-                                                            flag_tda = 0, &
-                                                            num_exc_en = 0, &
-                                                            num_print_exc = 0, &
-                                                            num_print_exc_descr = 0, &
-                                                            screening_method = 0, &
-                                                            num_add_start_z_space = 0, &
-                                                            fac_max_z_space = 0, &
-                                                            num_new_t = 0, &
-                                                            num_davidson_iter = 0, &
-                                                            davidson_abort_cond = 0
-      REAL(KIND=dp)                                      :: eps_res = 0.0_dp, &
-                                                            eps_exc_en = 0.0_dp, &
-                                                            eps_x = 0.0_dp, &
-                                                            screening_factor = 0.0_dp, &
-                                                            bse_cutoff_occ = 0.0_dp, &
-                                                            bse_cutoff_empty = 0.0_dp, &
-                                                            z_space_energy_cutoff = 0.0_dp
-      LOGICAL                                            :: do_bse = .FALSE., &
-                                                            bse_debug_print = .FALSE., &
-                                                            print_directional_exc_descr = .FALSE., &
-                                                            print_directional_crosscorrelation = .FALSE., &
-                                                            use_ks_energies = .FALSE.
-      !BSE optical spectrum
-      REAL(KIND=dp)                                      :: bse_spectrum_freq_step_size = 0.0_dp, &
-                                                            bse_spectrum_freq_start = 0.0_dp, &
-                                                            bse_spectrum_freq_end = 0.0_dp
-      LOGICAL                                            :: bse_print_spectrum = .FALSE.
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: bse_eta_spectrum_list => NULL()
-
-      !BSE NTO prints
-      LOGICAL                                            :: do_nto_analysis = .FALSE., &
-                                                            explicit_nto_list = .FALSE.
-      REAL(KIND=dp)                                      :: eps_nto_eigval = 0.0_dp, &
-                                                            eps_nto_osc_str = 0.0_dp
-      INTEGER                                            :: num_print_exc_ntos = 0
-      INTEGER, DIMENSION(:), POINTER                     :: bse_nto_state_list => NULL()
-      INTEGER, DIMENSION(:), ALLOCATABLE                 :: bse_nto_state_list_final
-   END TYPE bse_type
-
    TYPE mp2_type
       INTEGER                                            :: method = mp2_method_none
       TYPE(mp2_laplace_type)                             :: ri_laplace = mp2_laplace_type()
@@ -350,19 +315,29 @@ MODULE mp2_types
       TYPE(ri_rpa_type)                                  :: ri_rpa = ri_rpa_type()
       ! There is a bug with some older compilers preventing requiring an explicit initialization of allocatable components
 #if defined(FTN_NO_DEFAULT_INIT)
-      TYPE(ri_rpa_im_time_type)                          :: ri_rpa_im_time = ri_rpa_im_time_type(Eigenval_Gamma=NULL(), &
-                                                                                                 wkp_V=NULL(), &
-                                                                                                 starts_array_mc_RI=NULL(), &
-                                                                                                 ends_array_mc_RI=NULL(), &
-                                                                                                 starts_array_mc_block_RI=NULL(), &
-                                                                                                 ends_array_mc_block_RI=NULL(), &
-                                                                                     starts_array_mc=NULL(), ends_array_mc=NULL(), &
-                                                                                                 starts_array_mc_block=NULL(), &
-                                                                                                 ends_array_mc_block=NULL())
+      TYPE(ri_rpa_im_time_type)                          :: ri_rpa_im_time = ri_rpa_im_time_type( &
+                                                            time_frequency_grid=time_frequency_grid_type( &
+                                                            frequency=NULL(), &
+                                                            frequency_weights=NULL(), &
+                                                            imaginary_time=NULL(), &
+                                                            time_weights_at_zero_frequency=NULL(), &
+                                                            cosine_time_to_frequency_weights=NULL(), &
+                                                            cosine_frequency_to_time_weights=NULL(), &
+                                                            sine_time_to_frequency_weights=NULL()), &
+                                                            Eigenval_Gamma=NULL(), &
+                                                            wkp_V=NULL(), &
+                                                            starts_array_mc_RI=NULL(), &
+                                                            ends_array_mc_RI=NULL(), &
+                                                            starts_array_mc_block_RI=NULL(), &
+                                                            ends_array_mc_block_RI=NULL(), &
+                                                            starts_array_mc=NULL(), ends_array_mc=NULL(), &
+                                                            starts_array_mc_block=NULL(), &
+                                                            ends_array_mc_block=NULL())
       TYPE(ri_g0w0_type)                                 :: ri_g0w0 = ri_g0w0_type(vec_Sigma_x_minus_vxc_gw=NULL(), &
                                                                                    xkp_special_kp=NULL(), &
                                                                                    matrix_sigma_x_minus_vxc=NULL(), &
-                                                                                   matrix_ks=NULL())
+                                                                                   matrix_ks=NULL(), &
+                                                                                   matrix_vxc=NULL())
       TYPE(ri_basis_opt)                                 :: ri_opt_param = ri_basis_opt(RI_nset_per_l=NULL())
       TYPE(grad_util)                                    :: ri_grad = grad_util(operator_half=NULL(), &
                                                                                 PQ_half=NULL(), &
@@ -372,13 +347,19 @@ MODULE mp2_types
                                                                                 mo_coeff_o=NULL(), &
                                                                                 mo_coeff_v=NULL(), &
                                                                                 P_mo=NULL(), W_mo=NULL(), L_jb=NULL())
-      TYPE(bse_type)                                     :: bse = bse_type(bse_nto_state_list_final=NULL())
+      TYPE(bse_env_type)                                 :: bse = bse_env_type(bse_nto_state_list_final=NULL(), &
+                                                                               homo_red=NULL(), virt_red=NULL(), &
+                                                                               homo_full=NULL(), gw_corr_lev_virt=NULL(), &
+                                                                               eigenval_dft=NULL(), eigenval_qp=NULL(), &
+                                                                               fm_S_ia=NULL(), &
+                                                                               fm_S_ij=NULL(), fm_S_ab=NULL(), &
+                                                                               fm_S_bar_ia=NULL(), fm_S_bar_ij=NULL())
 #else
       TYPE(ri_rpa_im_time_type)                          :: ri_rpa_im_time = ri_rpa_im_time_type()
       TYPE(ri_g0w0_type)                                 :: ri_g0w0 = ri_g0w0_type()
       TYPE(ri_basis_opt)                                 :: ri_opt_param = ri_basis_opt()
       TYPE(grad_util)                                    :: ri_grad = grad_util()
-      TYPE(bse_type)                                     :: bse = bse_type()
+      TYPE(bse_env_type)                                 :: bse = bse_env_type()
 #endif
       REAL(KIND=dp)                                      :: mp2_memory = 0.0_dp, &
                                                             scale_S = 0.0_dp, &
@@ -451,6 +432,7 @@ CONTAINS
       CALL time_frequency_grid_release(mp2_env%ri_rpa_im_time%time_frequency_grid)
 
       CALL mp2_env%local_gemm_ctx%destroy()
+      CALL bse_env_release(mp2_env%bse)
 
       CALL timestop(handle)
 

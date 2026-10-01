@@ -982,6 +982,10 @@ MODULE input_constants
    INTEGER, PARAMETER, PUBLIC               :: do_dgemm_spla = 1, &
                                                do_dgemm_blas = 2
 
+   ! Libxc library selection (similar to DGEMM)
+   INTEGER, PARAMETER, PUBLIC               :: do_libxc_cpu = 1, &
+                                               do_libxc_gpu = 2
+
    !real time propagation
    INTEGER, PARAMETER, PUBLIC               :: do_taylor = 1, &
                                                do_pade = 2, &
@@ -1172,6 +1176,10 @@ MODULE input_constants
                                                evGW = 37, &
                                                ri_rs_non_periodic = 38, &
                                                ri_rs_large_cell_Gamma = 39
+
+   INTEGER, PARAMETER, PUBLIC               :: cohsex_off = 0, &
+                                               cohsex_diagonal = 1, &
+                                               cohsex_qp_update = 2
 
    ! periodic RESP parameters
    INTEGER, PARAMETER, PUBLIC               :: do_resp_x_dir = 0, &
@@ -1401,10 +1409,25 @@ MODULE input_constants
                                                bse_screening_rpa = 2, &
                                                bse_screening_alpha = 3
 
-   ! BSE iterative abortion condition
+   ! BSE iterative convergence criterion
    INTEGER, PARAMETER, PUBLIC               :: bse_iter_en_cond = 0, &
                                                bse_iter_res_cond = 1, &
-                                               bse_iter_both_cond = 2
+                                               bse_iter_or_cond = 2, &
+                                               bse_iter_and_cond = 3
+
+   ! BSE iterative preconditioner
+   INTEGER, PARAMETER, PUBLIC               :: bse_precond_full_diag = 0, &
+                                               bse_precond_qp_diff = 1
+
+   ! BSE iterative solver beyond the TDA
+   INTEGER, PARAMETER, PUBLIC               :: bse_abba_mk_davidson = 0, &
+                                               bse_abba_olsen_stratmann = 1
+
+   ! BSE iterative solver: what the memory check does when the budget is exceeded
+   INTEGER, PARAMETER, PUBLIC               :: bse_memcheck_off = 0, &
+                                               bse_memcheck_warn = 1, &
+                                               bse_memcheck_clamp = 2, &
+                                               bse_memcheck_abort = 3
    ! SIGMA_functional parameters selection
    INTEGER, PARAMETER, PUBLIC               :: sigma_none = 0, &
                                                sigma_PBE_S2 = 1, &

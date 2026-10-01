@@ -64,7 +64,6 @@ MODULE qs_scf_diagonalization
                                               cp_fm_create,&
                                               cp_fm_get_info,&
                                               cp_fm_release,&
-                                              cp_fm_set_all,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -73,6 +72,7 @@ MODULE qs_scf_diagonalization
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr,&
                                               debug_print_level
+   USE dft_plus_u,                      ONLY: lowdin_kp_apply
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: &
         cholesky_dbcsr, cholesky_inverse, cholesky_off, cholesky_reduce, cholesky_restore, &
@@ -99,8 +99,7 @@ MODULE qs_scf_diagonalization
                                               local_gemm_ctxt_type
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
-   USE mathconstants,                   ONLY: gaussi,&
-                                              z_one,&
+   USE mathconstants,                   ONLY: z_one,&
                                               z_zero
    USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
@@ -128,11 +127,11 @@ MODULE qs_scf_diagonalization
                                               qs_environment_type
    USE qs_gspace_mixing,                ONLY: gspace_mixing
    USE qs_kpoint_operators,             ONLY: &
-        kpoint_operator_cfm_to_mo, kpoint_operator_context_create, &
-        kpoint_operator_context_release, kpoint_operator_context_type, kpoint_operator_evaluate, &
-        kpoint_operator_finish, kpoint_operator_get, kpoint_operator_get_local, &
-        kpoint_operator_prepare, kpoint_operator_start, kpoint_operator_store, &
-        kpoint_operator_work_size, kpoint_slot_ks, kpoint_slot_s, kpoint_slot_t, kpoint_spin_free
+        kpoint_operator_context_create, kpoint_operator_context_release, &
+        kpoint_operator_context_type, kpoint_operator_evaluate, kpoint_operator_finish, &
+        kpoint_operator_get, kpoint_operator_get_local, kpoint_operator_prepare, &
+        kpoint_operator_start, kpoint_operator_store, kpoint_operator_work_size, kpoint_slot_ks, &
+        kpoint_slot_s, kpoint_slot_t, kpoint_spin_free
    USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: qs_ks_did_change,&
                                               qs_ks_env_type
@@ -242,7 +241,7 @@ CONTAINS
 !> \brief Complex occupied-space shift, using conjugate transpose and existing eigensolver workspaces.
 !> \param fock Candidate Fock matrix, modified in place.
 !> \param overlap AO overlap, unchanged.
-!> \param mos Real and imaginary components of the previous physical MOs.
+!> \param mos Previous complex MOs.
 !> \param coeff AO/MO eigensolver workspace.
 !> \param work AO/AO eigensolver workspace.
 !> \param shift Nonnegative regularization parameter in hartree.
@@ -252,7 +251,7 @@ CONTAINS
    SUBROUTINE shift_candidate_complex(fock, overlap, mos, coeff, work, shift, local, gemm_ctx)
       TYPE(cp_cfm_type), INTENT(INOUT)                   :: fock
       TYPE(cp_cfm_type), INTENT(IN)                      :: overlap
-      TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos
+      TYPE(mo_set_type), INTENT(IN)                      :: mos
       TYPE(cp_cfm_type), INTENT(INOUT)                   :: coeff, work
       REAL(KIND=dp), INTENT(IN)                          :: shift
       LOGICAL, INTENT(IN)                                :: local
@@ -261,12 +260,11 @@ CONTAINS
       INTEGER                                            :: nao, nmo
       REAL(KIND=dp)                                      :: maxocc
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation
-      TYPE(cp_fm_type), POINTER                          :: imos, rmos
+      TYPE(cp_cfm_type), POINTER                         :: cmos
 
       IF (shift == 0.0_dp) RETURN
-      CALL get_mo_set(mos(1), nao=nao, nmo=nmo, maxocc=maxocc, occupation_numbers=occupation, mo_coeff=rmos)
-      CALL get_mo_set(mos(2), mo_coeff=imos)
-      CALL cp_fm_to_cfm(rmos, imos, coeff)
+      CALL get_mo_set(mos, nao=nao, nmo=nmo, maxocc=maxocc, occupation_numbers=occupation, cmo_coeff=cmos)
+      CALL cp_cfm_to_cfm(cmos, coeff)
       CALL cp_cfm_column_scale(coeff, CMPLX(SQRT(MAX(0.0_dp, occupation/maxocc)), KIND=dp))
       IF (local) THEN
          CPASSERT(PRODUCT(overlap%matrix_struct%context%num_pe) == 1)
@@ -683,11 +681,12 @@ CONTAINS
 !> \param qs_env ...
 !> \param probe ...
 !> \param added_mos_auto_grow true when the adaptive virtual-space buffer must grow
+!> \param potential Fixed Lowdin orbital potential for non-self-consistent k points.
 !> \par History
 !>      08.2014 created [JGH]
 ! **************************************************************************************************
    SUBROUTINE do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, update_p, &
-                                 diis_step, diis_error, qs_env, probe, added_mos_auto_grow)
+                                 diis_step, diis_error, qs_env, probe, added_mos_auto_grow, potential)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -700,10 +699,12 @@ CONTAINS
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
       LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
+      REAL(dp), INTENT(IN), OPTIONAL, TARGET             :: potential(:, :)
 
       CHARACTER(len=*), PARAMETER :: routineN = 'do_general_diag_kp'
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: coeffs
+      REAL(dp), POINTER :: effective_u(:, :), adiis_u(:, :)
       INTEGER :: cdiis_ncall, handle, ib, ikp, ispin, kplocal, kpmax, &
                  lattice_fft, nb, nkp, nspin, omp_threads, nworkers, nentry
       INTEGER, DIMENSION(2)                              :: kp_range
@@ -769,14 +770,24 @@ CONTAINS
           adiis_cdiis) do_diis = .TRUE.
 
       adiis_ks => matrix_ks
+      NULLIFY (adiis_u)
+      IF (ALLOCATED(kpoints%lowdin_v)) adiis_u => kpoints%lowdin_v
       IF (use_adiis) THEN
          IF (scf_env%scf_subspace_buffer%use_combined_fock) THEN
             adiis_ks => scf_env%scf_subspace_buffer%combined_fock
+            IF (ASSOCIATED(adiis_u)) adiis_u => scf_env%scf_subspace_buffer%combined_aux
          END IF
       END IF
       effective_ks => matrix_ks
+      NULLIFY (effective_u)
+      IF (ALLOCATED(kpoints%lowdin_v)) effective_u => kpoints%lowdin_v
+      IF (PRESENT(potential)) THEN
+         CPASSERT(.NOT. update_p)
+         effective_u => potential
+      END IF
       IF (use_adiis .AND. .NOT. adiis_cdiis) THEN
          effective_ks => adiis_ks
+         effective_u => adiis_u
       END IF
       IF (use_adiis .AND. .NOT. do_diis) THEN
          scf_env%scf_subspace_buffer%diis_weight = 0.0_dp
@@ -853,8 +864,12 @@ CONTAINS
       END IF
       IF (.NOT. use_real_wfn .OR. do_diis) THEN
          kp => kpoints%kp_env(1)%kpoint_env
-         CALL get_mo_set(kp%mos(1, 1), mo_coeff=mo_coeff)
-         CALL cp_fm_get_info(mo_coeff, matrix_struct=mo_struct)
+         IF (use_real_wfn) THEN
+            CALL get_mo_set(kp%mos(1), mo_coeff=mo_coeff)
+            CALL cp_fm_get_info(mo_coeff, matrix_struct=mo_struct)
+         ELSE
+            mo_struct => kp%mos(1)%cmo_coeff%matrix_struct
+         END IF
          CALL kp_diag_workspaces_create(workspace, nworkers, matrix_struct, mo_struct, nentry, &
                                         use_local_kpoints, scf_env%cholesky_method == cholesky_off)
          cksmat => workspace(1)%cksmat
@@ -927,7 +942,7 @@ CONTAINS
          CALL qs_diis_b_check_i_alloc_kp(kpoints%scf_diis_buffer, matrix_struct, nspin, kplocal, scf_section)
          IF (use_local_kpoints) THEN
             CALL kp_diag_local_phase(op_ctx, kpoints, workspace, scf_env, scf_control, nspin, &
-                                     cache_smat, reuse_smat, use_adiis, ib, .TRUE., 1.0_dp)
+                                     cache_smat, reuse_smat, use_adiis, ib, .TRUE., 1.0_dp, potential=effective_u)
          ELSE
             DO ikp = 1, kpmax
                DO ispin = 1, nspin
@@ -987,9 +1002,10 @@ CONTAINS
       END IF
 
       IF (use_local_kpoints) THEN
-         ! An unallocated coeffs actual is absent at the optional dummy (Fortran 2008).
+         ! Unallocated arrays and disassociated pointers are absent at nonpointer optional dummies.
+         IF (do_diis) effective_u => adiis_u
          CALL kp_diag_local_phase(op_ctx, kpoints, workspace, scf_env, scf_control, nspin, &
-                                  cache_smat, reuse_smat, use_adiis, ib, .FALSE., diis_weight, coeffs)
+                                  cache_smat, reuse_smat, use_adiis, ib, .FALSE., diis_weight, coeffs, effective_u)
       ELSE
          DO ikp = 1, kpmax
             DO ispin = 1, nspin
@@ -998,6 +1014,9 @@ CONTAINS
                      CALL kpoint_operator_start(op_ctx, ikp, ispin, adiis_ks, kpoint_slot_ks, &
                                                 use_grid=.FALSE., matrix_row=ispin)
                      CALL kpoint_operator_finish(op_ctx, ikp, ispin, kpoint_slot_ks, cwork)
+                     IF (ikp <= kplocal .AND. ASSOCIATED(adiis_u)) THEN
+                        CALL lowdin_kp_apply(kpoints%kp_env(ikp)%kpoint_env, adiis_u(:, ispin), cmat=cwork)
+                     END IF
                   END IF
                   IF (ikp > kplocal) CYCLE
                   CALL cp_cfm_to_cfm(kpoints%scf_diis_buffer%smat(ikp), csmat)
@@ -1012,8 +1031,8 @@ CONTAINS
                END IF
                kp => kpoints%kp_env(ikp)%kpoint_env
                IF (use_real_wfn) THEN
-                  CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
-                  IF (use_adiis) CALL shift_candidate_real(rksmat, rsmat, kp%mos(1, ispin), &
+                  CALL get_mo_set(kp%mos(ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
+                  IF (use_adiis) CALL shift_candidate_real(rksmat, rsmat, kp%mos(ispin), &
                                                            adiis_candidate_shift(scf_env))
                   IF (scf_env%cholesky_method == cholesky_off) THEN
                      CALL cp_fm_geeig_canon(rksmat, rsmat, mo_coeff, eigenvalues, fmlocal, scf_control%eps_eigval)
@@ -1021,7 +1040,7 @@ CONTAINS
                      CALL cp_fm_geeig(rksmat, rsmat, mo_coeff, eigenvalues, fmlocal)
                   END IF
                ELSE
-                  CALL kp_solve_complex(kp%mos(:, ispin), workspace(1), scf_env, scf_control, use_adiis, .FALSE.)
+                  CALL kp_solve_complex(kp%mos(ispin), workspace(1), scf_env, scf_control, use_adiis, .FALSE.)
                END IF
             END DO
          END DO
@@ -1083,12 +1102,18 @@ CONTAINS
          IF (use_real_wfn) THEN
             CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_ks, fm_re=rksmat)
             CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_s, fm_re=rsmat)
+            IF (round <= kplocal .AND. ASSOCIATED(effective_u)) THEN
+               CALL lowdin_kp_apply(kpoints%kp_env(round)%kpoint_env, effective_u(:, spin), rmat=rksmat)
+            END IF
             IF (round <= kplocal .AND. do_diis) THEN
                CALL cp_cfm_scale_and_add_fm(z_zero, cksmat, z_one, rksmat)
                CALL cp_cfm_scale_and_add_fm(z_zero, csmat, z_one, rsmat)
             END IF
          ELSE
             CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_ks, cksmat)
+            IF (round <= kplocal .AND. ASSOCIATED(effective_u)) THEN
+               CALL lowdin_kp_apply(kpoints%kp_env(round)%kpoint_env, effective_u(:, spin), cmat=cksmat)
+            END IF
             IF (.NOT. cache_smat .OR. (.NOT. reuse_smat .AND. spin == 1)) THEN
                CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_s, csmat)
             END IF
@@ -1122,9 +1147,10 @@ CONTAINS
 !> \param store_error store raw F and its residual instead of solving
 !> \param diis_weight weight of the CDIIS candidate
 !> \param coeffs optional DIIS coefficients for the second phase
+!> \param potential optional Lowdin orbital potential paired with the prepared Hamiltonian
 ! **************************************************************************************************
    SUBROUTINE kp_diag_local_phase(ctx, kpoints, workspace, scf_env, scf_control, nspin, &
-                                  cache_smat, reuse_smat, use_adiis, ib, store_error, diis_weight, coeffs)
+                                  cache_smat, reuse_smat, use_adiis, ib, store_error, diis_weight, coeffs, potential)
       TYPE(kpoint_operator_context_type), INTENT(IN) :: ctx
       TYPE(kpoint_type), POINTER :: kpoints
       TYPE(kp_diag_workspace_type), TARGET, INTENT(INOUT) :: workspace(:)
@@ -1134,6 +1160,7 @@ CONTAINS
       LOGICAL, INTENT(IN) :: cache_smat, reuse_smat, use_adiis, store_error
       REAL(KIND=dp), INTENT(IN) :: diis_weight
       COMPLEX(KIND=dp), OPTIONAL, INTENT(IN) :: coeffs(:)
+      REAL(dp), OPTIONAL, INTENT(IN) :: potential(:, :)
 
       INTEGER :: ik, ikp, ispin, kplocal, nworkers, thread
       LOGICAL :: build_h, build_s
@@ -1148,7 +1175,7 @@ CONTAINS
       ! Keep the workspace binding explicit and thread-private for classic ifort.
 !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(DYNAMIC, 1) NUM_THREADS(nworkers) IF(nworkers > 1) &
 !$OMP SHARED(ctx,kpoints,workspace,scf_env,scf_control,nspin,cache_smat,reuse_smat,use_adiis,ib, &
-!$OMP        store_error,diis_weight,coeffs,kplocal,nworkers,build_h,build_s) &
+!$OMP        store_error,diis_weight,coeffs,potential,kplocal,nworkers,build_h,build_s) &
 !$OMP PRIVATE(ik,ikp,ispin,thread,kp,work)
       DO ikp = 1, kplocal
          thread = 1
@@ -1163,8 +1190,10 @@ CONTAINS
             IF (build_h) THEN
                IF (PRESENT(coeffs)) THEN
                   CALL kpoint_operator_evaluate(ctx, ispin, kpoint_slot_ks, ik, work%phase, work%csmat_base)
+                  IF (PRESENT(potential)) CALL lowdin_kp_apply(kp, potential(:, ispin), cmat=work%csmat_base)
                ELSE
                   CALL kpoint_operator_evaluate(ctx, ispin, kpoint_slot_ks, ik, work%phase, work%cksmat)
+                  IF (PRESENT(potential)) CALL lowdin_kp_apply(kp, potential(:, ispin), cmat=work%cksmat)
                END IF
             END IF
             IF (PRESENT(coeffs)) THEN
@@ -1184,7 +1213,7 @@ CONTAINS
                CALL qs_diis_b_calc_err_kp(kpoints%scf_diis_buffer, ib, kp%mos, work%cksmat, work%csmat, &
                                           ispin, ikp, work%cmos, local=.TRUE., gemm_ctx=work%gemm_ctx)
             ELSE
-               CALL kp_solve_complex(kp%mos(:, ispin), work, scf_env, scf_control, use_adiis, .TRUE.)
+               CALL kp_solve_complex(kp%mos(ispin), work, scf_env, scf_control, use_adiis, .TRUE.)
             END IF
          END DO
       END DO
@@ -1222,7 +1251,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Shift, solve and publish a complex SCF candidate using private scratch.
-!> \param mos real/imaginary MO sets
+!> \param mos complex MO set
 !> \param work private workspace
 !> \param scf_env SCF settings
 !> \param scf_control SCF control
@@ -1230,7 +1259,7 @@ CONTAINS
 !> \param local select the one-rank local solver; otherwise honor the configured backend
 ! **************************************************************************************************
    SUBROUTINE kp_solve_complex(mos, work, scf_env, scf_control, use_adiis, local)
-      TYPE(mo_set_type), INTENT(INOUT)                   :: mos(:)
+      TYPE(mo_set_type), INTENT(INOUT)                   :: mos
       TYPE(kp_diag_workspace_type), INTENT(INOUT)        :: work
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
@@ -1238,24 +1267,24 @@ CONTAINS
 
       REAL(KIND=dp), POINTER                             :: eigenvalues(:)
 
-      CALL get_mo_set(mos(1), eigenvalues=eigenvalues)
+      CALL get_mo_set(mos, eigenvalues=eigenvalues)
       IF (use_adiis) CALL shift_candidate_complex(work%cksmat, work%csmat, mos, work%cmos, work%cwork, &
                                                   adiis_candidate_shift(scf_env), local, work%gemm_ctx)
       IF (scf_env%cholesky_method == cholesky_off) THEN
          IF (local) THEN
-            CALL cp_cfm_geeig_canon_local(work%cksmat, work%csmat, work%cmos, eigenvalues, work%cwork, &
+            CALL cp_cfm_geeig_canon_local(work%cksmat, work%csmat, mos%cmo_coeff, eigenvalues, work%cwork, &
                                           scf_control%eps_eigval, ws=work%solver)
          ELSE
-            CALL cp_cfm_geeig_canon(work%cksmat, work%csmat, work%cmos, eigenvalues, work%cwork, scf_control%eps_eigval)
+            CALL cp_cfm_geeig_canon(work%cksmat, work%csmat, mos%cmo_coeff, eigenvalues, work%cwork, &
+                                    scf_control%eps_eigval)
          END IF
       ELSE
          IF (local) THEN
-            CALL cp_cfm_geeig_local(work%cksmat, work%csmat, work%cmos, eigenvalues, ws=work%solver)
+            CALL cp_cfm_geeig_local(work%cksmat, work%csmat, mos%cmo_coeff, eigenvalues, ws=work%solver)
          ELSE
-            CALL cp_cfm_geeig(work%cksmat, work%csmat, work%cmos, eigenvalues, work%cwork)
+            CALL cp_cfm_geeig(work%cksmat, work%csmat, mos%cmo_coeff, eigenvalues, work%cwork)
          END IF
       END IF
-      CALL kpoint_operator_cfm_to_mo(work%cmos, mos(1), mos(2), eigenvalues)
    END SUBROUTINE kp_solve_complex
 
 ! **************************************************************************************************
@@ -1380,8 +1409,7 @@ CONTAINS
          CALL cp_cfm_create(csmat, matrix_struct)
          CALL cp_cfm_create(cwork, matrix_struct)
          kp => kpoints%kp_env(1)%kpoint_env
-         CALL get_mo_set(kp%mos(1, 1), mo_coeff=mo_coeff)
-         CALL cp_fm_get_info(mo_coeff, matrix_struct=mo_struct)
+         mo_struct => kp%mos(1)%cmo_coeff%matrix_struct
          CALL cp_cfm_create(cmos, mo_struct)
       END IF
 
@@ -1414,13 +1442,12 @@ CONTAINS
             IF (ikp > kplocal) CYCLE
             kp => kpoints%kp_env(ikp)%kpoint_env
             IF (use_real_wfn) THEN
-               CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
+               CALL get_mo_set(kp%mos(ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
                CALL cp_fm_geeig(rksmat, rsmat, mo_coeff, eigenvalues, fmlocal)
             ELSE
-               CALL get_mo_set(kp%mos(1, ispin), eigenvalues=eigenvalues)
+               CALL get_mo_set(kp%mos(ispin), eigenvalues=eigenvalues)
                CALL cp_cfm_geeig(cksmat, csmat, cmos, eigenvalues, cwork)
-               ! split the real and imaginary parts of the mos and copy the eigenvalues to the imaginary set
-               CALL kpoint_operator_cfm_to_mo(cmos, kp%mos(1, ispin), kp%mos(2, ispin), eigenvalues)
+               CALL cp_cfm_to_cfm(cmos, kp%mos(ispin)%cmo_coeff)
             END IF
          END DO
       END DO
@@ -1956,16 +1983,17 @@ CONTAINS
       LOGICAL                                            :: store_kinetic, use_real_wfn
       REAL(KIND=dp)                                      :: eps_iter
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
+      TYPE(cp_cfm_type)                                  :: cmo_work
       TYPE(cp_fm_type)                                   :: coeff_im_work
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
-      TYPE(cp_fm_type), POINTER                          :: coeff_im, coeff_re
+      TYPE(cp_fm_type), POINTER                          :: coeff_re
       TYPE(dbcsr_type), POINTER                          :: matrix_h_im, matrix_h_re, matrix_s_im, &
                                                             matrix_s_re, matrix_t_im, matrix_t_re
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
 
-      NULLIFY (coeff_im, coeff_re, eigenvalues, fmwork, kp, matrix_h_im, matrix_h_re, &
+      NULLIFY (coeff_re, eigenvalues, fmwork, kp, matrix_h_im, matrix_h_re, &
                matrix_s_im, matrix_s_re, matrix_t_im, matrix_t_re, sab_nl)
       added_mos_auto_grow = .FALSE.
       diis_step = .FALSE.
@@ -2030,33 +2058,35 @@ CONTAINS
                                               matrix_h_re, matrix_h_im)
                CALL dbcsr_set(matrix_h_im, 0.0_dp)
             END IF
-            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=coeff_re, eigenvalues=eigenvalues)
+            CALL get_mo_set(kp%mos(ispin), eigenvalues=eigenvalues)
             IF (use_real_wfn) THEN
+               CALL get_mo_set(kp%mos(ispin), mo_coeff=coeff_re)
                CALL cp_fm_create(coeff_im_work, coeff_re%matrix_struct, &
                                  name='real k-point OT imaginary work')
-               CALL cp_fm_set_all(coeff_im_work, 0.0_dp)
+               CALL cp_cfm_create(cmo_work, coeff_re%matrix_struct)
+               CALL cp_cfm_scale_and_add_fm(z_zero, cmo_work, z_one, coeff_re)
                CALL ot_eigensolver_complex(matrix_h=matrix_h_re, matrix_h_im=matrix_h_im, &
                                            matrix_s=matrix_s_re, matrix_s_im=matrix_s_im, &
-                                           matrix_c_fm=coeff_re, matrix_c_fm_im=coeff_im_work, &
+                                           matrix_c_cfm=cmo_work, &
                                            eps_gradient=eps_iter, &
                                            iter_max=scf_control%diagonalization%max_iter, &
                                            eigenvalues=eigenvalues, silent=.TRUE., &
                                            ot_settings=scf_control%diagonalization%ot_settings, &
                                            matrix_t=matrix_t_re, matrix_t_im=matrix_t_im, &
-                                           mo_set=kp%mos(1, ispin))
+                                           mo_set=kp%mos(ispin))
+               CALL cp_cfm_to_fm(cmo_work, coeff_re, coeff_im_work)
+               CALL cp_cfm_release(cmo_work)
                CALL cp_fm_release(coeff_im_work)
             ELSE
-               CALL get_mo_set(kp%mos(2, ispin), mo_coeff=coeff_im)
                CALL ot_eigensolver_complex(matrix_h=matrix_h_re, matrix_h_im=matrix_h_im, &
                                            matrix_s=matrix_s_re, matrix_s_im=matrix_s_im, &
-                                           matrix_c_fm=coeff_re, matrix_c_fm_im=coeff_im, &
+                                           matrix_c_cfm=kp%mos(ispin)%cmo_coeff, &
                                            eps_gradient=eps_iter, &
                                            iter_max=scf_control%diagonalization%max_iter, &
                                            eigenvalues=eigenvalues, silent=.TRUE., &
                                            ot_settings=scf_control%diagonalization%ot_settings, &
                                            matrix_t=matrix_t_re, matrix_t_im=matrix_t_im, &
-                                           mo_set=kp%mos(1, ispin))
-               kp%mos(2, ispin)%eigenvalues = eigenvalues
+                                           mo_set=kp%mos(ispin))
             END IF
             CALL dbcsr_release_p(matrix_h_re)
             CALL dbcsr_release_p(matrix_h_im)
@@ -2899,12 +2929,12 @@ CONTAINS
                channel = (local_kpoint - 1)*nspin + ispin
                IF (do_prec) THEN
                   CALL generate_extended_space_c(scf_env%block_davidson_env(channel), &
-                                                 kp%mos(1:2, ispin), cksmat, csmat, output_unit, &
+                                                 kp%mos(ispin), cksmat, csmat, output_unit, &
                                                  eps_iter, eps_iter_empty, &
                                                  scf_env%ot_preconditioner(channel)%preconditioner)
                ELSE
                   CALL generate_extended_space_c(scf_env%block_davidson_env(channel), &
-                                                 kp%mos(1:2, ispin), cksmat, csmat, output_unit, &
+                                                 kp%mos(ispin), cksmat, csmat, output_unit, &
                                                  eps_iter, eps_iter_empty)
                END IF
             END IF
@@ -2950,7 +2980,7 @@ CONTAINS
 !> \brief first-SCF-step initialization of the K-point MOS of one spin by one
 !>        direct diagonalization of H(k); both arguments are assembled by the
 !>        caller because cp_cfm_geeig overwrites them
-!> \param kp kpoint environment holding the MOS pair
+!> \param kp kpoint environment holding the complex MO set
 !> \param ispin ...
 !> \param cksmat complex H(k), assembled by the caller
 !> \param csmat complex S(k), assembled by the caller
@@ -2965,19 +2995,13 @@ CONTAINS
 
       INTEGER                                            :: handle
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
-      TYPE(cp_cfm_type)                                  :: cmos, cwork
-      TYPE(cp_fm_type), POINTER                          :: imos, rmos
+      TYPE(cp_cfm_type)                                  :: cwork
 
       CALL timeset(routineN, handle)
 
-      CALL get_mo_set(kp%mos(1, ispin), mo_coeff=rmos, eigenvalues=eigenvalues)
-      CALL get_mo_set(kp%mos(2, ispin), mo_coeff=imos)
-      CALL cp_cfm_create(cmos, rmos%matrix_struct, name="dav_cold_cmos")
+      CALL get_mo_set(kp%mos(ispin), eigenvalues=eigenvalues)
       CALL cp_cfm_create(cwork, cksmat%matrix_struct, name="dav_cold_cwork")
-      CALL cp_cfm_geeig(cksmat, csmat, cmos, eigenvalues, cwork)
-      kp%mos(2, ispin)%eigenvalues = eigenvalues
-      CALL cp_cfm_to_fm(cmos, rmos, imos)
-      CALL cp_cfm_release(cmos)
+      CALL cp_cfm_geeig(cksmat, csmat, kp%mos(ispin)%cmo_coeff, eigenvalues, cwork)
       CALL cp_cfm_release(cwork)
 
       CALL timestop(handle)
@@ -3016,7 +3040,6 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_cfm_type)                                  :: matrix_c, matrix_h, matrix_s
-      TYPE(cp_fm_type), POINTER                          :: mo_coeff_im, mo_coeff_re
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_t_kp
       TYPE(dbcsr_type), POINTER                          :: matrix_h_im, matrix_h_re, matrix_s_im, &
                                                             matrix_s_re, matrix_t_im, matrix_t_re
@@ -3064,7 +3087,7 @@ CONTAINS
       END DO
 
       NULLIFY (eigenvalues, matrix_h_im, matrix_h_re, matrix_s_im, matrix_s_re, &
-               matrix_t_im, matrix_t_re, mo_coeff_im, mo_coeff_re)
+               matrix_t_im, matrix_t_re)
       IF (prec_type == ot_precond_full_kinetic) THEN
          CPASSERT(ASSOCIATED(matrix_t_kp))
          CALL kpoint_operator_prepare(op_ctx, matrix_t_kp, kpoint_slot_t, matrix_row=kpoint_spin_free)
@@ -3106,12 +3129,10 @@ CONTAINS
                   ! (mirrors the complex preconditioners of the K-point OT case; the
                   ! FULL_SINGLE_INVERSE variant trades the state selectivity of
                   ! FULL_ALL for one shifted factorization and a gemm application)
-                  CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff_re, eigenvalues=eigenvalues, &
+                  CALL get_mo_set(kp%mos(ispin), eigenvalues=eigenvalues, &
                                   nmo=nmo)
-                  CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
-                  CALL cp_cfm_create(matrix_c, mo_coeff_re%matrix_struct, name="dav pc C")
-                  CALL cp_cfm_scale_and_add_fm(z_zero, matrix_c, z_one, mo_coeff_re)
-                  CALL cp_cfm_scale_and_add_fm(z_one, matrix_c, gaussi, mo_coeff_im)
+                  CALL cp_cfm_create(matrix_c, kp%mos(ispin)%cmo_coeff%matrix_struct, name="dav pc C")
+                  CALL cp_cfm_to_cfm(kp%mos(ispin)%cmo_coeff, matrix_c)
                   CALL dbcsr_pair_to_cfm(matrix_h_re, matrix_h_im, &
                                          scf_env%ot_preconditioner(channel)%preconditioner, &
                                          'dav pc H', matrix_h)
@@ -3164,14 +3185,16 @@ CONTAINS
 !> \param matrix_s     Overlap matrices (RS indices, global)
 !> \param kpoints      Kpoint environment
 !> \param fmwork       full matrices distributed over all groups
+!> \param lowdin_forces retain the overlap spectrum for Lowdin force/stress derivatives
 !> \par History
 !>      02.2026 created [JGH]
 ! **************************************************************************************************
-   SUBROUTINE diag_kp_smat(matrix_s, kpoints, fmwork)
+   SUBROUTINE diag_kp_smat(matrix_s, kpoints, fmwork, lowdin_forces)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(cp_fm_type), DIMENSION(:)                     :: fmwork
+      LOGICAL, INTENT(IN), OPTIONAL                      :: lowdin_forces
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'diag_kp_smat'
       COMPLEX(KIND=dp), PARAMETER                        :: cone = (1.0_dp, 0.0_dp), &
@@ -3181,7 +3204,7 @@ CONTAINS
       INTEGER                                            :: handle, ikp, kplocal, kpmax, nao
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
-      LOGICAL                                            :: use_real_wfn
+      LOGICAL                                            :: save_spectrum, use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues
       TYPE(cp_cfm_type)                                  :: csmat, cwork
       TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
@@ -3240,12 +3263,29 @@ CONTAINS
          ! Eigensolver Hermite or Symmetric
          IF (ikp > kplocal) CYCLE
          kp => kpoints%kp_env(ikp)%kpoint_env
+         save_spectrum = ALLOCATED(kp%lowdin_sqrt)
+         IF (PRESENT(lowdin_forces)) save_spectrum = lowdin_forces
+         CALL cp_cfm_release(kp%lowdin_evec)
+         IF (ALLOCATED(kp%lowdin_sqrt)) DEALLOCATE (kp%lowdin_sqrt)
          IF (use_real_wfn) THEN
             CALL choose_eigv_solver(rsmat, fmlocal, eigenvalues)
          ELSE
             CALL cp_cfm_heevd(csmat, cwork, eigenvalues)
          END IF
          CPASSERT(ALL(eigenvalues(1:nao) >= 0.0_dp))
+         IF (save_spectrum) THEN
+            IF (ANY(eigenvalues <= 0.0_dp)) THEN
+               CPABORT("Lowdin forces require a positive definite overlap")
+            END IF
+            ALLOCATE (kp%lowdin_sqrt(nao))
+            kp%lowdin_sqrt(:) = SQRT(eigenvalues)
+            CALL cp_cfm_create(kp%lowdin_evec, matrix_struct)
+            IF (use_real_wfn) THEN
+               CALL cp_fm_to_cfm(fmlocal, mtarget=kp%lowdin_evec)
+            ELSE
+               CALL cp_cfm_to_cfm(cwork, kp%lowdin_evec)
+            END IF
+         END IF
          IF (use_real_wfn) THEN
             CALL cp_fm_release(kp%shalf)
             CALL cp_fm_create(kp%shalf, matrix_struct)

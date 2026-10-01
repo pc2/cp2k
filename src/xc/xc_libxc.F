@@ -27,14 +27,6 @@
 ! **************************************************************************************************
 #:include 'xc_gamma.fypp'
 
-#! Every staging buffer of a worker, so that the component count and the
-#! release below cannot fall out of step with the allocation.
-#:set worker_1d = ["exc", "nd", "nda", "ndb"]
-#:set worker_2d = ["rho", "sigma", "lapl", "tau", "vrho", "vsigma", "vlapl", "vtau", &
-                 & "v2rho2", "v2rhosigma", "v2sigma2", "v2rholapl", "v2rhotau", &
-                 & "v2sigmalapl", "v2sigmatau", "v2lapl2", "v2lapltau", "v2tau2", &
-                 & "v3rho3", "v3rho2sigma", "v3rhosigma2", "v3sigma3"] + v3_new
-
 MODULE xc_libxc
    USE bibliography, ONLY: Lehtola2018, &
                            Marques2012, &
@@ -55,11 +47,12 @@ MODULE xc_libxc
    USE xc_rho_cflags_types, ONLY: xc_rho_cflags_type
    USE xc_rho_set_types, ONLY: xc_rho_set_get, &
                                xc_rho_set_type
+#include "../base/base_uses.f90"
 #if defined (__LIBXC)
    USE input_keyword_types, ONLY: keyword_create, &
                                   keyword_release, &
                                   keyword_type
-   USE iso_c_binding, ONLY: C_SIZE_T, C_INT, C_DOUBLE
+   USE iso_c_binding, ONLY: C_INT, C_DOUBLE
    USE xc_derivative_desc, ONLY: &
       deriv_rho, deriv_rhoa, deriv_rhob, &
       deriv_norm_drhoa, deriv_norm_drhob, deriv_norm_drho, deriv_tau_a, deriv_tau_b, deriv_tau, &
@@ -90,8 +83,6 @@ MODULE xc_libxc
                             xc_f03_gga_vxc, &
                             xc_f03_gga_vxc_fxc, &
                             xc_f03_gga_vxc_fxc_kxc, &
-                            xc_f03_mgga_exc_vxc_fxc_kxc, &
-                            xc_f03_mgga_vxc_fxc_kxc, &
                             xc_f03_lda, &
                             xc_f03_lda_exc, &
                             xc_f03_lda_exc_vxc, &
@@ -102,9 +93,12 @@ MODULE xc_libxc
                             xc_f03_mgga, &
                             xc_f03_mgga_exc, &
                             xc_f03_mgga_exc_vxc, &
+                            xc_f03_mgga_exc_vxc_fxc, &
+                            xc_f03_mgga_exc_vxc_fxc_kxc, &
                             xc_f03_mgga_fxc, &
                             xc_f03_mgga_vxc, &
                             xc_f03_mgga_vxc_fxc, &
+                            xc_f03_mgga_vxc_fxc_kxc, &
                             XC_POLARIZED, &
                             XC_UNPOLARIZED, &
                             XC_FAMILY_LDA, &
@@ -113,27 +107,33 @@ MODULE xc_libxc
                             XC_FAMILY_HYB_LDA, &
                             XC_FAMILY_HYB_GGA, &
                             XC_FAMILY_HYB_MGGA, &
-                            XC_CORRELATION, &
-                            XC_EXCHANGE, &
-                            XC_EXCHANGE_CORRELATION, &
-                            XC_KINETIC, &
-                            xc_libxc_wrap_info_refs, &
-                            xc_libxc_wrap_version, &
-                            xc_libxc_wrap_library_reference, &
+                            libxc_set_backend, &
+                            libxc_func_init_wrapper, &
+                            libxc_gga_exc_vxc_wrapper, libxc_gga_exc_wrapper, &
+                            libxc_lda_exc_vxc_wrapper, libxc_lda_exc_wrapper, &
+                            libxc_mgga_exc_vxc_wrapper, libxc_mgga_exc_wrapper, &
+                            libxc_mgga_vxc_wrapper, &
                             xc_libxc_wrap_functional_get_number, &
                             xc_libxc_wrap_info_needs_laplace, &
                             xc_libxc_wrap_info_no_exc, &
-                            xc_libxc_wrap_set_thresholds, &
-                            xc_f03_func_set_ext_params, &
                             xc_libxc_wrap_is_under_development, &
+                            xc_libxc_check_functional, &
                             xc_libxc_get_reference_length, &
-                            xc_libxc_check_functional
+                            xc_libxc_wrap_init_safe, &
+                            xc_libxc_wrap_library_reference, &
+                            xc_libxc_wrap_version, &
+                            xc_libxc_wrap_set_thresholds, &
+                            xc_libxc_wrap_info_refs, &
+                            xc_f03_func_set_ext_params, &
+                            XC_EXCHANGE, XC_CORRELATION, XC_EXCHANGE_CORRELATION, XC_KINETIC
+   USE xc_libxc_wrap, ONLY: libxc_is_gpu
+   USE xc_libxc_wrap, ONLY: libxc_worker_type, &
+                            libxc_worker_alloc, libxc_worker_free_buffers, &
+                            libxc_worker_resize_cuda, libxc_worker_eval, libxc_family_flags
 #endif
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, &
 !$                    omp_get_num_threads, &
 !$                    omp_get_thread_num
-
-#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
@@ -147,51 +147,13 @@ MODULE xc_libxc
              libxc_check_existence_in_libxc, libxc_release_workers
 
 #if defined (__LIBXC)
-   ! Number of grid points handed to LibXC in a single call. LibXC amortizes its
-   ! per-call work (argument checks, output initialization and, for functionals
-   ! built by mixing components, a full allocate/free cycle of the component
-   ! buffers) over the points in the call, so evaluating point by point paid that
-   ! cost once per point. Blocking rather than passing the whole grid keeps the
-   ! staging buffers inside the cache. How wide a point is depends on the
-   ! functional and on the derivative order: a spin-polarized meta-GGA stages 232
-   ! doubles per point at third order against twelve for a polarized LDA, a span
-   ! of twenty, so the block is chosen from a byte budget rather than fixed in
-   ! points. The timing is flat over a wide range of block lengths, so the budget
-   ! only has to keep the buffers cache-resident.
-   INTEGER, PARAMETER, PRIVATE :: libxc_block_bytes = 256*1024
-   INTEGER, PARAMETER, PRIVATE :: libxc_block_min = 64
-   INTEGER, PARAMETER, PRIVATE :: libxc_block_max = 512
-
-! **************************************************************************************************
-!> \brief One LibXC functional object plus the buffers used to hand it a block of
-!>        grid points. One of these is kept per OpenMP thread so that neither the
-!>        functional object nor the buffers are rebuilt between batches.
-! **************************************************************************************************
-   TYPE libxc_worker_type
-      TYPE(xc_f03_func_t)                                :: func = xc_f03_func_t()
-      TYPE(xc_f03_func_info_t)                           :: info = xc_f03_func_info_t()
-      LOGICAL                                            :: is_init = .FALSE.
-      ! number of points the staging buffers below were allocated for
-      INTEGER                                            :: nb = 0
-      ! staging buffers, dimensioned (component, point)
-      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: rho, sigma, lapl, tau
-      ! the floored gradient norms the spin-polarized chain rule is written in
-      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: nd, nda, ndb
-      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: exc
-      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: vrho, vsigma, vlapl, vtau
-      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: v2rho2, v2rhosigma, v2sigma2, &
-                                                            v2rholapl, v2rhotau, v2sigmalapl, &
-                                                            v2sigmatau, v2lapl2, v2lapltau, v2tau2
-      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: v3rho3, v3rho2sigma, &
-                                                            v3rhosigma2, v3sigma3
-      #:for arr in v3_new
-         REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: ${arr}$
-      #:endfor
-   END TYPE libxc_worker_type
+   PUBLIC :: libxc_set_backend
 
 ! **************************************************************************************************
 !> \brief All threads' workers for one distinct functional setup, together with
-!>        the key that identifies that setup.
+!>        the key that identifies that setup. Each worker (functional object plus
+!>        host staging buffers and, on GPU builds, the mirroring device buffers)
+!>        is implemented in xc_libxc_wrap; here they are only aggregated.
 ! **************************************************************************************************
    TYPE libxc_worker_set_type
       INTEGER                                            :: func_id = -1
@@ -222,6 +184,9 @@ MODULE xc_libxc
    REAL(KIND=dp), DIMENSION(:), ALLOCATABLE, TARGET, PRIVATE, SAVE :: libxc_unused
 #endif
 
+   ! Backend initialization bookkeeping
+   LOGICAL, PRIVATE, SAVE :: libxc_initialized = .FALSE.
+
 CONTAINS
 
 ! **************************************************************************************************
@@ -235,6 +200,11 @@ CONTAINS
       LOGICAL                                  :: exists
 
 #if defined (__LIBXC)
+      ! Initialize once on first call
+      IF (.NOT. libxc_initialized) THEN
+         CALL xc_libxc_wrap_init_safe()
+         libxc_initialized = .TRUE.
+      END IF
 
       exists = xc_libxc_check_functional(libxc_params%section%name)
 #else
@@ -270,9 +240,9 @@ CONTAINS
 
       func_id = xc_libxc_wrap_functional_get_number(func_name)
       IF (lsd) THEN
-         CALL xc_f03_func_init(xc_func, func_id, XC_POLARIZED)
+         CALL libxc_func_init_wrapper(xc_func, func_id, XC_POLARIZED, force_host=.TRUE.)
       ELSE
-         CALL xc_f03_func_init(xc_func, func_id, XC_UNPOLARIZED)
+         CALL libxc_func_init_wrapper(xc_func, func_id, XC_UNPOLARIZED, force_host=.TRUE.)
       END IF
       xc_info = xc_f03_func_get_info(xc_func)
 
@@ -329,7 +299,7 @@ CONTAINS
          IF (ii > 1) THEN
             IF (func_id == func_ids(ii - 1)) CYCLE
          END IF
-         CALL xc_f03_func_init(xc_func, func_id, XC_UNPOLARIZED)
+         CALL libxc_func_init_wrapper(xc_func, func_id, XC_UNPOLARIZED, force_host=.TRUE.)
          xc_info = xc_f03_func_get_info(xc_func)
 
          func_name = xc_f03_functional_get_name(func_id)
@@ -432,7 +402,7 @@ CONTAINS
       IF (ABS(func_scale - 1.0_dp) < 1.0e-10_dp) func_scale = 1.0_dp
 
       func_id = xc_libxc_wrap_functional_get_number(func_name)
-      CALL xc_f03_func_init(xc_func, func_id, XC_UNPOLARIZED)
+      CALL libxc_func_init_wrapper(xc_func, func_id, XC_UNPOLARIZED, force_host=.TRUE.)
       xc_info = xc_f03_func_get_info(xc_func)
 
       s1 = xc_f03_func_info_get_name(xc_info)
@@ -546,7 +516,7 @@ CONTAINS
       IF (ABS(func_scale - 1.0_dp) < 1.0e-10_dp) func_scale = 1.0_dp
 
       func_id = xc_libxc_wrap_functional_get_number(func_name)
-      CALL xc_f03_func_init(xc_func, func_id, XC_POLARIZED)
+      CALL libxc_func_init_wrapper(xc_func, func_id, XC_POLARIZED, force_host=.TRUE.)
       xc_info = xc_f03_func_get_info(xc_func)
 
       s1 = xc_f03_func_info_get_name(xc_info)
@@ -678,173 +648,6 @@ CONTAINS
    END SUBROUTINE libxc_read_params
 
 ! **************************************************************************************************
-!> \brief Allocates the staging buffers of a single worker, sizing the block so
-!>        that they stay within the cache budget.
-!> \param worker the worker
-!> \param family LibXC functional family
-!> \param nspin XC_UNPOLARIZED or XC_POLARIZED
-!> \param grad_deriv highest derivative order the buffers must hold
-!> \author S. Lehtola
-! **************************************************************************************************
-   SUBROUTINE libxc_worker_alloc(worker, family, nspin, grad_deriv)
-      TYPE(libxc_worker_type), INTENT(INOUT)             :: worker
-      INTEGER, INTENT(IN)                                :: family, nspin, grad_deriv
-
-      INTEGER                                            :: nb, ncomp
-
-      ! How many doubles a point occupies spans a factor of twenty over the
-      ! families, spin cases and derivative orders, so a block length fixed in
-      ! points would size the buffers anywhere between 49 KiB and 950 KiB. Derive
-      ! it from the footprint instead: build a one-point worker, ask it how wide
-      ! a point is, and cut the real block to the byte budget. Taking the count
-      ! from the buffers themselves is what stops it drifting away from the
-      ! allocation it is meant to describe.
-      BLOCK
-         TYPE(libxc_worker_type)                         :: probe
-         CALL libxc_worker_alloc_buffers(probe, family, nspin, grad_deriv, 1)
-         ncomp = libxc_worker_ncomp(probe)
-      END BLOCK
-      nb = MIN(libxc_block_max, &
-               MAX(libxc_block_min, libxc_block_bytes/(ncomp*(STORAGE_SIZE(0.0_dp)/8))))
-
-      CALL libxc_worker_alloc_buffers(worker, family, nspin, grad_deriv, nb)
-
-   END SUBROUTINE libxc_worker_alloc
-
-! **************************************************************************************************
-!> \brief Number of buffer components a single grid point occupies in a worker.
-!> \param worker the worker
-!> \return components per point, summed over the buffers it actually carries
-!> \author S. Lehtola
-! **************************************************************************************************
-   FUNCTION libxc_worker_ncomp(worker) RESULT(ncomp)
-      TYPE(libxc_worker_type), INTENT(IN)                :: worker
-      INTEGER                                            :: ncomp
-
-      ncomp = 0
-      #:for arr in worker_1d
-         IF (ALLOCATED(worker%${arr}$)) ncomp = ncomp + 1
-      #:endfor
-      #:for arr in worker_2d
-         IF (ALLOCATED(worker%${arr}$)) ncomp = ncomp + SIZE(worker%${arr}$, 1)
-      #:endfor
-
-   END FUNCTION libxc_worker_ncomp
-
-! **************************************************************************************************
-!> \brief Releases the staging buffers of a worker, keeping its functional object.
-!> \param worker the worker
-!> \author S. Lehtola
-! **************************************************************************************************
-   SUBROUTINE libxc_worker_free_buffers(worker)
-      TYPE(libxc_worker_type), INTENT(INOUT)             :: worker
-
-      #:for arr in worker_1d + worker_2d
-         IF (ALLOCATED(worker%${arr}$)) DEALLOCATE (worker%${arr}$)
-      #:endfor
-      worker%nb = 0
-
-   END SUBROUTINE libxc_worker_free_buffers
-
-! **************************************************************************************************
-!> \brief Allocates the staging buffers of a single worker for a given block length.
-!> \param worker the worker
-!> \param family LibXC functional family
-!> \param nspin XC_UNPOLARIZED or XC_POLARIZED
-!> \param grad_deriv highest derivative order the buffers must hold
-!> \param nb number of grid points per block
-!> \author S. Lehtola
-!> \note The buffers follow LibXC's own layout, i.e. the leading dimension is the
-!>       number of components of the quantity and the points run along the second
-!>       dimension. They are allocated once per worker and reused for every batch.
-!>       Only the orders this evaluation asks for are allocated: the third
-!>       derivatives alone are 130 components per point for a spin-polarized
-!>       meta-GGA, which a ground-state calculation would never fill.
-! **************************************************************************************************
-   SUBROUTINE libxc_worker_alloc_buffers(worker, family, nspin, grad_deriv, nb)
-      TYPE(libxc_worker_type), INTENT(INOUT)             :: worker
-      INTEGER, INTENT(IN)                                :: family, nspin, grad_deriv, nb
-
-      INTEGER                                            :: nl, np, ns
-      LOGICAL                                            :: is_gga, is_mgga, pol
-
-      pol = (nspin == XC_POLARIZED)
-      ! number of components per point, cf. the LibXC manual
-      IF (pol) THEN
-         np = 2   ! rho, vrho, lapl, tau, vlapl, vtau
-         ns = 3   ! sigma, vsigma, v2rho2, v2lapl2, v2tau2
-         nl = 4   ! v2rholapl, v2rhotau, v2lapltau, v3rho3
-      ELSE
-         np = 1
-         ns = 1
-         nl = 1
-      END IF
-
-      is_gga = .FALSE.
-      is_mgga = .FALSE.
-      SELECT CASE (family)
-      CASE (XC_FAMILY_GGA, XC_FAMILY_HYB_GGA)
-         is_gga = .TRUE.
-      CASE (XC_FAMILY_MGGA, XC_FAMILY_HYB_MGGA)
-         is_gga = .TRUE.
-         is_mgga = .TRUE.
-      END SELECT
-
-      worker%nb = nb
-
-      ! The energy density and the first derivatives are always staged: LibXC
-      ! writes them whatever higher order was asked for.
-      ALLOCATE (worker%rho(np, nb))
-      ALLOCATE (worker%exc(nb))
-      ALLOCATE (worker%vrho(np, nb))
-      IF (grad_deriv >= 2) ALLOCATE (worker%v2rho2(ns, nb))
-      IF (grad_deriv >= 3) ALLOCATE (worker%v3rho3(nl, nb))
-
-      IF (is_gga) THEN
-         ALLOCATE (worker%sigma(ns, nb))
-         ALLOCATE (worker%vsigma(ns, nb))
-         IF (pol) THEN
-            ALLOCATE (worker%nd(nb), worker%nda(nb), worker%ndb(nb))
-         END IF
-         IF (grad_deriv >= 2) THEN
-            ALLOCATE (worker%v2rhosigma(MERGE(6, 1, pol), nb))
-            ALLOCATE (worker%v2sigma2(MERGE(6, 1, pol), nb))
-         END IF
-         IF (grad_deriv >= 3) THEN
-            ALLOCATE (worker%v3rho2sigma(MERGE(9, 1, pol), nb))
-            ALLOCATE (worker%v3rhosigma2(MERGE(12, 1, pol), nb))
-            ALLOCATE (worker%v3sigma3(MERGE(10, 1, pol), nb))
-         END IF
-      END IF
-
-      IF (is_mgga) THEN
-         ALLOCATE (worker%lapl(np, nb))
-         ALLOCATE (worker%tau(np, nb))
-         ALLOCATE (worker%vlapl(np, nb))
-         ALLOCATE (worker%vtau(np, nb))
-         IF (grad_deriv >= 2) THEN
-            ALLOCATE (worker%v2rholapl(nl, nb))
-            ALLOCATE (worker%v2rhotau(nl, nb))
-            ALLOCATE (worker%v2sigmalapl(MERGE(6, 1, pol), nb))
-            ALLOCATE (worker%v2sigmatau(MERGE(6, 1, pol), nb))
-            ALLOCATE (worker%v2lapl2(ns, nb))
-            ALLOCATE (worker%v2lapltau(nl, nb))
-            ALLOCATE (worker%v2tau2(ns, nb))
-         END IF
-         IF (grad_deriv >= 3) THEN
-            #:for arr in v3_new
-               ALLOCATE (worker%${arr}$ (MERGE(${mgga_ncomp[arr]}$, 1, pol), nb))
-            #:endfor
-         END IF
-         ! LibXC leaves vlapl untouched for functionals that do not use the
-         ! Laplacian, and CP2K then ignores it; zero it once so it never holds
-         ! uninitialized memory.
-         worker%vlapl = 0.0_dp
-      END IF
-
-   END SUBROUTINE libxc_worker_alloc_buffers
-
-! **************************************************************************************************
 !> \brief Makes sure the placeholder for unproduced derivatives holds npoints values.
 !> \param npoints number of grid points in this evaluation
 !> \author S. Lehtola
@@ -951,7 +754,7 @@ CONTAINS
             ALLOCATE (ws%worker(nthreads))
 
             DO ithread = 1, nthreads
-               CALL xc_f03_func_init(ws%worker(ithread)%func, func_id, nspin)
+               CALL libxc_func_init_wrapper(ws%worker(ithread)%func, func_id, nspin)
                ws%worker(ithread)%info = xc_f03_func_get_info(ws%worker(ithread)%func)
                ws%worker(ithread)%is_init = .TRUE.
             END DO
@@ -1026,6 +829,7 @@ CONTAINS
       to%func_id = from%func_id
       to%nspin = from%nspin
       to%family = from%family
+      to%grad_deriv = from%grad_deriv
       to%has_laplace = from%has_laplace
       to%no_exc = from%no_exc
       to%has_params = from%has_params
@@ -1058,6 +862,8 @@ CONTAINS
                CALL xc_f03_func_end(libxc_cache(i)%worker(ithread)%func)
                libxc_cache(i)%worker(ithread)%is_init = .FALSE.
             END IF
+            ! Free the staging buffers and any device buffers they mirror.
+            CALL libxc_worker_free_buffers(libxc_cache(i)%worker(ithread))
          END DO
       END DO
       DEALLOCATE (libxc_cache)
@@ -1390,9 +1196,9 @@ CONTAINS
                                        e_ndrho_tau=e_ndrho_tau, e_laplace_rho_laplace_rho=e_laplace_rho_laplace_rho, &
                                        e_laplace_rho_tau=e_laplace_rho_tau, e_tau_tau=e_tau_tau, &
                                        e_rho_rho_rho=e_rho_rho_rho, &
-#:for descs, arr, idx in umgga_all
+                                       #:for descs, arr, idx in umgga_all
                                        e_${'_'.join(descs)}$=e_${'_'.join(descs)}$, &
-#:endfor
+                                       #:endfor
                                        grad_deriv=grad_deriv, npoints=npoints, &
                                        func_name=func_name, sc=func_scale, workers=workers)
 
@@ -1463,7 +1269,7 @@ CONTAINS
                                                              e_rhob_rhob_rhob, e_rhob_tau_a, e_rhob_tau_b, e_tau_a, e_tau_a_tau_a, &
                                                                 e_tau_a_tau_b, e_tau_b, e_tau_b_tau_b, laplace_rhoa, laplace_rhob, &
                                                                 norm_drho, norm_drhoa, norm_drhob, rhoa, rhob, tau_a, tau_b
-      ! derivatives w.r.t. the reduced gradients gamma_ij
+      ! derivatives w.r.t. the reduced gradients gamma_ij = grad rho_i . grad rho_j
       #:for descs, arr, idx in mgga_all
          REAL(KIND=dp), CONTIGUOUS, DIMENSION(:, :, :), POINTER :: e_${'_'.join(descs)}$
       #:endfor
@@ -1947,9 +1753,6 @@ CONTAINS
       END IF
 
 !$OMP PARALLEL DEFAULT(NONE), &
-      #:for descs, arr, idx in mgga_all
-!$OMP SHARED(e_${'_'.join(descs)}$),&
-      #:endfor
 !$OMP SHARED(rhoa,rhob,norm_drho,norm_drhoa,norm_drhob),&
 !$OMP SHARED(laplace_rhoa,laplace_rhob,tau_a,tau_b),&
 !$OMP SHARED(e_0,e_rhoa,e_rhob,e_ndrho,e_ndrhoa,e_ndrhob),&
@@ -1969,6 +1772,9 @@ CONTAINS
 !$OMP SHARED(e_laplace_rhoa_tau_a,e_laplace_rhoa_tau_b,e_laplace_rhob_tau_a,e_laplace_rhob_tau_b),&
 !$OMP SHARED(e_tau_a_tau_a,e_tau_a_tau_b,e_tau_b_tau_b),&
 !$OMP SHARED(e_rhoa_rhoa_rhoa,e_rhoa_rhoa_rhob,e_rhoa_rhob_rhob,e_rhob_rhob_rhob),&
+      #:for descs, arr, idx in mgga_all
+!$OMP SHARED(e_${'_'.join(descs)}$),&
+      #:endfor
 !$OMP SHARED(grad_deriv,npoints),&
 !$OMP SHARED(func_name,func_scale,workers)
 
@@ -2014,9 +1820,9 @@ CONTAINS
                                      e_rhoa_rhoa_rhob=e_rhoa_rhoa_rhob, &
                                      e_rhoa_rhob_rhob=e_rhoa_rhob_rhob, &
                                      e_rhob_rhob_rhob=e_rhob_rhob_rhob, &
-#:for descs, arr, idx in mgga_all
+                                      #:for descs, arr, idx in mgga_all
                                      e_${'_'.join(descs)}$=e_${'_'.join(descs)}$, &
-#:endfor
+                                      #:endfor
                                      grad_deriv=grad_deriv, npoints=npoints, &
                                      func_name=func_name, sc=func_scale, workers=workers)
 
@@ -2094,11 +1900,10 @@ CONTAINS
    INTEGER, INTENT(in)                                :: grad_deriv, npoints
    CHARACTER(LEN=default_string_length), INTENT(IN)   :: func_name
    REAL(KIND=dp), INTENT(in)                          :: sc
-   TYPE(libxc_worker_set_type), INTENT(INOUT), TARGET :: workers
+   TYPE(libxc_worker_set_type), INTENT(INOUT)         :: workers
 
    INTEGER                                            :: bsize, family, i, i0, ib, ii, ithread, &
                                                          nb, nblocks, nthreads
-   INTEGER(C_SIZE_T)                                  :: np
    LOGICAL                                            :: is_gga, is_mgga
 
    ithread = 0
@@ -2107,50 +1912,32 @@ CONTAINS
 !$ nthreads = omp_get_num_threads()
    CPASSERT(ithread < SIZE(workers%worker))
 
-   ! Blocks are capped by what the staging buffers were actually allocated for,
-   ! but shrunk when there are too few points to give every thread a block of its
-   ! own: small atomic grids would otherwise all be evaluated by thread 0.
-   bsize = MAX(1, MIN(workers%worker(1)%nb, (npoints + nthreads - 1)/nthreads))
+   ! On the GPU path the whole grid is handed to LibXC in a single call (no
+   ! block cap), so the per-thread staging and device buffers are grown to
+   ! npoints on demand; one large kernel and one synchronize beat hundreds of
+   ! cache-sized launches. The CPU/OpenMP blocking is left untouched: cap the
+   ! block at what the staging buffers were allocated for, but shrink it when
+   ! there are too few points to give every thread a block of its own, so small
+   ! atomic grids are not all evaluated by thread 0.
+   IF (libxc_is_gpu()) THEN
+      bsize = npoints
+   ELSE
+      bsize = MAX(1, MIN(workers%worker(1)%nb, (npoints + nthreads - 1)/nthreads))
+   END IF
    nblocks = (npoints + bsize - 1)/bsize
 
    family = workers%family
-   SELECT CASE (family)
-   CASE (XC_FAMILY_LDA, XC_FAMILY_HYB_LDA)
-      is_gga = .FALSE.
-      is_mgga = .FALSE.
-   CASE (XC_FAMILY_GGA, XC_FAMILY_HYB_GGA)
-      is_gga = .TRUE.
-      is_mgga = .FALSE.
-   CASE (XC_FAMILY_MGGA, XC_FAMILY_HYB_MGGA)
-      is_gga = .TRUE.
-      is_mgga = .TRUE.
-   CASE default
-      is_gga = .FALSE.
-      is_mgga = .FALSE.
-      CPABORT(TRIM(func_name)//": this XC_FAMILY is currently not supported.")
-   END SELECT
+   CALL libxc_family_flags(family, is_gga, is_mgga, TRIM(func_name))
 
-   ! Points below the density cutoff need no test here. The cutoffs were handed
-   ! to the functional object in xc_libxc_wrap_set_thresholds, and LibXC leaves
-   ! the outputs of the points it screens at zero, so accumulating them is a
-   ! no-op.
-   BLOCK
-      TYPE(libxc_worker_type), POINTER :: w
-      LOGICAL :: has_laplace, no_exc
-      REAL(KIND=dp) :: eps_rho, eps_tau
-
-      ! Avoid ASSOCIATE aliases across the orphaned OpenMP worksharing loop:
-      ! ifx can lose their bindings even at -O0.
-      w => workers%worker(ithread + 1)
-      has_laplace = workers%has_laplace
-      no_exc = workers%no_exc
-      eps_rho = workers%epsilon_rho
-      eps_tau = workers%epsilon_tau
-!$OMP    DO
+   ! Below the cutoff LibXC leaves outputs at zero, so no test is needed here.
+   ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace, &
+              no_exc => workers%no_exc, eps_rho => workers%epsilon_rho, &
+              eps_tau => workers%epsilon_tau)
+      !$OMP    DO
       DO ib = 1, nblocks
+         IF (libxc_is_gpu()) CALL libxc_worker_resize_cuda(w, workers%family, workers%nspin, npoints)
          i0 = (ib - 1)*bsize
          nb = MIN(bsize, npoints - i0)
-         np = INT(nb, KIND=C_SIZE_T)
 
          ! stage this block's inputs in LibXC's layout
          DO i = 1, nb
@@ -2167,13 +1954,9 @@ CONTAINS
                w%lapl(1, i) = laplace_rho(ii)
                w%tau(1, i) = tau(ii)
             END DO
-            ! Meta-GGAs are screened on the kinetic energy density as well as on the
-            ! density, and LibXC only screens on the latter. A point failing the tau
-            ! test is handed over with zero density, which makes LibXC screen it out
-            ! and leave its outputs at zero: what skipping it used to achieve. The
-            ! Fermi hole curvature bound tau >= sigma/(8*rho) follows in the same pass,
-            ! with the denominator floored at the cutoff so the division stays defined
-            ! for the points that are about to be screened.
+            ! LibXC only screens on the density, so screen on tau here by
+            ! zeroing rho; enforce the Fermi hole curvature bound tau >=
+            ! sigma/(8*rho) with the denominator floored at the cutoff.
             DO i = 1, nb
                IF (w%tau(1, i) <= eps_tau) w%rho(1, i) = 0.0_dp
                w%tau(1, i) = MAX(w%tau(1, i), &
@@ -2181,122 +1964,10 @@ CONTAINS
             END DO
          END IF
 
-         ! one LibXC call for the whole block
-         IF (is_mgga) THEN
-            SELECT CASE (grad_deriv)
-            CASE (0)
-               CALL xc_f03_mgga_exc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), w%exc(1))
-            CASE (1)
-               IF (no_exc) THEN
-                  CALL xc_f03_mgga_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                       w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1))
-                  w%exc(1:nb) = 0.0_dp
-               ELSE
-                  CALL xc_f03_mgga_exc_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                           w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1))
-               END IF
-            CASE (2)
-               IF (no_exc) THEN
-                  CALL xc_f03_mgga_vxc_fxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                           w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                           w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                           w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                           w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1))
-                  w%exc(1:nb) = 0.0_dp
-               ELSE
-                  CALL xc_f03_mgga(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                   w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                   w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                   w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                   w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1))
-               END IF
-            CASE (3)
-               IF (no_exc) THEN
-                  CALL xc_f03_mgga_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                               w%lapl(1, 1), w%tau(1, 1), &
-                                               w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                               w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                               w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                               w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1), &
-                                               w%v3rho3(1, 1), w%v3rho2sigma(1, 1), w%v3rho2lapl(1, 1), w%v3rho2tau(1, 1), &
-                                               w%v3rhosigma2(1, 1), w%v3rhosigmalapl(1, 1), w%v3rhosigmatau(1, 1), &
-                                               w%v3rholapl2(1, 1), w%v3rholapltau(1, 1), w%v3rhotau2(1, 1), &
-                                               w%v3sigma3(1, 1), w%v3sigma2lapl(1, 1), w%v3sigma2tau(1, 1), &
-                                               w%v3sigmalapl2(1, 1), w%v3sigmalapltau(1, 1), w%v3sigmatau2(1, 1), &
-                                               w%v3lapl3(1, 1), w%v3lapl2tau(1, 1), w%v3lapltau2(1, 1), w%v3tau3(1, 1))
-                  w%exc(1:nb) = 0.0_dp
-               ELSE
-                  CALL xc_f03_mgga_exc_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                                   w%lapl(1, 1), w%tau(1, 1), w%exc(1), &
-                                                   w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                                   w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                                   w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                                   w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1), &
-                                                   w%v3rho3(1, 1), w%v3rho2sigma(1, 1), w%v3rho2lapl(1, 1), w%v3rho2tau(1, 1), &
-                                                   w%v3rhosigma2(1, 1), w%v3rhosigmalapl(1, 1), w%v3rhosigmatau(1, 1), &
-                                                   w%v3rholapl2(1, 1), w%v3rholapltau(1, 1), w%v3rhotau2(1, 1), &
-                                                   w%v3sigma3(1, 1), w%v3sigma2lapl(1, 1), w%v3sigma2tau(1, 1), &
-                                                   w%v3sigmalapl2(1, 1), w%v3sigmalapltau(1, 1), w%v3sigmatau2(1, 1), &
-                                                   w%v3lapl3(1, 1), w%v3lapl2tau(1, 1), w%v3lapltau2(1, 1), w%v3tau3(1, 1))
-               END IF
-            END SELECT
-         ELSE IF (is_gga) THEN
-            SELECT CASE (grad_deriv)
-            CASE (0)
-               CALL xc_f03_gga_exc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%exc(1))
-            CASE (1)
-               IF (no_exc) THEN
-                  CALL xc_f03_gga_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%vrho(1, 1), w%vsigma(1, 1))
-                  w%exc(1:nb) = 0.0_dp
-               ELSE
-                  CALL xc_f03_gga_exc_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                          w%exc(1), w%vrho(1, 1), w%vsigma(1, 1))
-               END IF
-            CASE (2)
-               IF (no_exc) THEN
-                  CALL xc_f03_gga_vxc_fxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                          w%vrho(1, 1), w%vsigma(1, 1), &
-                                          w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1))
-                  w%exc(1:nb) = 0.0_dp
-               ELSE
-                  CALL xc_f03_gga_exc_vxc_fxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                              w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), &
-                                              w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1))
-               END IF
-            CASE (3)
-               IF (no_exc) THEN
-                  CALL xc_f03_gga_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                              w%vrho(1, 1), w%vsigma(1, 1), &
-                                              w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1), &
-                                              w%v3rho3(1, 1), w%v3rho2sigma(1, 1), &
-                                              w%v3rhosigma2(1, 1), w%v3sigma3(1, 1))
-                  w%exc(1:nb) = 0.0_dp
-               ELSE
-                  CALL xc_f03_gga_exc_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                                  w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), &
-                                                  w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1), &
-                                                  w%v3rho3(1, 1), w%v3rho2sigma(1, 1), &
-                                                  w%v3rhosigma2(1, 1), w%v3sigma3(1, 1))
-               END IF
-            END SELECT
-         ELSE
-            SELECT CASE (grad_deriv)
-            CASE (0)
-               CALL xc_f03_lda_exc(w%func, np, w%rho(1, 1), w%exc(1))
-            CASE (1)
-               CALL xc_f03_lda_exc_vxc(w%func, np, w%rho(1, 1), w%exc(1), w%vrho(1, 1))
-            CASE (2)
-               CALL xc_f03_lda_exc_vxc_fxc(w%func, np, w%rho(1, 1), &
-                                           w%exc(1), w%vrho(1, 1), w%v2rho2(1, 1))
-            CASE (3)
-               CALL xc_f03_lda(w%func, np, w%rho(1, 1), &
-                               w%exc(1), w%vrho(1, 1), w%v2rho2(1, 1), w%v3rho3(1, 1))
-            END SELECT
-         END IF
+         ! one LibXC call for the whole block, on the host or the device
+         CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
 
-         ! accumulate; each derivative is added by exactly one loop, selected by
-         ! the order requested and the family, not by a per-branch copy of the whole
-         ! block scaffolding
+         ! accumulate; each derivative is added by exactly one loop
          IF (grad_deriv >= 0) THEN
             DO i = 1, nb
                ii = i0 + i
@@ -2312,6 +1983,9 @@ CONTAINS
                DO i = 1, nb
                   ii = i0 + i
                   e_ndrho(ii) = e_ndrho(ii) + sc*2.0_dp*w%vsigma(1, i)*norm_drho(ii)
+               END DO
+               DO i = 1, nb
+                  ii = i0 + i
                   e_gamma(ii) = e_gamma(ii) + sc*w%vsigma(1, i)
                END DO
             END IF
@@ -2339,6 +2013,9 @@ CONTAINS
                   e_ndrho_rho(ii) = e_ndrho_rho(ii) + sc*2.0_dp*w%v2rhosigma(1, i)*norm_drho(ii)
                   e_ndrho_ndrho(ii) = e_ndrho_ndrho(ii) + &
                                       sc*2.0_dp*(2.0_dp*w%sigma(1, i)*w%v2sigma2(1, i) + w%vsigma(1, i))
+               END DO
+               DO i = 1, nb
+                  ii = i0 + i
                   #:for descs, arr, idx in ugga_fill_2
                      e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
                   #:endfor
@@ -2389,7 +2066,7 @@ CONTAINS
          END IF
       END DO
 !$OMP    END DO
-   END BLOCK
+   END ASSOCIATE
 
 END SUBROUTINE libxc_spin_unpolarized_calc
 #endif
@@ -2500,9 +2177,9 @@ SUBROUTINE libxc_spin_polarized_calc(rhoa, rhob, norm_drho, norm_drhoa, &
                                      e_tau_a_tau_a, e_tau_a_tau_b, e_tau_b_tau_b, &
                                      e_rhoa_rhoa_rhoa, e_rhoa_rhoa_rhob, &
                                      e_rhoa_rhob_rhob, e_rhob_rhob_rhob, &
-#:for descs, arr, idx in mgga_all
+                                        #:for descs, arr, idx in mgga_all
                                      e_${'_'.join(descs)}$, &
-#:endfor
+                                        #:endfor
                                      grad_deriv, npoints, func_name, sc, workers)
 
 REAL(KIND=dp), DIMENSION(*), INTENT(IN)            :: rhoa, rhob, norm_drho, norm_drhoa, &
@@ -2521,19 +2198,16 @@ REAL(KIND=dp), DIMENSION(*), INTENT(INOUT) :: e_ndrhoa_laplace_rhob, e_ndrhob_la
                                               e_laplace_rhob_laplace_rhob, e_laplace_rhoa_tau_a, e_laplace_rhoa_tau_b, &
                                           e_laplace_rhob_tau_a, e_laplace_rhob_tau_b, e_tau_a_tau_a, e_tau_a_tau_b, e_tau_b_tau_b, &
                                               e_rhoa_rhoa_rhoa, e_rhoa_rhoa_rhob, e_rhoa_rhob_rhob, e_rhob_rhob_rhob
-! Derivatives with respect to the reduced gradients gamma_ij; these are
-! LibXC's own sigma derivatives, copied through without a chain rule.
 #:for descs, arr, idx in mgga_all
    REAL(KIND=dp), DIMENSION(*), INTENT(INOUT)         :: e_${'_'.join(descs)}$
 #:endfor
 INTEGER, INTENT(in)                                :: grad_deriv, npoints
 CHARACTER(LEN=default_string_length), INTENT(IN)   :: func_name
 REAL(KIND=dp), INTENT(in)                          :: sc
-TYPE(libxc_worker_set_type), INTENT(INOUT), TARGET :: workers
+TYPE(libxc_worker_set_type), INTENT(INOUT)         :: workers
 
 INTEGER                                            :: bsize, family, i, i0, ib, ii, ithread, &
                                                       nb, nblocks, nthreads
-INTEGER(C_SIZE_T)                                  :: np
 LOGICAL                                            :: is_gga, is_mgga
 
 ithread = 0
@@ -2542,44 +2216,31 @@ nthreads = 1
 !$ nthreads = omp_get_num_threads()
 CPASSERT(ithread < SIZE(workers%worker))
 
-bsize = MAX(1, MIN(workers%worker(1)%nb, (npoints + nthreads - 1)/nthreads))
+! See the spin-unpolarized calc: the device is activated per evaluation.
+
+! See the spin-unpolarized calc: on the GPU path the whole grid is evaluated
+! in a single LibXC call, while the CPU/OpenMP path keeps its per-footprint
+! block cap (shrunk so every thread gets a block on small grids).
+IF (libxc_is_gpu()) THEN
+   bsize = npoints
+ELSE
+   bsize = MAX(1, MIN(workers%worker(1)%nb, (npoints + nthreads - 1)/nthreads))
+END IF
 nblocks = (npoints + bsize - 1)/bsize
 
 family = workers%family
-SELECT CASE (family)
-CASE (XC_FAMILY_LDA, XC_FAMILY_HYB_LDA)
-   is_gga = .FALSE.
-   is_mgga = .FALSE.
-CASE (XC_FAMILY_GGA, XC_FAMILY_HYB_GGA)
-   is_gga = .TRUE.
-   is_mgga = .FALSE.
-CASE (XC_FAMILY_MGGA, XC_FAMILY_HYB_MGGA)
-   is_gga = .TRUE.
-   is_mgga = .TRUE.
-CASE default
-   is_gga = .FALSE.
-   is_mgga = .FALSE.
-   CPABORT(TRIM(func_name)//": this XC_FAMILY is currently not supported.")
-END SELECT
+CALL libxc_family_flags(family, is_gga, is_mgga, TRIM(func_name))
 
-! As in the spin-unpolarized case the density and kinetic energy density
-! cutoffs are applied by LibXC itself.
-BLOCK
-   TYPE(libxc_worker_type), POINTER :: w
-   LOGICAL :: has_laplace, no_exc
-   REAL(KIND=dp) :: eps_rho, eps_tau
-
-! Keep the per-thread bindings explicit, as in the spin-unpolarized routine.
-   w => workers%worker(ithread + 1)
-   has_laplace = workers%has_laplace
-   no_exc = workers%no_exc
-   eps_rho = workers%epsilon_rho
-   eps_tau = workers%epsilon_tau
+! Density and tau cutoffs are applied by LibXC itself, as in the
+! spin-unpolarized case.
+ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace, &
+           no_exc => workers%no_exc, eps_rho => workers%epsilon_rho, &
+           eps_tau => workers%epsilon_tau)
 !$OMP    DO
    DO ib = 1, nblocks
+      IF (libxc_is_gpu()) CALL libxc_worker_resize_cuda(w, workers%family, workers%nspin, npoints)
       i0 = (ib - 1)*bsize
       nb = MIN(bsize, npoints - i0)
-      np = INT(nb, KIND=C_SIZE_T)
 
       ! stage this block's inputs in LibXC's layout
       DO i = 1, nb
@@ -2588,7 +2249,7 @@ BLOCK
          w%rho(2, i) = MAX(rhob(ii), 0.0_dp)
       END DO
       IF (is_gga) THEN
-         ! CP2K works with the norms of the gradients, LibXC with their contractions
+         ! CP2K works with gradient norms, LibXC with their contractions.
          DO i = 1, nb
             ii = i0 + i
             w%nda(i) = MAX(norm_drhoa(ii), EPSILON(0.0_dp)*1.e4_dp)
@@ -2607,9 +2268,9 @@ BLOCK
             w%tau(1, i) = MAX(tau_a(ii), 0.0_dp)
             w%tau(2, i) = MAX(tau_b(ii), 0.0_dp)
          END DO
-         ! screening on tau and the Fermi hole curvature bound, per spin channel;
-         ! see the spin-unpolarized routine. The tau test is on the sum of the two
-         ! channels, as the density test is.
+         ! Tau screening and Fermi hole curvature bound, per spin channel
+         ! (see the spin-unpolarized routine); the tau test uses the sum
+         ! of the channels, as the density test does.
          DO i = 1, nb
             IF (w%tau(1, i) + w%tau(2, i) <= eps_tau) THEN
                w%rho(1, i) = 0.0_dp
@@ -2622,121 +2283,10 @@ BLOCK
          END DO
       END IF
 
-      ! one LibXC call for the whole block
-      IF (is_mgga) THEN
-         SELECT CASE (grad_deriv)
-         CASE (0)
-            CALL xc_f03_mgga_exc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), w%exc(1))
-         CASE (1)
-            IF (no_exc) THEN
-               CALL xc_f03_mgga_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                    w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1))
-               w%exc(1:nb) = 0.0_dp
-            ELSE
-               CALL xc_f03_mgga_exc_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                        w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1))
-            END IF
-         CASE (2)
-            IF (no_exc) THEN
-               CALL xc_f03_mgga_vxc_fxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                        w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                        w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                        w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                        w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1))
-               w%exc(1:nb) = 0.0_dp
-            ELSE
-               CALL xc_f03_mgga(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%lapl(1, 1), w%tau(1, 1), &
-                                w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1))
-            END IF
-         CASE (3)
-            IF (no_exc) THEN
-               CALL xc_f03_mgga_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                            w%lapl(1, 1), w%tau(1, 1), &
-                                            w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                            w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                            w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                            w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1), &
-                                            w%v3rho3(1, 1), w%v3rho2sigma(1, 1), w%v3rho2lapl(1, 1), w%v3rho2tau(1, 1), &
-                                            w%v3rhosigma2(1, 1), w%v3rhosigmalapl(1, 1), w%v3rhosigmatau(1, 1), &
-                                            w%v3rholapl2(1, 1), w%v3rholapltau(1, 1), w%v3rhotau2(1, 1), &
-                                            w%v3sigma3(1, 1), w%v3sigma2lapl(1, 1), w%v3sigma2tau(1, 1), &
-                                            w%v3sigmalapl2(1, 1), w%v3sigmalapltau(1, 1), w%v3sigmatau2(1, 1), &
-                                            w%v3lapl3(1, 1), w%v3lapl2tau(1, 1), w%v3lapltau2(1, 1), w%v3tau3(1, 1))
-               w%exc(1:nb) = 0.0_dp
-            ELSE
-               CALL xc_f03_mgga_exc_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                                w%lapl(1, 1), w%tau(1, 1), w%exc(1), &
-                                                w%vrho(1, 1), w%vsigma(1, 1), w%vlapl(1, 1), w%vtau(1, 1), &
-                                                w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2rholapl(1, 1), &
-                                                w%v2rhotau(1, 1), w%v2sigma2(1, 1), w%v2sigmalapl(1, 1), &
-                                                w%v2sigmatau(1, 1), w%v2lapl2(1, 1), w%v2lapltau(1, 1), w%v2tau2(1, 1), &
-                                                w%v3rho3(1, 1), w%v3rho2sigma(1, 1), w%v3rho2lapl(1, 1), w%v3rho2tau(1, 1), &
-                                                w%v3rhosigma2(1, 1), w%v3rhosigmalapl(1, 1), w%v3rhosigmatau(1, 1), &
-                                                w%v3rholapl2(1, 1), w%v3rholapltau(1, 1), w%v3rhotau2(1, 1), &
-                                                w%v3sigma3(1, 1), w%v3sigma2lapl(1, 1), w%v3sigma2tau(1, 1), &
-                                                w%v3sigmalapl2(1, 1), w%v3sigmalapltau(1, 1), w%v3sigmatau2(1, 1), &
-                                                w%v3lapl3(1, 1), w%v3lapl2tau(1, 1), w%v3lapltau2(1, 1), w%v3tau3(1, 1))
-            END IF
-         END SELECT
-      ELSE IF (is_gga) THEN
-         SELECT CASE (grad_deriv)
-         CASE (0)
-            CALL xc_f03_gga_exc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%exc(1))
-         CASE (1)
-            IF (no_exc) THEN
-               CALL xc_f03_gga_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), w%vrho(1, 1), w%vsigma(1, 1))
-               w%exc(1:nb) = 0.0_dp
-            ELSE
-               CALL xc_f03_gga_exc_vxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                       w%exc(1), w%vrho(1, 1), w%vsigma(1, 1))
-            END IF
-         CASE (2)
-            IF (no_exc) THEN
-               CALL xc_f03_gga_vxc_fxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                       w%vrho(1, 1), w%vsigma(1, 1), &
-                                       w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1))
-               w%exc(1:nb) = 0.0_dp
-            ELSE
-               CALL xc_f03_gga_exc_vxc_fxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                           w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), &
-                                           w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1))
-            END IF
-         CASE (3)
-            IF (no_exc) THEN
-               CALL xc_f03_gga_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                           w%vrho(1, 1), w%vsigma(1, 1), &
-                                           w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1), &
-                                           w%v3rho3(1, 1), w%v3rho2sigma(1, 1), &
-                                           w%v3rhosigma2(1, 1), w%v3sigma3(1, 1))
-               w%exc(1:nb) = 0.0_dp
-            ELSE
-               CALL xc_f03_gga_exc_vxc_fxc_kxc(w%func, np, w%rho(1, 1), w%sigma(1, 1), &
-                                               w%exc(1), w%vrho(1, 1), w%vsigma(1, 1), &
-                                               w%v2rho2(1, 1), w%v2rhosigma(1, 1), w%v2sigma2(1, 1), &
-                                               w%v3rho3(1, 1), w%v3rho2sigma(1, 1), &
-                                               w%v3rhosigma2(1, 1), w%v3sigma3(1, 1))
-            END IF
-         END SELECT
-      ELSE
-         SELECT CASE (grad_deriv)
-         CASE (0)
-            CALL xc_f03_lda_exc(w%func, np, w%rho(1, 1), w%exc(1))
-         CASE (1)
-            CALL xc_f03_lda_exc_vxc(w%func, np, w%rho(1, 1), w%exc(1), w%vrho(1, 1))
-         CASE (2)
-            CALL xc_f03_lda_exc_vxc_fxc(w%func, np, w%rho(1, 1), &
-                                        w%exc(1), w%vrho(1, 1), w%v2rho2(1, 1))
-         CASE (3)
-            CALL xc_f03_lda(w%func, np, w%rho(1, 1), &
-                            w%exc(1), w%vrho(1, 1), w%v2rho2(1, 1), w%v3rho3(1, 1))
-         END SELECT
-      END IF
-
-      ! accumulate; one loop per group of derivatives, selected by the order
-      ! requested and the family
+      ! one LibXC call for the whole block, on the host or the device
+      CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
+      ! accumulate; one loop per group of derivatives, selected by the
+      ! order requested and the family
       IF (grad_deriv >= 0) THEN
          DO i = 1, nb
             ii = i0 + i
@@ -2860,6 +2410,15 @@ BLOCK
             END DO
          END IF
       END IF
+      IF (grad_deriv >= 3) THEN
+         DO i = 1, nb
+            ii = i0 + i
+            e_rhoa_rhoa_rhoa(ii) = e_rhoa_rhoa_rhoa(ii) + sc*w%v3rho3(1, i)
+            e_rhoa_rhoa_rhob(ii) = e_rhoa_rhoa_rhob(ii) + sc*w%v3rho3(2, i)
+            e_rhoa_rhob_rhob(ii) = e_rhoa_rhob_rhob(ii) + sc*w%v3rho3(3, i)
+            e_rhob_rhob_rhob(ii) = e_rhob_rhob_rhob(ii) + sc*w%v3rho3(4, i)
+         END DO
+      END IF
       IF (grad_deriv >= 1 .AND. is_gga) THEN
          DO i = 1, nb
             ii = i0 + i
@@ -2895,25 +2454,14 @@ BLOCK
       IF (grad_deriv >= 3 .AND. is_gga .AND. .NOT. is_mgga) THEN
          DO i = 1, nb
             ii = i0 + i
-            #! the pure-density third derivatives are filled by the block below, which
-            #! runs for every family; adding them here as well would double-count them
             #:for descs, arr, idx in gamma_only_3
                e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
             #:endfor
          END DO
       END IF
-      IF (grad_deriv >= 3) THEN
-         DO i = 1, nb
-            ii = i0 + i
-            e_rhoa_rhoa_rhoa(ii) = e_rhoa_rhoa_rhoa(ii) + sc*w%v3rho3(1, i)
-            e_rhoa_rhoa_rhob(ii) = e_rhoa_rhoa_rhob(ii) + sc*w%v3rho3(2, i)
-            e_rhoa_rhob_rhob(ii) = e_rhoa_rhob_rhob(ii) + sc*w%v3rho3(3, i)
-            e_rhob_rhob_rhob(ii) = e_rhob_rhob_rhob(ii) + sc*w%v3rho3(4, i)
-         END DO
-      END IF
    END DO
 !$OMP    END DO
-END BLOCK
+END ASSOCIATE
 
 END SUBROUTINE libxc_spin_polarized_calc
 #endif

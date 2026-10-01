@@ -42,6 +42,7 @@ xTB/regtest-gfn0-m2                                         libdftd4
 QS/regtest-debug-6                                          libint !ifx
 Fist/regtest-7-2
 QS/regtest-nlcc-1                                           libint libxc !ifx
+QS/regtest-nlcc-2                                           libint libxc !ifx
 QS/regtest-ot-2
 QS/regtest-ot
 QS/regtest-gpw-1                                            libint libvori !ifx
@@ -65,6 +66,7 @@ QS/regtest-tddfpt-force                                     libint !ifx
 QS/regtest-embed                                            libint !ifx
 QS/regtest-acc-4                                            libint libxc !ifx
 QS/regtest-plus_u
+QS/regtest-plus_u-kp
 SE/regtest
 Fist/regtest-4
 Fist/regtest-opt
@@ -106,6 +108,7 @@ QS/regtest-dcdft-stress                                     libint libxc !ifx
 QS/regtest-hfx-ri-2                                         libint libxc !ifx
 QS/regtest-LnPP2
 QS/regtest-ot-3-1
+QS/regtest-rVV10                                             libxc
 QMMM/SE/regtest
 QS/regtest-harris-kp
 QS/regtest-rtbse-linearized-rirs                            libint !ifx
@@ -226,6 +229,7 @@ QS/regtest-ps-implicit-2-2
 Fist/regtest-5-vib                                          mpiranks==1||mpiranks%2==0
 Fist/regtest-14
 QS/regtest-kind
+QS/regtest-upf
 QS/regtest-ri-laplace-mp2-cubic-2                           libint libxc !ifx
 QS/regtest-gauxc-gpw-mol                                    gauxc
 QS/regtest-lsroks                                           libint !ifx
@@ -288,7 +292,7 @@ QS/regtest-mom-2                                            libint !ifx
 QS/regtest-nonortho
 Fist/regtest-13
 xTB/regtest-debug
-QS/regtest-gpw-7                                            mpiranks<4
+QS/regtest-gpw-7
 QS/regtest-mtlr
 QS/regtest-polar
 QS/regtest-ecp-2
@@ -418,6 +422,7 @@ xTB/regtest-stda                                            tblite
 LIBTEST/dbm
 QS/regtest-rs-dhft                                          libint libxc !ifx
 QS/regtest-gauxc-api-debug                                  gauxc
+QS/regtest-gauxc-gradients                                  gauxc_onedft_gradients
 QS/regtest-gauxc-gpw-kp                                     gauxc
 QS/regtest-double-hybrid-grad
 QS/regtest-pao-3
@@ -504,3 +509,4 @@ QS/regtest-fftw                                             fftw3
 QS/regtest-wfn-restart
 Fist/regtest-plumed2                                        plumed2
 QS/regtest-topology
+QS/regtest-fde

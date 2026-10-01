@@ -16,6 +16,7 @@ MODULE rpa_gw_sigma_x
    USE admm_methods,                    ONLY: admm_mo_merge_ks_matrix
    USE admm_types,                      ONLY: admm_type,&
                                               get_admm_env
+   USE bse_util,                        ONLY: bse_window_from_mos
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_scale_and_add_fm
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_info,&
@@ -24,8 +25,8 @@ MODULE rpa_gw_sigma_x
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_desymmetrize, dbcsr_multiply, dbcsr_p_type, &
-        dbcsr_release, dbcsr_release_p, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, &
-        dbcsr_type_symmetric
+        dbcsr_release, dbcsr_release_p, dbcsr_scale, dbcsr_set, dbcsr_type, &
+        dbcsr_type_antisymmetric, dbcsr_type_symmetric
    USE cp_dbcsr_contrib,                ONLY: dbcsr_get_diag
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
@@ -36,7 +37,6 @@ MODULE rpa_gw_sigma_x
                                               open_file
    USE cp_fm_struct,                    ONLY: cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
-                                              cp_fm_get_info,&
                                               cp_fm_release,&
                                               cp_fm_type
    USE hfx_energy_potential,            ONLY: integrate_four_center
@@ -64,8 +64,7 @@ MODULE rpa_gw_sigma_x
                                               z_one,&
                                               z_zero
    USE message_passing,                 ONLY: mp_para_env_type
-   USE mo_window,                       ONLY: determine_mo_window,&
-                                              mo_window_type
+   USE mo_window,                       ONLY: mo_window_type
    USE mp2_integrals,                   ONLY: compute_kpoints
    USE mp2_ri_2c,                       ONLY: trunc_coulomb_for_exchange
    USE mp2_types,                       ONLY: mp2_type
@@ -123,10 +122,10 @@ CONTAINS
 
       CHARACTER(4)                                       :: occ_virt
       CHARACTER(LEN=40)                                  :: line
-      INTEGER :: dimen, gw_corr_lev_occ, gw_corr_lev_tot, gw_corr_lev_virt, handle, homo, &
-         homo_reduced_bse, i_img, ikp, irep, ispin, iunit, max_corr_lev_occ, max_corr_lev_virt, &
-         myfun, myfun_aux, myfun_prim, n_level_gw, n_level_gw_ref, n_rep_hf, nkp, nkp_Sigma, nmo, &
-         nspins, print_exx, virtual_reduced_bse
+      INTEGER :: corr_mos_occ_input, corr_mos_virt_input, dimen, gw_corr_lev_occ, gw_corr_lev_tot, &
+         gw_corr_lev_virt, handle, homo, homo_reduced_bse, i_img, ikp, irep, ispin, iunit, &
+         max_corr_lev_occ, max_corr_lev_virt, myfun, myfun_aux, myfun_prim, n_level_gw, &
+         n_level_gw_ref, n_rep_hf, nkp, nkp_Sigma, nmo, nspins, print_exx, virtual_reduced_bse
       LOGICAL :: calc_ints, charge_constrain_tmp, do_admm_rpa, do_hfx, do_kpoints_cubic_RPA, &
          do_kpoints_from_Gamma, do_ri_Sigma_x, really_read_line
       REAL(KIND=dp) :: E_GAP_GW, E_HOMO_GW, E_LUMO_GW, eh1, ehfx, eigval_dft, eigval_hf_at_dft, &
@@ -136,7 +135,6 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: Eigenval_kp_HF_at_DFT, vec_Sigma_x
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: Eigenval_kp, vec_Sigma_x_minus_vxc_gw, &
                                                             vec_Sigma_x_minus_vxc_gw_im
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), ALLOCATABLE, DIMENSION(:)      :: mat_exchange_for_kp_from_gamma
@@ -406,6 +404,22 @@ CONTAINS
          END IF
       END DO
 
+      ! static COHSEX needs the full AO matrix v^xc_μν (not only its diagonal in the MO basis).
+      ! At this point
+      !   (Σ^x - v^xc)_μν = h^KS,noXC_μν - h^KS_μν = -v^xc_μν
+      ! (KS matrix without and with XC; for a hybrid, v^xc contains its fraction of HFX);
+      ! the exchange self-energy Σ^x_μν (HFX) is added below if not RI_SIGMA_X.
+      ! Stored: mp2_env%ri_g0w0%matrix_vxc = v^xc_μν
+      IF (mp2_env%ri_g0w0%do_static_cohsex .AND. .NOT. do_kpoints_cubic_RPA) THEN
+         ALLOCATE (mp2_env%ri_g0w0%matrix_vxc(nspins))
+         DO ispin = 1, nspins
+            ALLOCATE (mp2_env%ri_g0w0%matrix_vxc(ispin)%matrix)
+            CALL dbcsr_create(mp2_env%ri_g0w0%matrix_vxc(ispin)%matrix, template=matrix_ks(1)%matrix)
+            CALL dbcsr_copy(mp2_env%ri_g0w0%matrix_vxc(ispin)%matrix, matrix_sigma_x_minus_vxc(ispin, 1)%matrix)
+            CALL dbcsr_scale(mp2_env%ri_g0w0%matrix_vxc(ispin)%matrix, -1.0_dp)
+         END DO
+      END IF
+
       IF (do_kpoints_cubic_RPA) THEN
 
          CALL transform_sigma_x_minus_vxc_to_MO_basis(kpoints, matrix_sigma_x_minus_vxc, &
@@ -506,8 +520,10 @@ CONTAINS
          END DO
 
          ! safe matrix_sigma_x_minus_vxc for later: for example, we will transform matrix_sigma_x_minus_vxc
-         ! to T-cell index and then to k-points for band structure calculation
-         IF (do_kpoints_from_Gamma) THEN
+         ! to T-cell index and then to k-points for band structure calculation; static COHSEX needs the
+         ! off-diagonal MO elements (Σ^x - v^xc)_mn = Σ_μν C_μm (Σ^x - v^xc)_μν C_νn, stored in
+         ! mp2_env%ri_g0w0%matrix_sigma_x_minus_vxc (= -v^xc_μν with RI_SIGMA_X)
+         IF (do_kpoints_from_Gamma .OR. mp2_env%ri_g0w0%do_static_cohsex) THEN
             ! not yet there: open shell
             ALLOCATE (qs_env%mp2_env%ri_g0w0%matrix_sigma_x_minus_vxc(nspins))
             DO ispin = 1, nspins
@@ -525,12 +541,21 @@ CONTAINS
          CALL dbcsr_desymmetrize(matrix_ks(1)%matrix, mo_coeff_b)
          CALL dbcsr_set(mo_coeff_b, 0.0_dp)
 
+         ! the requested counts: the loop overwrites mp2_env%ri_g0w0%corr_mos_* with spin 1's resolved ones
+         corr_mos_occ_input = mp2_env%ri_g0w0%corr_mos_occ
+         corr_mos_virt_input = mp2_env%ri_g0w0%corr_mos_virt
+         ! the BSE's window, one absolute MO range for every spin: each spin corrects the levels the BSE reads,
+         ! and the corrected totals agree between the spins; the BSE warns about a combined window itself
+         IF (mp2_env%bse%do_bse) THEN
+            CALL bse_window_from_mos(mos_mp2, mp2_env%bse%bse_cutoff_occ, mp2_env%bse%bse_cutoff_empty, &
+                                     bse_window, warn=.FALSE.)
+         END IF
+
          ! Transform matrix_sigma_x_minus_vxc to MO basis
          DO ispin = 1, nspins
 
             CALL get_mo_set(mo_set=mos_mp2(ispin), &
                             mo_coeff=mo_coeff, &
-                            eigenvalues=mo_eigenvalues, &
                             nmo=nmo, &
                             homo=homo, &
                             nao=dimen)
@@ -557,8 +582,8 @@ CONTAINS
                CALL dbcsr_set(matrix_tmp_2, 0.0_dp)
             END IF
 
-            gw_corr_lev_occ = mp2_env%ri_g0w0%corr_mos_occ
-            gw_corr_lev_virt = mp2_env%ri_g0w0%corr_mos_virt
+            gw_corr_lev_occ = corr_mos_occ_input
+            gw_corr_lev_virt = corr_mos_virt_input
 
             ! If SVD is used to invert overlap matrix (for CHOLESKY OFF), some MOs are removed
             ! Therefore, setting the number of gw_corr_lev_virt simply to dimen - homo leads to index problems
@@ -589,8 +614,6 @@ CONTAINS
                END IF
 
                ! Obtain indices from DFT if gw_corr... are set to -2
-               CALL determine_mo_window(mo_eigenvalues, nmo, homo, &
-                                        mp2_env%bse%bse_cutoff_occ, mp2_env%bse%bse_cutoff_empty, bse_window)
                homo_reduced_bse = homo - bse_window%first_mo + 1
                virtual_reduced_bse = bse_window%last_mo - homo
                IF (gw_corr_lev_occ == -2) THEN
@@ -854,16 +877,17 @@ CONTAINS
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
       REAL(KIND=dp)                                      :: imval, reval
-      TYPE(cp_cfm_type)                                  :: cfm_mos, cfm_sigma_x_minus_vxc, &
+      TYPE(cp_cfm_type)                                  :: cfm_sigma_x_minus_vxc, &
                                                             cfm_sigma_x_minus_vxc_mo_basis, cfm_tmp
+      TYPE(cp_cfm_type), POINTER                         :: cmo_coeff
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type)                                   :: fwork_im, fwork_re
       TYPE(kpoint_env_type), POINTER                     :: kp
-      TYPE(mo_set_type), POINTER                         :: mo_set, mo_set_im, mo_set_re
+      TYPE(mo_set_type), POINTER                         :: mo_set
 
       CALL timeset(routineN, handle)
 
-      mo_set => kpoints%kp_env(1)%kpoint_env%mos(1, 1)
+      mo_set => kpoints%kp_env(1)%kpoint_env%mos(1)
       CALL get_mo_set(mo_set, nmo=nmo)
 
       nspins = SIZE(matrix_sigma_x_minus_vxc, 1)
@@ -879,10 +903,9 @@ CONTAINS
       ALLOCATE (vec_Sigma_x_minus_vxc_gw_im(nmo, nspins, nkp))
       vec_Sigma_x_minus_vxc_gw_im = 0.0_dp
 
-      CALL cp_fm_get_info(mo_set%mo_coeff, matrix_struct=matrix_struct)
+      CALL cp_cfm_get_info(mo_set%cmo_coeff, matrix_struct=matrix_struct)
       CALL cp_fm_create(fwork_re, matrix_struct)
       CALL cp_fm_create(fwork_im, matrix_struct)
-      CALL cp_cfm_create(cfm_mos, matrix_struct)
       CALL cp_cfm_create(cfm_sigma_x_minus_vxc, matrix_struct)
       CALL cp_cfm_create(cfm_sigma_x_minus_vxc_mo_basis, matrix_struct)
       CALL cp_cfm_create(cfm_tmp, matrix_struct)
@@ -907,19 +930,14 @@ CONTAINS
             CALL cp_cfm_scale_and_add_fm(z_zero, cfm_sigma_x_minus_vxc, z_one, fwork_re)
             CALL cp_cfm_scale_and_add_fm(z_one, cfm_sigma_x_minus_vxc, gaussi, fwork_im)
 
-            ! get real part (1) and imag. part (2) of the mo coeffs
-            mo_set_re => kp%mos(1, ispin)
-            mo_set_im => kp%mos(2, ispin)
-
-            CALL cp_cfm_scale_and_add_fm(z_zero, cfm_mos, z_one, mo_set_re%mo_coeff)
-            CALL cp_cfm_scale_and_add_fm(z_one, cfm_mos, gaussi, mo_set_im%mo_coeff)
+            cmo_coeff => kp%mos(ispin)%cmo_coeff
 
             ! tmp = V(k)*C(k)
             CALL parallel_gemm('N', 'N', nmo, nmo, nmo, z_one, cfm_sigma_x_minus_vxc, &
-                               cfm_mos, z_zero, cfm_tmp)
+                               cmo_coeff, z_zero, cfm_tmp)
 
             ! V_n(k) = C^H(k)*tmp
-            CALL parallel_gemm('C', 'N', nmo, nmo, nmo, z_one, cfm_mos, cfm_tmp, &
+            CALL parallel_gemm('C', 'N', nmo, nmo, nmo, z_one, cmo_coeff, cfm_tmp, &
                                z_zero, cfm_sigma_x_minus_vxc_mo_basis)
 
             DO jjB = 1, ncol_local
@@ -952,7 +970,7 @@ CONTAINS
       CALL para_env%sum(vec_Sigma_x_minus_vxc_gw_im)
       ! also adjust in the case of kpoints too big gw_corr_lev_occ and gw_corr_lev_virt
       DO ispin = 1, nspins
-         CALL get_mo_set(mo_set=kpoints%kp_env(1)%kpoint_env%mos(ispin, 1), &
+         CALL get_mo_set(mo_set=kpoints%kp_env(1)%kpoint_env%mos(ispin), &
                          homo=homo, nao=dimen)
          ! If SVD is used to invert overlap matrix (for CHOLESKY OFF), some MOs are removed
          ! Therefore, setting the number of gw_corr_lev_virt simply to dimen - homo leads to index problems
@@ -983,7 +1001,6 @@ CONTAINS
 
       CALL cp_fm_release(fwork_re)
       CALL cp_fm_release(fwork_im)
-      CALL cp_cfm_release(cfm_mos)
       CALL cp_cfm_release(cfm_sigma_x_minus_vxc)
       CALL cp_cfm_release(cfm_sigma_x_minus_vxc_mo_basis)
       CALL cp_cfm_release(cfm_tmp)

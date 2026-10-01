@@ -29,16 +29,16 @@ MODULE negf_methods
    USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set
    USE cp_files,                        ONLY: close_file,&
                                               open_file
-   USE cp_fm_basic_linalg,              ONLY: cp_fm_scale,&
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_add_on_diag,&
+                                              cp_fm_scale,&
                                               cp_fm_scale_and_add,&
                                               cp_fm_trace
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: &
-        cp_fm_add_to_element, cp_fm_copy_general, cp_fm_create, cp_fm_get_info, &
-        cp_fm_get_submatrix, cp_fm_release, cp_fm_set_all, cp_fm_set_submatrix, cp_fm_to_fm, &
-        cp_fm_type
+        cp_fm_copy_general, cp_fm_create, cp_fm_get_info, cp_fm_get_submatrix, cp_fm_release, &
+        cp_fm_set_all, cp_fm_set_submatrix, cp_fm_to_fm, cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type
@@ -221,6 +221,7 @@ CONTAINS
 
       ! print levels, are used if log_unit > 0
       ! defined for all parallel MPI processes
+      debug_output = .FALSE.
       CALL section_vals_val_get(negf_section, "PRINT%PROGRAM_RUN_INFO%PRINT_LEVEL", i_val=print_level)
       SELECT CASE (print_level)
       CASE (high_print_level)
@@ -230,7 +231,6 @@ CONTAINS
          debug_output = .TRUE.
       CASE DEFAULT
          verbose_output = .FALSE.
-         debug_output = .FALSE.
       END SELECT
 
       IF (log_unit > 0) THEN
@@ -769,11 +769,8 @@ CONTAINS
          negf_control%contacts(contact_id)%fermi_level = negf_control%contacts(contact_id)%fermi_level_shifted
          CALL get_qs_env(qs_env, dft_control=dft_control)
          nspins = dft_control%nspins
-         CALL cp_fm_get_info(negf_env%contacts(contact_id)%s_00, nrow_global=nao)
          DO ispin = 1, nspins
-            DO step = 1, nao
-               CALL cp_fm_add_to_element(negf_env%contacts(contact_id)%h_00(ispin), step, step, delta_Ef)
-            END DO
+            CALL cp_fm_add_on_diag(negf_env%contacts(contact_id)%h_00(ispin), delta_Ef)
          END DO
       END IF
 
@@ -1886,14 +1883,14 @@ CONTAINS
                                                  g_surf_contacts, &
                                                  g_ret_s, g_ret_scale, gamma_contacts, gret_gamma_gadv, dos, &
                                                  transm_coeff, transm_contact1, transm_contact2, just_contact)
-      COMPLEX(kind=dp), DIMENSION(:), INTENT(in)         :: omega
-      REAL(kind=dp), INTENT(in)                          :: v_shift
+      COMPLEX(kind=dp), DIMENSION(:), INTENT(IN)         :: omega
+      REAL(kind=dp), INTENT(IN)                          :: v_shift
       LOGICAL, INTENT(in)                                :: ignore_bias
-      TYPE(negf_env_type), INTENT(in)                    :: negf_env
+      TYPE(negf_env_type), INTENT(IN)                    :: negf_env
       TYPE(negf_control_type), POINTER                   :: negf_control
       TYPE(negf_subgroup_env_type), INTENT(in)           :: sub_env
       INTEGER, INTENT(in)                                :: ispin
-      TYPE(cp_cfm_type), DIMENSION(:, :), INTENT(in)     :: g_surf_contacts
+      TYPE(cp_cfm_type), DIMENSION(:, :), INTENT(IN)     :: g_surf_contacts
       TYPE(cp_cfm_type), DIMENSION(:), INTENT(in), &
          OPTIONAL                                        :: g_ret_s
       COMPLEX(kind=dp), DIMENSION(:), INTENT(in), &

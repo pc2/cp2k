@@ -260,6 +260,14 @@ registry["E_G0W0_gap"] = GenericMatcher(r"G0W0 HOMO-LUMO gap (eV)", col=5)
 # G0W0 HOMO-LUMO gap of second spin channel of molecule
 registry["E_G0W0_gap_beta"] = GenericMatcher(r"Beta GW HOMO-LUMO gap (eV)", col=6)
 
+# static COHSEX HOMO-LUMO gap of molecule in the O(N^4) GW code, diagonal (DG) and canonical (CN)
+registry["E_static_COHSEX_gap_DG"] = GenericMatcher(
+    r"static COHSEX HOMO-LUMO gap (eV), DG and CN", col=9
+)
+registry["E_static_COHSEX_gap_CN"] = GenericMatcher(
+    r"static COHSEX HOMO-LUMO gap (eV), DG and CN", col=10
+)
+
 registry["IC_gap"] = GenericMatcher(r"IC HOMO-LUMO gap (eV)", col=5)
 
 registry["M081"] = GenericMatcher(r"HOMO SCF Cycle:     4", col=9)
@@ -279,6 +287,15 @@ registry["GAUXC_molecular_xc_virial_trace"] = GenericMatcher(
     r"GAUXC\|\s+Molecular XC gradient virial 1/3 Trace\s+([-+0-9.EeDd]+)",
     col=8,
     regex=True,
+)
+registry["GAUXC_analytical_gradient"] = TextPresenceMatcher(
+    "GAUXC| Molecular XC gradient method: ANALYTICAL"
+)
+registry["GAUXC_numerical_gradient"] = TextPresenceMatcher(
+    "GAUXC| Molecular XC gradient method: FD"
+)
+registry["GAUXC_self_gradient"] = TextPresenceMatcher(
+    "GAUXC| Molecular XC gradient runtime: SELF"
 )
 registry["GAUXC_molecular_xc_virial_fd_diff"] = GenericMatcher(
     r"GAUXC\|\s+Molecular XC virial FD 1/3 Trace\s+"

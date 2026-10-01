@@ -22,6 +22,7 @@ MODULE mp2_gpw
                                               cp_blacs_env_create,&
                                               cp_blacs_env_release,&
                                               cp_blacs_env_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_clear_mempools, dbcsr_copy, dbcsr_create, dbcsr_distribution_release, &
@@ -155,10 +156,11 @@ CONTAINS
          DIMENSION(:, :, :)                              :: t_3c_O_ind
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env_sub, blacs_env_sub_mat_munu
+      TYPE(cp_cfm_type), ALLOCATABLE, DIMENSION(:)       :: cfm_matrix_L_kpoints, &
+                                                            cfm_matrix_Minv_L_kpoints
       TYPE(cp_fm_type)                                   :: fm_matrix_PQ
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: mo_coeff
-      TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:, :)     :: fm_matrix_L_kpoints, fm_matrix_Minv, &
-                                                            fm_matrix_Minv_L_kpoints, &
+      TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:, :)     :: fm_matrix_Minv, fm_matrix_Minv_L_gamma, &
                                                             fm_matrix_Minv_Vtrunc_Minv
       TYPE(cp_fm_type), POINTER                          :: mo_coeff_ptr
       TYPE(cp_logger_type), POINTER                      :: logger, logger_sub
@@ -177,7 +179,6 @@ CONTAINS
       TYPE(hfx_compression_type), ALLOCATABLE, &
          DIMENSION(:, :, :)                              :: t_3c_O_compressed
       TYPE(kpoint_type), POINTER                         :: kpoints, kpoints_from_DFT
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
       TYPE(mp_para_env_type), POINTER                    :: para_env_sub
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_orb_sub
@@ -222,9 +223,8 @@ CONTAINS
       ! ... setup needed to be able to qs_integrate in a subgroup.
       IF (do_kpoints_cubic_RPA) THEN
          CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, kpoints=kpoints_from_DFT)
-         mos(1:nspins) => kpoints_from_DFT%kp_env(1)%kpoint_env%mos(1:nspins, 1)
       ELSE
-         CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, mos=mos)
+         CALL get_qs_env(qs_env=qs_env, dft_control=dft_control)
       END IF
       CALL get_mo_set(mo_set=mos_mp2(1), nmo=nmo)
       ALLOCATE (homo(nspins), Eigenval(nmo, nspins), mo_coeff(nspins))
@@ -295,8 +295,10 @@ CONTAINS
          CALL m_flush(unit_nr)
       END IF
 
-      ! MG: Disable logger layer for BSE, misses some key information to print cube files properly
-      IF (.NOT. (mp2_env%ri_g0w0%print_local_bandgap .OR. mp2_env%bse%do_nto_analysis)) THEN
+      ! MG: Disable logger layer for BSE, misses some key information to print cube files properly;
+      ! the same holds for the static COHSEX MOs (DFT%PRINT%MO, DFT%PRINT%MO_CUBES)
+      IF (.NOT. (mp2_env%ri_g0w0%print_local_bandgap .OR. mp2_env%bse%do_nto_analysis .OR. &
+                 mp2_env%ri_g0w0%do_static_cohsex)) THEN
          ! a logger
          NULLIFY (logger_sub)
          CALL cp_logger_create(logger_sub, para_env=para_env_sub, &
@@ -386,7 +388,8 @@ CONTAINS
             CALL mp2_ri_gpw_compute_in( &
                BIb_C, BIb_C_gw, BIb_C_bse_ij, BIb_C_bse_ab, gd_array, gd_B_virtual, dimen_RI, dimen_RI_red, qs_env, &
                para_env, para_env_sub, color_sub, cell, particle_set, &
-               atomic_kind_set, qs_kind_set, fm_matrix_PQ, fm_matrix_L_kpoints, fm_matrix_Minv_L_kpoints, &
+               atomic_kind_set, qs_kind_set, fm_matrix_PQ, cfm_matrix_L_kpoints, cfm_matrix_Minv_L_kpoints, &
+               fm_matrix_Minv_L_gamma, &
                fm_matrix_Minv, fm_matrix_Minv_Vtrunc_Minv, nmo, homo, mat_munu, sab_orb_sub, &
                mo_coeff_o, mo_coeff_v, mo_coeff_all, mo_coeff_gw, mo_coeff_o_bse, mo_coeff_v_bse, &
                mp2_env%mp2_gpw%eps_filter, unit_nr, &
@@ -404,7 +407,8 @@ CONTAINS
                                        dimen_RI, dimen_RI_red, qs_env, para_env, para_env_sub, &
                                        color_sub, cell, particle_set, &
                                        atomic_kind_set, qs_kind_set, fm_matrix_PQ, &
-                                       fm_matrix_L_kpoints, fm_matrix_Minv_L_kpoints, &
+                                       cfm_matrix_L_kpoints, cfm_matrix_Minv_L_kpoints, &
+                                       fm_matrix_Minv_L_gamma, &
                                        fm_matrix_Minv, fm_matrix_Minv_Vtrunc_Minv, nmo, homo, &
                                        mat_munu, sab_orb_sub, &
                                        mo_coeff_o, mo_coeff_v, mo_coeff_all, mo_coeff_gw, mo_coeff_o_bse, mo_coeff_v_bse, &
@@ -544,7 +548,8 @@ CONTAINS
          CALL rpa_ri_compute_en(qs_env, Emp2, mp2_env, BIb_C, BIb_C_gw, BIb_C_bse_ij, BIb_C_bse_ab, &
                                 para_env, para_env_sub, color_sub, &
                                 gd_array, gd_B_virtual, gd_B_all, gd_B_occ_bse, gd_B_virt_bse, &
-                                mo_coeff, fm_matrix_PQ, fm_matrix_L_kpoints, fm_matrix_Minv_L_kpoints, &
+                                mo_coeff, fm_matrix_PQ, cfm_matrix_L_kpoints, cfm_matrix_Minv_L_kpoints, &
+                                fm_matrix_Minv_L_gamma, &
                                 fm_matrix_Minv, fm_matrix_Minv_Vtrunc_Minv, kpoints, &
                                 Eigenval, nmo, homo, dimen_RI, dimen_RI_red, gw_corr_lev_occ, gw_corr_lev_virt, &
                                 bse_lev_virt, &
@@ -635,7 +640,8 @@ CONTAINS
 
       CALL cp_blacs_env_release(blacs_env_sub)
 
-      IF (.NOT. (mp2_env%ri_g0w0%print_local_bandgap .OR. mp2_env%bse%do_nto_analysis)) THEN
+      IF (.NOT. (mp2_env%ri_g0w0%print_local_bandgap .OR. mp2_env%bse%do_nto_analysis .OR. &
+                 mp2_env%ri_g0w0%do_static_cohsex)) THEN
          CALL cp_rm_default_logger()
          CALL cp_logger_release(logger_sub)
       END IF

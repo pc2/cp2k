@@ -47,6 +47,11 @@
 MODULE qs_scf
    USE atomic_kind_types,               ONLY: atomic_kind_type
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_release,&
+                                              cp_cfm_to_fm,&
+                                              cp_cfm_type,&
+                                              cp_fm_to_cfm
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
@@ -54,6 +59,7 @@ MODULE qs_scf
         dbcsr_type_no_symmetry
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
+                                              copy_fm_to_dbcsr_bc,&
                                               cp_dbcsr_m_by_n_from_row_template,&
                                               dbcsr_deallocate_matrix_set
    USE cp_files,                        ONLY: close_file
@@ -81,6 +87,7 @@ MODULE qs_scf
    USE cp_result_methods,               ONLY: get_results,&
                                               test_for_result
    USE cp_result_types,                 ONLY: cp_result_type
+   USE dft_plus_u,                      ONLY: lowdin_kp_apply
    USE ec_env_types,                    ONLY: energy_correction_type
    USE input_constants,                 ONLY: &
         broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
@@ -90,8 +97,8 @@ MODULE qs_scf
         ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
         ot_precond_none, ot_precond_s_inverse, outer_scf_becke_constraint, &
         outer_scf_hirshfeld_constraint, outer_scf_optimizer_broyden, &
-        outer_scf_optimizer_newton_ls, sic_eo, smear_fermi_dirac, smear_gaussian, smear_mp, &
-        smear_mv, tblite_scc_mixer_tblite
+        outer_scf_optimizer_newton_ls, plus_u_lowdin, sic_eo, smear_fermi_dirac, smear_gaussian, &
+        smear_mp, smear_mv, tblite_scc_mixer_tblite
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: default_path_length,&
@@ -165,6 +172,7 @@ MODULE qs_scf
    USE qs_matrix_pools,                 ONLY: mpools_get,&
                                               mpools_rebuild_fm_pools,&
                                               mpools_release
+   USE qs_mixing_utils,                 ONLY: mixing_init
    USE qs_mo_io,                        ONLY: write_mo_set_to_restart
    USE qs_mo_methods,                   ONLY: make_basis_simple,&
                                               make_basis_sm
@@ -178,7 +186,6 @@ MODULE qs_scf
                                               mo_set_type,&
                                               reassign_allocated_mos
    USE qs_ot,                           ONLY: qs_ot_get_orbitals_ref_complex,&
-                                              qs_ot_get_p,&
                                               qs_ot_get_p_complex,&
                                               qs_ot_new_preconditioner
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
@@ -194,7 +201,8 @@ MODULE qs_scf
                                               outer_loop_switch,&
                                               outer_loop_update_qs_env
    USE qs_rho_atom_methods,             ONLY: allocate_rho_atom_internals
-   USE qs_rho_atom_types,               ONLY: zero_rho_atom_integrals
+   USE qs_rho_atom_types,               ONLY: rho_atom_type,&
+                                              zero_rho_atom_integrals
    USE qs_rho_methods,                  ONLY: qs_rho_update_rho
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
@@ -289,6 +297,8 @@ CONTAINS
       CALL get_qs_env(qs_env, scf_env=scf_env, input=input, &
                       dft_control=dft_control, scf_control=scf_control)
       CALL qs_fod_validate(input, logger, qs_env)
+      qs_env%scf_convergence_available = .FALSE.
+      qs_env%scf_converged = .FALSE.
       IF (scf_control%max_scf > 0) THEN
 
          dft_section => section_vals_get_subs_vals(input, "DFT")
@@ -314,8 +324,12 @@ CONTAINS
                                 converged=converged, should_stop=should_stop, total_scf_steps=tsteps)
          ELSE
             ! Third SCF loop needed for CDFT with OT to properly restart OT inner loop
-            CALL cdft_scf(qs_env=qs_env, should_stop=should_stop)
+            CALL cdft_scf(qs_env=qs_env, should_stop=should_stop, &
+                          has_converged=converged, total_scf_steps=tsteps)
          END IF
+
+         qs_env%scf_convergence_available = .TRUE.
+         qs_env%scf_converged = converged
 
          ! If SCF has not converged, then we should not start MP2
          IF (ASSOCIATED(qs_env%mp2_env)) qs_env%mp2_env%hf_fail = .NOT. converged
@@ -432,7 +446,9 @@ CONTAINS
          adiis_validation, density_full_step, diis_step, do_kpoints, energy_only, exit_inner_loop, &
          exit_outer_loop, inner_loop_converged, internal_tblite_density_full_step, &
          internal_tblite_mixer, just_energy, ot_kp_subspace_refresh, &
-         ot_kp_subspace_refresh_pending, outer_loop_converged, tblite_native_mixer
+         ot_kp_subspace_refresh_pending, outer_loop_converged, tblite_native_mixer, u_changed
+      REAL(dp), POINTER                                  :: subspace_density(:, :), &
+                                                            subspace_fock(:, :)
       REAL(KIND=dp)                                      :: adiis_raw_delta, adiis_step_delta, t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -453,6 +469,7 @@ CONTAINS
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(rho_atom_type), POINTER                       :: rho_atom(:)
       TYPE(section_vals_type), POINTER                   :: dft_section, input, scf_section
 
 ! Weak orbital metrics can need several bounded REF rebuilds to close the canonical density tail.
@@ -623,6 +640,13 @@ CONTAINS
             scf_env%adiis_validated = .FALSE.
 
             IF (scf_control%diagonalization%update_method == diag_update_method_adiis) THEN
+               NULLIFY (subspace_density, subspace_fock)
+               IF (do_kpoints) THEN
+                  IF (ALLOCATED(kpoints%lowdin_q)) THEN
+                     subspace_density => kpoints%lowdin_q
+                     subspace_fock => kpoints%lowdin_v
+                  END IF
+               END IF
                ! ADIIS is a Fock-space SCF method and never uses density mixing.  A small
                ! accelerated step is checked against the unmodified F[P] map before
                ! convergence is accepted. The check detects an artificial subspace zero;
@@ -640,7 +664,7 @@ CONTAINS
                       scf_env%scf_subspace_buffer%diis_weight < 1.0_dp .OR. &
                       scf_env%iter_delta >= scf_control%eps_diis) THEN
                      CALL qs_scf_subspace_push(scf_env%scf_subspace_buffer, matrix_ks_kp, rho_ao_kp, &
-                                               energy%total, adiis_pushed)
+                                               energy%total, adiis_pushed, subspace_density, subspace_fock)
                      IF (.NOT. adiis_pushed) CPABORT("Failed to append the accepted ADIIS SCF state")
                      CALL qs_scf_subspace_build(scf_env%scf_subspace_buffer)
                      IF (scf_control%diagonalization%adiis_shift > 0.0_dp) THEN
@@ -656,7 +680,7 @@ CONTAINS
                END IF
 
                IF (adiis_validation) THEN
-                  CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, adiis_raw_delta)
+                  CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, adiis_raw_delta, kpoints)
                   scf_env%raw_map_delta = adiis_raw_delta
                   scf_env%raw_map_delta_valid = .TRUE.
                   IF (adiis_raw_delta < scf_control%eps_scf) THEN
@@ -674,7 +698,7 @@ CONTAINS
                         ! accept the already computed raw candidate as the restart step.
                         ! This avoids duplicate history entries and a second diagonalization.
                         CALL qs_scf_subspace_restart(scf_env%scf_subspace_buffer, matrix_ks_kp, rho_ao_kp, &
-                                                     energy%total, adiis_restarted)
+                                                     energy%total, adiis_restarted, subspace_density, subspace_fock)
                         IF (.NOT. adiis_restarted) THEN
                            CPABORT("Failed to restart the ADIIS history from the current SCF state")
                         END IF
@@ -687,7 +711,7 @@ CONTAINS
                         ! artificial subspace zero. Preserve the useful history, discard the
                         ! raw trial, and repeat the normal ADIIS step in this iteration.
                         CALL qs_scf_subspace_push(scf_env%scf_subspace_buffer, matrix_ks_kp, rho_ao_kp, &
-                                                  energy%total, adiis_pushed)
+                                                  energy%total, adiis_pushed, subspace_density, subspace_fock)
                         IF (.NOT. adiis_pushed) CPABORT("Failed to append the accepted ADIIS SCF state")
                         CALL qs_scf_subspace_build(scf_env%scf_subspace_buffer)
                         IF (do_kpoints) THEN
@@ -696,7 +720,7 @@ CONTAINS
                         ELSE
                            CALL qs_scf_new_mos(qs_env, scf_env, scf_control, scf_section, diis_step, energy_only)
                         END IF
-                        CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, scf_env%iter_delta)
+                        CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, scf_env%iter_delta, kpoints)
                         scf_env%adiis_validated = scf_env%iter_delta < scf_control%eps_scf
                         IF (scf_env%adiis_validated .AND. .NOT. diis_step) THEN
                            scf_env%iter_param = 0.0_dp
@@ -710,7 +734,7 @@ CONTAINS
                END IF
 
                IF (.NOT. adiis_validation) THEN
-                  CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, scf_env%iter_delta)
+                  CALL qs_scf_candidate_density_delta(scf_env, rho, para_env, scf_env%iter_delta, kpoints)
                   scf_env%adiis_check_next = .NOT. diis_step .AND. &
                                              scf_env%iter_delta < scf_control%eps_scf
                END IF
@@ -810,7 +834,7 @@ CONTAINS
                density_full_step = .TRUE.
             ELSE
                density_full_step = diis_step .OR. tblite_native_mixer .OR. internal_tblite_density_full_step
-               CALL qs_scf_density_mixing(scf_env, rho, para_env, density_full_step)
+               CALL qs_scf_density_mixing(scf_env, rho, para_env, density_full_step, kpoints)
             END IF
             IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
                 .NOT. (dft_control%qs_control%do_ls_scf .OR. scf_control%use_ot)) THEN
@@ -853,7 +877,20 @@ CONTAINS
             END IF
 
             CALL qs_scf_check_inner_exit(qs_env, scf_env, scf_control, should_stop, just_energy, &
-                                         exit_inner_loop, inner_loop_converged, output_unit)
+                                         exit_inner_loop, inner_loop_converged, output_unit, u_changed)
+            IF (u_changed) THEN
+               CALL qs_scf_inner_finalize(scf_env, qs_env, density_full_step, 0)
+               IF (scf_env%mixing_method > 1) THEN
+                  CALL get_qs_env(qs_env, rho_atom_set=rho_atom)
+                  CALL mixing_init(scf_env%mixing_method, rho, scf_env%mixing_store, para_env, &
+                                   rho_atom=rho_atom, auxiliary=kpoints%lowdin_q)
+               END IF
+               CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_reuse)
+               energy_only = .FALSE.
+               just_energy = .FALSE.
+               CALL timestop(handle2)
+               CYCLE scf_loop
+            END IF
 
             ! In case we decide to exit we perform few more check to see if this one
             ! is really the last SCF step
@@ -1190,10 +1227,8 @@ CONTAINS
       DO ik = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(ik)%kpoint_env
          IF (ASSOCIATED(kp%mos)) THEN
-            DO ispin = 1, SIZE(kp%mos, 2)
-               DO ic = 1, SIZE(kp%mos, 1)
-                  CALL deallocate_mo_set(kp%mos(ic, ispin))
-               END DO
+            DO ispin = 1, SIZE(kp%mos)
+               CALL deallocate_mo_set(kp%mos(ispin))
             END DO
             DEALLOCATE (kp%mos)
             NULLIFY (kp%mos)
@@ -1359,7 +1394,8 @@ CONTAINS
             CPASSERT(ASSOCIATED(qs_kind_set))
             DO ikind = 1, SIZE(qs_kind_set)
                CALL get_qs_kind(qs_kind_set(ikind), u_ramping=u_ramping)
-               IF (u_ramping > 0.0_dp) THEN
+               IF (u_ramping > 0.0_dp .AND. &
+                   (.NOT. do_kpoints .OR. dft_control%plus_u_method_id /= plus_u_lowdin)) THEN
                   CPABORT("ADIIS is not yet compatible with DFT+U U_RAMPING")
                END IF
             END DO
@@ -1942,16 +1978,15 @@ CONTAINS
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(cp_fm_struct_type), POINTER                   :: active_mo_struct
-      TYPE(cp_fm_type)                                   :: active_mo_coeff, active_mo_coeff_im
-      TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
+      TYPE(cp_fm_type)                                   :: active_mo_coeff, active_mo_coeff_im, &
+                                                            mo_coeff, mo_coeff_im
       TYPE(dbcsr_type), POINTER                          :: matrix_sk_im, matrix_sk_re
       TYPE(kpoint_env_type), POINTER                     :: kp
-      TYPE(mo_set_type), POINTER                         :: mo_set, mo_set_im
+      TYPE(mo_set_type), POINTER                         :: mo_set
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (active_mo_struct, eigenvalues, kp, matrix_sk_im, matrix_sk_re, &
-               mo_coeff, mo_coeff_im, mo_set, mo_set_im)
+      NULLIFY (active_mo_struct, eigenvalues, kp, matrix_sk_im, matrix_sk_re, mo_set)
 
       CPASSERT(ASSOCIATED(qs_env))
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
@@ -1963,16 +1998,14 @@ CONTAINS
       CPASSERT(.NOT. dft_control%restricted .OR. nspin_ot == 1)
 
       CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
-      IF (use_real_wfn) THEN
-         CPABORT("K-point OT currently requires complex K-point wavefunctions.")
-      END IF
+      CPASSERT(.NOT. use_real_wfn)
 
       DO ikpoint_local = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(ikpoint_local)%kpoint_env
          CPASSERT(ASSOCIATED(kp))
          CPASSERT(ASSOCIATED(kp%mos))
          CPASSERT(ASSOCIATED(kp%ot_smat))
-         CPASSERT(nspin_ot <= SIZE(kp%mos, 2))
+         CPASSERT(nspin_ot <= SIZE(kp%mos))
          ikpoint = kp%nkpoint
          CPASSERT(ikpoint >= 1)
          CPASSERT(SIZE(kp%ot_smat) >= 2)
@@ -1983,11 +2016,10 @@ CONTAINS
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
             CPASSERT(.NOT. scf_env%qs_ot_env(ot_channel)%state_allocated)
 
-            NULLIFY (mo_coeff, mo_coeff_im, mo_set_im)
-            mo_set => kp%mos(1, ispin)
-            CALL get_mo_set(mo_set=mo_set, mo_coeff=mo_coeff, eigenvalues=eigenvalues, &
+            mo_set => kp%mos(ispin)
+            CALL get_mo_set(mo_set=mo_set, eigenvalues=eigenvalues, &
                             homo=nocc, nao=nao, nmo=nmo)
-            CPASSERT(ASSOCIATED(mo_coeff))
+            CPASSERT(ASSOCIATED(mo_set%cmo_coeff))
             CPASSERT(ASSOCIATED(eigenvalues))
             CPASSERT(nao > 0)
             CPASSERT(nmo > 0)
@@ -1997,7 +2029,10 @@ CONTAINS
                              "K-point OT requires at least one occupied orbital in every spin channel.")
             END IF
 
-            CALL cp_fm_struct_create(active_mo_struct, template_fmstruct=mo_coeff%matrix_struct, &
+            CALL cp_fm_create(mo_coeff, mo_set%cmo_coeff%matrix_struct)
+            CALL cp_fm_create(mo_coeff_im, mo_set%cmo_coeff%matrix_struct)
+            CALL cp_cfm_to_fm(mo_set%cmo_coeff, mo_coeff, mo_coeff_im)
+            CALL cp_fm_struct_create(active_mo_struct, template_fmstruct=mo_set%cmo_coeff%matrix_struct, &
                                      ncol_global=nocc)
             CALL cp_fm_create(active_mo_coeff, active_mo_struct)
             CALL cp_fm_to_fm(mo_coeff, active_mo_coeff, nocc)
@@ -2005,7 +2040,7 @@ CONTAINS
             energy_dimension = nocc
             IF (dft_control%restricted .AND. &
                 scf_env%qs_ot_env(ot_channel)%settings%do_ener) THEN
-               energy_dimension = nocc*SIZE(kp%mos, 2)
+               energy_dimension = nocc*SIZE(kp%mos)
             END IF
             CALL qs_ot_allocate(scf_env%qs_ot_env(ot_channel), &
                                 matrix_sk_re, &
@@ -2014,43 +2049,37 @@ CONTAINS
             CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp)
             CALL copy_fm_to_dbcsr(active_mo_coeff, scf_env%qs_ot_env(ot_channel)%matrix_c0)
 
-            IF (.NOT. use_real_wfn) THEN
-               CPASSERT(SIZE(kp%mos, 1) >= 2)
-               mo_set_im => kp%mos(2, ispin)
-               CALL get_mo_set(mo_set=mo_set_im, mo_coeff=mo_coeff_im)
-               CPASSERT(ASSOCIATED(mo_coeff_im))
-               CALL cp_fm_create(active_mo_coeff_im, active_mo_struct)
-               CALL cp_fm_to_fm(mo_coeff_im, active_mo_coeff_im, nocc)
-               CALL qs_ot_allocate_complex_state(scf_env%qs_ot_env(ot_channel), matrix_sk_re)
-               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp)
-               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, 0.0_dp)
-               CALL copy_fm_to_dbcsr(active_mo_coeff_im, scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
-               CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_re, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_sc0)
-               CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_im, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_x)
-               CALL dbcsr_add(scf_env%qs_ot_env(ot_channel)%matrix_sc0, &
-                              scf_env%qs_ot_env(ot_channel)%matrix_x, &
-                              alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+            CALL cp_fm_create(active_mo_coeff_im, active_mo_struct)
+            CALL cp_fm_to_fm(mo_coeff_im, active_mo_coeff_im, nocc)
+            CALL qs_ot_allocate_complex_state(scf_env%qs_ot_env(ot_channel), matrix_sk_re)
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp)
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, 0.0_dp)
+            CALL copy_fm_to_dbcsr(active_mo_coeff_im, scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
+            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_re, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_sc0)
+            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_im, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_x)
+            CALL dbcsr_add(scf_env%qs_ot_env(ot_channel)%matrix_sc0, &
+                           scf_env%qs_ot_env(ot_channel)%matrix_x, &
+                           alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
 
-               CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_re, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
-               CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_im, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_x)
-               CALL dbcsr_add(scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, &
-                              scf_env%qs_ot_env(ot_channel)%matrix_x, &
-                              alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
-            END IF
+            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_re, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
+            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_im, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_x)
+            CALL dbcsr_add(scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, &
+                           scf_env%qs_ot_env(ot_channel)%matrix_x, &
+                           alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
 
             CALL qs_ot_init(scf_env%qs_ot_env(ot_channel))
             IF (scf_env%qs_ot_env(ot_channel)%settings%do_ener) THEN
                IF (dft_control%restricted) THEN
-                  DO energy_spin = 1, SIZE(kp%mos, 2)
-                     CALL get_mo_set(kp%mos(1, energy_spin), eigenvalues=eigenvalues)
+                  DO energy_spin = 1, SIZE(kp%mos)
+                     CALL get_mo_set(kp%mos(energy_spin), eigenvalues=eigenvalues)
                      energy_start = (energy_spin - 1)*nocc + 1
                      scf_env%qs_ot_env(ot_channel)%ener_x(energy_start:energy_start + nocc - 1) = &
                         eigenvalues(1:nocc)
@@ -2063,51 +2092,39 @@ CONTAINS
 
             CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_x, 0.0_dp)
             CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sx, 0.0_dp)
-            IF (scf_env%qs_ot_env(ot_channel)%has_complex_kpoint_state) THEN
-               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_x_im, 0.0_dp)
-               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, 0.0_dp)
-            END IF
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_x_im, 0.0_dp)
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, 0.0_dp)
 
             SELECT CASE (scf_env%qs_ot_env(ot_channel)%settings%ot_algorithm)
             CASE ("TOD")
-               IF (scf_env%qs_ot_env(ot_channel)%has_complex_kpoint_state) THEN
-                  CALL qs_ot_get_p_complex(scf_env%qs_ot_env(ot_channel)%matrix_x, &
-                                           scf_env%qs_ot_env(ot_channel)%matrix_x_im, &
-                                           scf_env%qs_ot_env(ot_channel)%matrix_sx, &
-                                           scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
-                                           scf_env%qs_ot_env(ot_channel))
-               ELSE
-                  CALL qs_ot_get_p(scf_env%qs_ot_env(ot_channel)%matrix_x, &
-                                   scf_env%qs_ot_env(ot_channel)%matrix_sx, &
-                                   scf_env%qs_ot_env(ot_channel))
-               END IF
+               CALL qs_ot_get_p_complex(scf_env%qs_ot_env(ot_channel)%matrix_x, &
+                                        scf_env%qs_ot_env(ot_channel)%matrix_x_im, &
+                                        scf_env%qs_ot_env(ot_channel)%matrix_sx, &
+                                        scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
+                                        scf_env%qs_ot_env(ot_channel))
             CASE ("REF")
                CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x, &
                                scf_env%qs_ot_env(ot_channel)%matrix_c0)
                CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx, &
                                scf_env%qs_ot_env(ot_channel)%matrix_sc0)
-               IF (scf_env%qs_ot_env(ot_channel)%has_complex_kpoint_state) THEN
-                  CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x_im, &
-                                  scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
-                  CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
-                                  scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
-                  CALL qs_ot_get_orbitals_ref_complex(scf_env%qs_ot_env(ot_channel)%matrix_c0, &
-                                                      scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
-                                                      matrix_sk_re, matrix_sk_im, &
-                                                      scf_env%qs_ot_env(ot_channel))
-               END IF
+               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x_im, &
+                               scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
+               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
+                               scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
+               CALL qs_ot_get_orbitals_ref_complex(scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                                                   scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
+                                                   matrix_sk_re, matrix_sk_im, &
+                                                   scf_env%qs_ot_env(ot_channel))
             CASE DEFAULT
                CPABORT("Algorithm not yet implemented")
             END SELECT
 
             CPASSERT(scf_env%qs_ot_env(ot_channel)%state_allocated)
-            IF (.NOT. use_real_wfn) THEN
-               CPASSERT(scf_env%qs_ot_env(ot_channel)%has_complex_kpoint_state)
-            END IF
+            CPASSERT(scf_env%qs_ot_env(ot_channel)%has_complex_kpoint_state)
             CALL cp_fm_release(active_mo_coeff)
-            IF (.NOT. use_real_wfn) THEN
-               CALL cp_fm_release(active_mo_coeff_im)
-            END IF
+            CALL cp_fm_release(active_mo_coeff_im)
+            CALL cp_fm_release(mo_coeff)
+            CALL cp_fm_release(mo_coeff_im)
             CALL cp_fm_struct_release(active_mo_struct)
          END DO
          CALL dbcsr_release_p(matrix_sk_re)
@@ -2120,7 +2137,7 @@ CONTAINS
                                        require_kpoint=.TRUE., &
                                        kp_range=kpoints%kp_range, &
                                        require_local_state=.TRUE., &
-                                       require_complex_state=.NOT. use_real_wfn)
+                                       require_complex_state=.TRUE.)
 
       CALL prepare_qs_ot_kpoint_preconditioners(scf_env, kpoints, matrix_ks_kp, &
                                                 matrix_s_kp, matrix_t_kp, nspin_ot)
@@ -2246,9 +2263,32 @@ CONTAINS
                 prec_type == ot_precond_full_single_inverse) THEN
                ks_spin = MIN(ispin, SIZE(kp%ot_hmat, 2))
                CPASSERT(SIZE(kp%ot_hmat, 1) >= 2)
-               CALL kpoint_operator_get_local(matrix_ks, kpoints, kp, ks_spin, &
-                                              kp%ot_hmat(1, ks_spin), kp%ot_hmat(2, ks_spin), &
-                                              matrix_h_re, matrix_h_im)
+               IF (ALLOCATED(kpoints%lowdin_v)) THEN
+                  BLOCK
+                     TYPE(cp_cfm_type) :: h
+                     TYPE(cp_fm_type) :: h_re, h_im
+
+                     ! The physical +U operator need not share the real-space sparsity pattern.
+                     ! This full construction is only needed when preparing the preconditioner.
+                     CALL cp_cfm_create(h, kp%ot_hmat(1, ks_spin)%matrix_struct)
+                     CALL cp_fm_to_cfm(kp%ot_hmat(1, ks_spin), kp%ot_hmat(2, ks_spin), h)
+                     CALL lowdin_kp_apply(kp, kpoints%lowdin_v(:, ks_spin), cmat=h)
+                     CALL cp_fm_create(h_re, h%matrix_struct)
+                     CALL cp_fm_create(h_im, h%matrix_struct)
+                     CALL cp_cfm_to_fm(h, h_re, h_im)
+                     CALL dbcsr_init_p(matrix_h_re)
+                     CALL dbcsr_init_p(matrix_h_im)
+                     CALL copy_fm_to_dbcsr_bc(h_re, matrix_h_re)
+                     CALL copy_fm_to_dbcsr_bc(h_im, matrix_h_im)
+                     CALL cp_fm_release(h_re)
+                     CALL cp_fm_release(h_im)
+                     CALL cp_cfm_release(h)
+                  END BLOCK
+               ELSE
+                  CALL kpoint_operator_get_local(matrix_ks, kpoints, kp, ks_spin, &
+                                                 kp%ot_hmat(1, ks_spin), kp%ot_hmat(2, ks_spin), &
+                                                 matrix_h_re, matrix_h_im)
+               END IF
             END IF
             SELECT CASE (prec_type)
             CASE (ot_precond_fermi_low_rank)
@@ -2266,23 +2306,23 @@ CONTAINS
                   scf_env%qs_ot_env(ot_channel)%matrix_c0, &
                   scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
                   matrix_h_re, matrix_h_im, matrix_s_re, matrix_s_im, &
-                  kp%mos(1, ispin), &
+                  kp%mos(ispin), &
                   scf_env%qs_ot_env(ot_channel)%settings%energy_gap, &
                   scf_env%qs_ot_env(ot_channel)%settings%precond_solver_type)
             CASE (ot_precond_full_single)
                CALL make_preconditioner_complex_full_single( &
                   scf_env%ot_preconditioner(ot_channel)%preconditioner, &
                   matrix_h_re, matrix_h_im, matrix_s_re, matrix_s_im, &
-                  kp%mos(1, ispin), &
+                  kp%mos(ispin), &
                   scf_env%qs_ot_env(ot_channel)%settings%energy_gap, &
                   scf_env%qs_ot_env(ot_channel)%settings%precond_solver_type)
             CASE (ot_precond_full_all_covariant)
-               IF (nspin_ot == 1 .AND. SIZE(kp%mos, 2) > 1) THEN
+               IF (nspin_ot == 1 .AND. SIZE(kp%mos) > 1) THEN
                   CALL dbcsr_get_info(scf_env%qs_ot_env(ot_channel)%matrix_c0, &
                                       nfullcols_total=nocc)
-                  ALLOCATE (occupation_signature(nocc, SIZE(kp%mos, 2)))
-                  DO occupation_spin = 1, SIZE(kp%mos, 2)
-                     CALL get_mo_set(kp%mos(1, occupation_spin), &
+                  ALLOCATE (occupation_signature(nocc, SIZE(kp%mos)))
+                  DO occupation_spin = 1, SIZE(kp%mos)
+                     CALL get_mo_set(kp%mos(occupation_spin), &
                                      occupation_numbers=occupation_numbers)
                      CPASSERT(ASSOCIATED(occupation_numbers))
                      CPASSERT(SIZE(occupation_numbers) >= nocc)
@@ -2459,13 +2499,16 @@ CONTAINS
 !> \brief perform a CDFT scf procedure in the given qs_env
 !> \param qs_env the qs_environment where to perform the scf procedure
 !> \param should_stop flag determining if calculation should stop
+!> \param has_converged both the electronic and constraint loops converged
+!> \param total_scf_steps number of electronic SCF steps over the constraint loop
 !> \par History
 !>      12.2015 Created
 !> \author Nico Holmberg
 ! **************************************************************************************************
-   SUBROUTINE cdft_scf(qs_env, should_stop)
+   SUBROUTINE cdft_scf(qs_env, should_stop, has_converged, total_scf_steps)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      LOGICAL, INTENT(OUT)                               :: should_stop
+      LOGICAL, INTENT(OUT)                               :: should_stop, has_converged
+      INTEGER, INTENT(OUT)                               :: total_scf_steps
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'cdft_scf'
 
@@ -2516,6 +2559,7 @@ CONTAINS
 
       scf_env%outer_scf%iter_count = 0
       cdft_control%total_steps = 0
+      total_scf_steps = 0
 
       ! Write some info about the CDFT calculation
       IF (output_unit > 0) THEN
@@ -2533,6 +2577,7 @@ CONTAINS
          ! Solve electronic structure with fixed value of constraint
          CALL scf_env_do_scf(scf_env=scf_env, scf_control=scf_control, qs_env=qs_env, &
                              converged=converged, should_stop=should_stop, total_scf_steps=tsteps)
+         total_scf_steps = total_scf_steps + tsteps
          ! Decide whether to reuse the preconditioner on the next iteration
          IF (cdft_control%reuse_precond) THEN
             ! For convergence in exactly one step, the preconditioner is always reused (assuming max_reuse > 0)
@@ -2584,6 +2629,7 @@ CONTAINS
          CALL qs_ks_did_change(ks_env, potential_changed=.TRUE.)
       END DO cdft_outer_loop
 
+      has_converged = converged .AND. cdft_loop_converged
       cdft_control%ienergy = cdft_control%ienergy + 1
 
       ! Store needed arrays for ET coupling calculation

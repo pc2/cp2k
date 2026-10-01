@@ -449,6 +449,7 @@ CONTAINS
             itaken = 0
             DO it = 1, nmob
                vmax = 0.0_dp
+               ik = 0
                !select index ik
                DO jt = 1, ndim
                   IF (itaken(jt) == 0 .AND. ABS(q_mat(it, jt)) > vmax) THEN
@@ -456,6 +457,7 @@ CONTAINS
                      ik = jt
                   END IF
                END DO
+               IF (ik == 0) CYCLE ! all candidates NaN or zero: keep the entry vector
                itaken(ik) = 1
 
                CALL cp_fm_to_fm(c2_tmp, v_mat(1), 1, ik, it)
@@ -673,10 +675,10 @@ CONTAINS
                                      force_block=.TRUE.)
             DO ik = 1, krylov_space%nkrylov
                CALL cp_fm_create(v_mat(ik), matrix_struct=fm_struct_tmp, &
-                                 name="v_mat")
+                                 name="v_mat", set_zero=.TRUE.)
             END DO
             CALL cp_fm_create(hc, matrix_struct=fm_struct_tmp, &
-                              name="hc")
+                              name="hc", set_zero=.TRUE.)
             CALL cp_fm_struct_release(fm_struct_tmp)
             NULLIFY (fm_struct_tmp)
             CALL cp_fm_struct_create(fm_struct_tmp, nrow_global=nao, ncol_global=ndim, &
@@ -841,6 +843,7 @@ CONTAINS
             itaken = 0
             DO it = 1, nmob
                vmax = 0.0_dp
+               ik = 0
                !select index ik
                DO jt = 1, ndim
                   IF (itaken(jt) == 0 .AND. ABS(q_mat(it, jt)) > vmax) THEN
@@ -848,6 +851,7 @@ CONTAINS
                      ik = jt
                   END IF
                END DO
+               IF (ik == 0) CYCLE ! all candidates NaN or zero: keep the entry vector
                itaken(ik) = 1
 
                CALL cp_fm_to_fm(c2_tmp, v_mat(1), 1, ik, it)

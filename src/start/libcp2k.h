@@ -159,6 +159,18 @@ void cp2k_get_positions(force_env_t force_env, double *pos, int n_el);
 void cp2k_get_forces(force_env_t force_env, double *force, int n_el);
 
 /*******************************************************************************
+ * \brief Get the potential (not kinetic) stress after cp2k_calc_energy_force().
+ * \param force_env the force environment
+ * \param stress_tensor Nine doubles in column-major order, in hartree/bohr^3.
+ *        CP2K uses pressure-positive stress: virial = stress * cell volume.
+ *        This is the opposite sign to the usual tensile-positive convention.
+ * \param available Set to 1 if STRESS_TENSOR was enabled, otherwise 0.
+ *        When unavailable the tensor is zero, NOT a computed zero stress.
+ ******************************************************************************/
+void cp2k_get_stress_tensor(force_env_t force_env, double *stress_tensor,
+                            int *available);
+
+/*******************************************************************************
  * \brief Get the potential energy of the system
  * \param force_env the force environment
  * \param e_pot The potential energy
@@ -190,6 +202,20 @@ void cp2k_calc_energy_force(force_env_t force_env);
  * \param force_env the force environment
  ******************************************************************************/
 void cp2k_calc_energy(force_env_t force_env);
+
+/*******************************************************************************
+ * \brief Query convergence of the last Quickstep SCF, including outer/CDFT
+ * loops
+ * \param force_env the force environment
+ * \param status -1 if unavailable, 0 if not converged, 1 if converged
+ * \note Unavailable before calculation or after changing positions, cell or
+ *       velocities, for non-Quickstep methods, and for alternative solvers
+ *       (e.g. LS-SCF, ALMO, RTP, non-SCF or MAX_SCF 0). This is not a
+ * convergence certificate for post-SCF methods, geometry optimization or MD.
+ *       IGNORE_CONVERGENCE_FAILURE allows an unconverged SCF to return; this
+ *       query does not prevent native CP2K aborts when that keyword is absent.
+ ******************************************************************************/
+void cp2k_get_scf_convergence(force_env_t force_env, int *status);
 
 /*******************************************************************************
  * \brief Make a CP2K run with the given input file

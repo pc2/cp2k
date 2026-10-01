@@ -133,7 +133,7 @@ def main() -> None:
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="mpich",
-                base_image="docker.io/rockylinux/rockylinux:10",
+                base_image="rockylinux/rockylinux:10",
                 gcc_version=14,
                 feature_flags="",
                 testopts=testopts,
@@ -202,7 +202,7 @@ def main() -> None:
             install_cp2k_spack(
                 version="ssmp",
                 mpi_mode="no",
-                base_image="docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04",
+                base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
                 gcc_version=13,
                 gpu_model="P100",
                 testopts=f"{testopts} --timeout 400",
@@ -215,7 +215,7 @@ def main() -> None:
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="mpich",
-                base_image="docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04",
+                base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
                 gcc_version=13,
                 gpu_model="P100",
                 feature_flags="",
@@ -229,7 +229,7 @@ def main() -> None:
             install_cp2k_spack(
                 version="pdbg",
                 mpi_mode="mpich",
-                base_image="docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04",
+                base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
                 gcc_version=13,
                 gpu_model="P100",
                 feature_flags="",
@@ -297,7 +297,7 @@ def main() -> None:
 
     with OutputFile(f"Dockerfile.test_asan-psmp", args.check) as f:
         f.write(install_deps_toolchain())
-        f.write(regtest("toolchain_asan", "psmp"))
+        f.write(regtest("toolchain_asan", "psmp", "--timeout 400"))
 
     with OutputFile(f"Dockerfile.test_coverage", args.check) as f:
         f.write(install_deps_toolchain())
@@ -347,6 +347,10 @@ def main() -> None:
         with OutputFile(f"Dockerfile.test_{name}", args.check) as f:
             f.write(install_deps_toolchain(mpi_mode="no"))
             f.write(test_3rd_party(name))
+
+    with OutputFile("Dockerfile.test_python", args.check) as f:
+        f.write(install_deps_toolchain(mpi_mode="no"))
+        f.write(test_python())
 
     for name in "misc", "doxygen":
         with OutputFile(f"Dockerfile.test_{name}", args.check) as f:
@@ -434,7 +438,7 @@ RUN ./test_manual.sh "${{ADD_EDIT_LINKS}}" 2>&1 | tee report.log
 # ======================================================================================
 def precommit() -> str:
     return rf"""
-FROM ubuntu:26.04
+FROM docker.io/ubuntu:26.04
 
 # Install dependencies.
 WORKDIR /opt/cp2k-precommit
@@ -462,9 +466,20 @@ RUN ./test_{name}.sh 2>&1 | tee report.log
 
 
 # ======================================================================================
+def test_python() -> str:
+    return install_cp2k(profile="toolchain", version="ssmp") + r"""
+# Run the direct Python package tests independently of upstream integrations.
+COPY ./python ./python
+COPY ./docs/technologies/python.md ./docs/technologies/python.md
+COPY ./tools/docker/scripts/test_python.sh ./
+RUN ./test_python.sh 2>&1 | tee report.log
+""" + print_cached_report()
+
+
+# ======================================================================================
 def test_without_build(name: str) -> str:
     return rf"""
-FROM ubuntu:26.04
+FROM docker.io/ubuntu:26.04
 
 # Install dependencies.
 WORKDIR /opt/cp2k
@@ -534,7 +549,7 @@ def install_deps_toolchain(
     with_gcc: str = "system",
     **kwargs: str,
 ) -> str:
-    output = f"\nFROM {base_image}\n\n"
+    output = f"\nFROM docker.io/{base_image}\n\n"
     output += install_toolchain(
         base_image=base_image,
         install_all="",
@@ -550,7 +565,7 @@ def install_deps_toolchain(
 def install_deps_ubuntu(gcc_version: int = 15) -> str:
     assert gcc_version > 8
     base_image = "ubuntu:26.04" if gcc_version > 14 else "ubuntu:24.04"
-    output = f"\nFROM {base_image}\n"
+    output = f"\nFROM docker.io/{base_image}\n"
 
     if gcc_version > 13:
         output += rf"""
@@ -613,7 +628,7 @@ RUN ln -sf /usr/bin/gcc-{gcc_version}      /usr/local/bin/gcc  && \
 # ======================================================================================
 def install_deps_toolchain_intel(base_image: str, mpi_mode: str, with_ifx: str) -> str:
     return rf"""
-FROM {base_image}
+FROM docker.io/{base_image}
 
 """ + install_toolchain(
         base_image="ubuntu",
@@ -631,7 +646,7 @@ FROM {base_image}
 # ======================================================================================
 def install_deps_toolchain_cuda(gpu_ver: str, **kwargs: str) -> str:
     deps = rf"""
-FROM nvidia/cuda:12.9.1-devel-ubuntu24.04
+FROM docker.io/nvidia/cuda:12.9.1-devel-ubuntu24.04
 
 # Setup CUDA environment.
 ENV CUDA_PATH /usr/local/cuda
@@ -662,7 +677,7 @@ RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
 # ======================================================================================
 def install_deps_toolchain_hip_rocm(gpu_ver: str) -> str:
     return rf"""
-FROM rocm/dev-ubuntu-24.04:7.2-complete
+FROM docker.io/rocm/dev-ubuntu-24.04:7.2-complete
 
 # Install some Ubuntu packages.
 RUN apt-get update -qq && apt-get install -qq --no-install-recommends \
@@ -785,10 +800,10 @@ def install_cp2k_spack(
     # Assemble docker file
     output = (
         install_base_image(
-            base_image=rf"{base_image}",
+            base_image=base_image,
             gcc_compilers=gcc_compilers,
             stage="build",
-            test_type=rf"{test_type}",
+            test_type=test_type,
         )
         + rf"""
 ARG IMAGE_TAG
@@ -821,10 +836,10 @@ RUN ./make_cp2k.sh -cv {version} {gcc_version_flag} -gpu {gpu_model} -mpi {mpi_m
     )
     output += (
         install_base_image(
-            base_image=rf"{base_image}",
+            base_image=base_image,
             gcc_compilers=gcc_compilers,
             stage="install",
-            test_type=rf"{test_type}",
+            test_type=test_type,
         )
         + rf"""
 WORKDIR /opt/cp2k
@@ -856,7 +871,7 @@ COPY ./benchmarks/QS ./benchmarks/QS
 COPY ./benchmarks/QS_reference ./benchmarks/QS_reference
 COPY ./benchmarks/QS_kp ./benchmarks/QS_kp
 COPY ./benchmarks/QS_single_node ./benchmarks/QS_single_node
-COPY ./benchmarks/QMMM_MQAE ./benchmarks/QMMM_MQAE
+COPY ./benchmarks/QMMM/MQAE ./benchmarks/QMMM/MQAE
 RUN mkdir -p ./tools/docker/scripts
 COPY ./tools/docker/scripts/plot_performance.py ./tools/docker/scripts/
 
@@ -923,7 +938,7 @@ ARG BASE_IMAGE="{base_image}"
 
 ###### Stage 1: Build CP2K dependencies ######
 
-FROM "${{BASE_IMAGE}}" AS build_deps
+FROM "docker.io/${{BASE_IMAGE}}" AS build_deps
 """
         if "fedora" in base_image:
             output += rf"""
@@ -1041,7 +1056,7 @@ ENV CUDA_CACHE_DISABLE 1
         output = rf"""
 ###### Stage 3: Install CP2K ######
 
-FROM "${{BASE_IMAGE}}" AS install_cp2k
+FROM "docker.io/${{BASE_IMAGE}}" AS install_cp2k
 """
         if "fedora" in base_image:
             output += rf"""

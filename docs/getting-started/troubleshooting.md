@@ -5,10 +5,10 @@ inevitable when working with CP2K due to various reasons. Don't panic: this page
 catalog of possible issues and provides hints on how to address them.
 
 This is a dynamic list attempting to cover more topics of interest; feel free to open requests for
-expansion, but please read first and bear in mind the recommendations about asking questions in the
-[Foreward and FAQ](./foreword-and-faq.md#what-is-the-best-practice-to-ask-questions). Moreover, here
-is a gentle reminder that the normal termination of a computational task does not inherently
-guarantee scientifically meaningful, accurate, rigorous and publishable results.
+expansion, but please read first and bear in mind the recommendations about asking questions on the
+`SUPPORT.md` document. Moreover, here is a gentle reminder that the normal termination of a
+computational task does not inherently guarantee scientifically meaningful, accurate, rigorous and
+publishable results.
 
 ## The Whereabouts of Input & Output
 
@@ -79,7 +79,19 @@ the secondary logs (automatically generated per replica under the working direct
 necessary to locate the exact issue(s) from the latter. This applies to warnings and errors too,
 which in addition are typically issued on the first MPI rank of each replica.
 
+In the rare cases of a lack of identifiable error messages, try rerunning the task with the
+[GNU Debugger](https://sourceware.org/gdb/) to capture more information:
+
+```shell
+gdb --args cp2k.psmp -i project.inp
+```
+
 ## Problems and Solutions
+
+Faulty libraries are unfortunately very common that problems may be localized to a machine X or with
+a dependency Y, or even in a period of time Z with certain external concurrent processes or other
+users intervening; try ruling out these factors first with a separate installation, environment or
+even other machines.
 
 ### Program is stuck or killed for unknown reason
 
@@ -158,7 +170,8 @@ specifications like the PDB file and the Gaussian cube file where the entries ha
 fixed-width field formats for writing or reading, while others like the XYZ file are more lenient.
 
 Beyond that, abnormal values may be represented as `NaN` for "Not a Number" or `Inf` for Infinity,
-padded with whitespaces to satisfy the width of the edit descriptor. Both of these marks in the
+padded with whitespaces to satisfy the width of the edit descriptor. Sometimes they may be caught
+with an error message like `{something} is an abnormal value (NaN/Inf)` instead. These marks in the
 output suggest that something numerically unstable has gone haywire and needs developer attention.
 
 ### A certain type object was expected, found something else
@@ -207,11 +220,6 @@ possibilities of modelling errors, there are three frequently relevant pitfalls:
   atom, and the fractional occupancy is not handled well when creating the model, as discussed in
   [a FAQ](./foreword-and-faq.md#how-do-i-create-the-atomistic-model-for-cp2k-input).
 
-### SCF convergence troubles
-
-`SCF run NOT converged` and `KS energy is an abnormal value (NaN/Inf)` are discussed separately on
-[](../methods/dft/convergence).
-
 ### Messages mentioning LSD
 
 `LSD` is an alias for [UKS](#CP2K_INPUT.FORCE_EVAL.DFT.UKS) in some error messages such as
@@ -220,3 +228,8 @@ possibilities of modelling errors, there are three frequently relevant pitfalls:
 [MULTIPLICITY](#CP2K_INPUT.FORCE_EVAL.DFT.MULTIPLICITY) options should be set correctly based on the
 chemistry to be modelled. If the system is intended to be closed-shell, broken geometry like missing
 or duplicated hydrogen atoms may give rise to the errors.
+
+### SCF convergence trouble
+
+`SCF run NOT converged` has a wide variety of causes and possible solutions, as discussed separately
+on [](../methods/dft/convergence).
