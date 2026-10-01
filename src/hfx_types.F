@@ -62,6 +62,8 @@ MODULE hfx_types
                                               default_string_length,&
                                               dp,&
                                               int_8
+   USE libheric_interface,              ONLY: create_accelerator_contexts, &
+                                              acc_device
    USE libint_2c_3c,                    ONLY: compare_potential_types,&
                                               libint_potential_type
    USE libint_wrapper,                  ONLY: &
@@ -91,6 +93,7 @@ MODULE hfx_types
    USE string_utilities,                ONLY: compress
    USE t_c_g0,                          ONLY: free_C0
    USE util,                            ONLY: sort
+   USE, INTRINSIC :: iso_c_binding,     ONLY: C_PTR
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 
@@ -118,7 +121,8 @@ MODULE hfx_types
              hfx_libheric_cell_type, hfx_libheric_basis_type, hfx_libheric_screening_model_type, &
              hfx_libheric_screening_models, hfx_libheric_screening_kkll_models, &
              hfx_libheric_sorted_cells_from_hfx_cells, &
-             hfx_libheric_create_basis_types, hfx_libheric_free_basis_types
+             hfx_libheric_create_basis_types, hfx_libheric_free_basis_types, &
+             hfx_libheric_create_accelerator_contexts
 
 #define CACHE_SIZE 1024
 #define BITS_MAX_VAL 6
@@ -2076,6 +2080,86 @@ CONTAINS
          DEALLOCATE (basis_parameter_l)
       END IF
    END SUBROUTINE hfx_libheric_free_basis_types
+
+   SUBROUTINE hfx_libheric_create_accelerator_contexts(max_set, nkind, l_max, basis_parameter_l, &
+                                                       cell_mat, acc_dev, particle_set, & 
+                                                       mem_available, ctx_handles) 
+      INTEGER, INTENT(IN)                                 :: max_set, nkind, l_max
+      TYPE(hfx_libheric_basis_type), &
+         DIMENSION(nkind, 0:l_max), INTENT(IN)            :: basis_parameter_l
+      REAL(dp), DIMENSION(3, 3), INTENT(IN)               :: cell_mat
+      TYPE(acc_device), INTENT(IN)                        :: acc_dev
+      TYPE(particle_type), DIMENSION(:), INTENT(IN)       :: particle_set
+      INTEGER(int_8), INTENT(IN)                          :: mem_available
+      TYPE(C_PTR), DIMENSION(:), ALLOCATABLE, INTENT(OUT) :: ctx_handles
+
+      INTEGER                                  :: i, ikind, iset, &
+                                                  ishell, l, coeff_ctr, n_coeff, & 
+                                                  iexp, exp_ctr, n_exp, natom
+      INTEGER, DIMENSION(:), ALLOCATABLE       :: atom_kinds
+      INTEGER, DIMENSION(:, :), ALLOCATABLE    :: kind_nset
+      INTEGER, DIMENSION(:, :, :), ALLOCATABLE :: set_nexp, set_nshl
+      REAL(dp), DIMENSION(:, :), ALLOCATABLE   :: atom_positions
+      REAL(dp), DIMENSION(:), ALLOCATABLE      :: exponents, coefficients
+      
+      natom = SIZE(particle_set)
+      ALLOCATE(atom_positions(3, natom))
+      ALLOCATE(atom_kinds(natom))
+      DO i = 1, natom
+          atom_positions(:, i) = particle_set(i)%r(:)
+          atom_kinds(i) = particle_set(i)%atomic_kind%kind_number - 1 ! Make 0-indexed
+          CPASSERT(particle_set(i)%atom_index .EQ. i)
+      END DO
+      
+      ALLOCATE(kind_nset(nkind, 0:l_max))
+      n_exp = 0
+      n_coeff = 0
+      DO l = 0, l_max
+         DO ikind = 1, nkind
+            ASSOCIATE(bp => basis_parameter_l(ikind, l))
+            kind_nset(ikind, l) = bp%nset
+            DO iset = 1, bp%nset
+                n_exp = n_exp + bp%npgf(iset)
+                n_coeff = n_coeff + bp%nshell(iset) * bp%npgf(iset)
+            END DO
+            END ASSOCIATE
+         END DO
+      END DO
+
+      ALLOCATE(exponents(n_exp))
+      ALLOCATE(coefficients(n_coeff))
+      ALLOCATE(set_nexp(max_set, nkind, 0:l_max))
+      ALLOCATE(set_nshl(max_set, nkind, 0:l_max))
+
+      exp_ctr = 0
+      coeff_ctr = 0
+      DO l = 0, l_max
+         DO ikind = 1, nkind
+            ASSOCIATE(bp => basis_parameter_l(ikind, l))
+            DO iset = 1, bp%nset
+               set_nexp(iset, ikind, l) = bp%npgf(iset)
+               set_nshl(iset, ikind, l) = bp%nshell(iset)
+               DO iexp = 1, bp%npgf(iset)
+                  exp_ctr = exp_ctr + 1
+                  exponents(exp_ctr) = bp%zet(iexp, iset)
+               END DO
+               DO ishell = 1, bp%nshell(iset)
+                  DO iexp = 1, bp%npgf(iset)
+                     coeff_ctr = coeff_ctr + 1
+                     coefficients(coeff_ctr) = bp%gcc(iexp, ishell, iset)
+                  END DO
+               END DO
+            END DO
+            END ASSOCIATE
+         END DO
+      END DO
+      ALLOCATE(ctx_handles(acc_dev%num_cores))
+      CALL create_accelerator_contexts(ctx_handles(1), acc_dev, SIZE(ctx_handles), &
+                                       mem_available, &
+                                       cell_mat, atom_positions, atom_kinds, &
+                                       exponents, coefficients, &
+                                       kind_nset, set_nexp, set_nshl)
+   END SUBROUTINE hfx_libheric_create_accelerator_contexts
 
 ! **************************************************************************************************
 !> \brief - Parses the memory section

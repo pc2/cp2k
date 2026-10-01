@@ -95,7 +95,8 @@ MODULE hfx_energy_potential
       hfx_libheric_cell_type, hfx_libheric_basis_type, hfx_libheric_screening_model_type, &
       hfx_libheric_screening_models, hfx_libheric_screening_kkll_models, &
       hfx_libheric_sorted_cells_from_hfx_cells, &
-      hfx_libheric_create_basis_types, hfx_libheric_free_basis_types
+      hfx_libheric_create_basis_types, hfx_libheric_free_basis_types, &
+      hfx_libheric_create_accelerator_contexts
    USE input_constants, ONLY: do_potential_mix_cl_trunc, &
                               do_potential_truncated, &
                               do_potential_TShPSC, &
@@ -112,7 +113,6 @@ MODULE hfx_energy_potential
    USE libheric_interface, ONLY: libheric_initialize, &
                                  libheric_release, &
                                  query_accelerator_devices, &
-                                 create_accelerator_contexts, &
                                  free_accelerator_contexts, &
                                  accelerator_context_is_functional, &
                                  accelerator_context_set_potential_operator, &
@@ -330,15 +330,13 @@ CONTAINS
 
       ehfx = 0.0_dp
 
-      ! This is not very clean, but effective. ispin can only be 2 if we do the beta spin part in core
+      ! ** This is not very clean, but effective. ispin can only be 2 if we do the beta spin part in core
       my_geo_change = geometry_did_change
       IF (ispin == 2) my_geo_change = .FALSE.
 
       logger => cp_get_default_logger()
 
       is_anti_symmetric = dbcsr_get_matrix_type(rho_ao(1, 1)%matrix) == dbcsr_type_antisymmetric
-
-      iw = -1
 
       IF (my_geo_change) THEN
          CALL m_memory(memsize_before)
@@ -548,18 +546,18 @@ CONTAINS
       max_val_memory = 1_int_8
 
       ! Set the integral engine
-      IF (general_parameter%hfx_library == hfx_library_is_libint) THEN
+      if (general_parameter%hfx_library == hfx_library_is_libint) then
          use_libint = .true.
          use_libGint = .false.
-      END IF
-      IF (general_parameter%hfx_library == hfx_library_is_libGint) THEN
+      end if
+      if (general_parameter%hfx_library == hfx_library_is_libGint) then
          use_libint = .false.
          use_libGint = .true.
-      END IF
-      IF (general_parameter%hfx_library == hfx_library_is_both) THEN
+      end if
+      if (general_parameter%hfx_library == hfx_library_is_both) then
          use_libint = .true.
          use_libGint = .true.
-      END IF
+      end if
 
       max_am = basis_info%max_am
 
@@ -1884,79 +1882,71 @@ CONTAINS
 
       !!!
       ! IF running both libint and libGint, uses the values from libint to check libGint values
-      IF (use_libGint .and. use_libint) THEN
+      if (use_libGint .and. use_libint) then
          ! barrier needed after allocate  full_ks_alpha(beta)_from_gpu before libGint get K
          ! to feed libgint a valid position for full_ks_alpha(beta)_from_gpu
-         ALLOCATE (full_ks_alpha_from_gpu, Mold=full_ks_alpha)
+         allocate (full_ks_alpha_from_gpu, Mold=full_ks_alpha)
          !$OMP BARRIER
-         IF (use_only_alpha_spin) THEN
+         if (use_only_alpha_spin) then
             call libGint_get_fock_matrix(full_ks_alpha_from_gpu)
-         ELSE
-            ALLOCATE (full_ks_beta_from_gpu, Mold=full_ks_beta)
+         else
+            allocate (full_ks_beta_from_gpu, Mold=full_ks_beta)
             !$OMP BARRIER
-            CALL libGint_get_fock_matrix(full_ks_alpha_from_gpu, full_ks_beta_from_gpu)
-         END IF
+            call libGint_get_fock_matrix(full_ks_alpha_from_gpu, full_ks_beta_from_gpu)
+         end if
 
          !$OMP BARRIER
          !$omp single
          max_abs_delta_KS = 0.0_dp
-         DO i = 1, SIZE(full_ks_alpha)
-            max_abs_delta_KS = MAX(max_abs_delta_ks, ABS(full_ks_alpha(i, 1) - full_ks_alpha_from_gpu(i, 1)))
-         END DO
-         IF (iw > 0) THEN
-            WRITE (UNIT=iw, FMT=*) " ------------------------------------ "
-            WRITE (UNIT=iw, FMT=*) " | rank ", para_env%mepos
-            WRITE (UNIT=iw, FMT=*) " |  max abs dif: ", max_abs_delta_KS
-            WRITE (UNIT=iw, FMT=*) " ------------------------------------ "
-         END IF
+         do i = 1, size(full_ks_alpha)
+            max_abs_delta_KS = max(max_abs_delta_ks, abs(full_ks_alpha(i, 1) - full_ks_alpha_from_gpu(i, 1)))
+         end do
+         write (UNIT=iw, FMT=*) " ------------------------------------ "
+         write (UNIT=iw, FMT=*) " | rank ", para_env%mepos
+         write (UNIT=iw, FMT=*) " |  max abs dif: ", max_abs_delta_KS
+         write (UNIT=iw, FMT=*) " ------------------------------------ "
 
          ! Print all F if delta is too large or (suspiciously) too small
-         IF (iw > 0) THEN
-            if (max_abs_delta_KS > 100.0_dp*eps_schwarz .or. max_abs_delta_KS < 1.0E-20_dp) THEN
-               WRITE (UNIT=iw, FMT=*) " K from CPU  |  K from GPU  |  Delta | Ratio "
-               DO i = 1, SIZE(full_ks_alpha)
-                  write (UNIT=iw, FMT=*) i, full_ks_alpha(i, 1), full_ks_alpha_from_gpu(i, 1), &
-                     full_ks_alpha(i, 1) - full_ks_alpha_from_gpu(i, 1), &
-                     full_ks_alpha(i, 1)/full_ks_alpha_from_gpu(i, 1)
-               END DO
-            END IF
-         END IF
+         if (max_abs_delta_KS > 100*eps_schwarz .or. max_abs_delta_KS < 1.E-20) then
+            write (UNIT=iw, FMT=*) " K from CPU  |  K from GPU  |  Delta | Ratio "
+            do i = 1, size(full_ks_alpha)
+               write (UNIT=iw, FMT=*) i, full_ks_alpha(i, 1), full_ks_alpha_from_gpu(i, 1), &
+                  full_ks_alpha(i, 1) - full_ks_alpha_from_gpu(i, 1), &
+                  full_ks_alpha(i, 1)/full_ks_alpha_from_gpu(i, 1)
+            end do
+         end if
 
-         IF (.NOT. use_only_alpha_spin) THEN
+         if (.not. use_only_alpha_spin) then
             max_abs_delta_KS = 0.0_dp
-            DO i = 1, size(full_ks_beta)
+            do i = 1, size(full_ks_beta)
                max_abs_delta_KS = max(max_abs_delta_ks, abs(full_ks_beta(i, 1) - full_ks_beta_from_gpu(i, 1)))
-            END DO
-            IF (iw > 0) THEN
-               WRITE (UNIT=iw, FMT=*) " ------------------------------------ "
-               WRITE (UNIT=iw, FMT=*) " | rank ", para_env%mepos
-               WRITE (UNIT=iw, FMT=*) " |  max abs dif B: ", max_abs_delta_KS
-               WRITE (UNIT=iw, FMT=*) " ------------------------------------ "
-            END IF
+            end do
+            write (UNIT=iw, FMT=*) " ------------------------------------ "
+            write (UNIT=iw, FMT=*) " | rank ", para_env%mepos
+            write (UNIT=iw, FMT=*) " |  max abs dif B: ", max_abs_delta_KS
+            write (UNIT=iw, FMT=*) " ------------------------------------ "
 
             ! Print all F if delta is too large or (suspiciously) too small
-            IF (max_abs_delta_KS > 100.0_dp*eps_schwarz .or. max_abs_delta_KS < 1.0E-18_dp) THEN
-               IF (iw > 0) THEN
-                  WRITE (UNIT=iw, FMT=*) " BETA K from CPU  |  K from GPU  |  Delta | Ratio "
-                  DO i = 1, size(full_ks_beta)
-                     WRITE (UNIT=iw, FMT=*) i, full_ks_beta(i, 1), full_ks_beta_from_gpu(i, 1), &
-                        full_ks_beta(i, 1) - full_ks_beta_from_gpu(i, 1), &
-                        full_ks_beta(i, 1)/full_ks_beta_from_gpu(i, 1)
-                  END DO
-               END IF
-            END IF
-         END IF
+            if (max_abs_delta_KS > 100*eps_schwarz .or. max_abs_delta_KS < 1.E-18) then
+               write (UNIT=iw, FMT=*) " BETA K from CPU  |  K from GPU  |  Delta | Ratio "
+               do i = 1, size(full_ks_beta)
+                  write (UNIT=iw, FMT=*) i, full_ks_beta(i, 1), full_ks_beta_from_gpu(i, 1), &
+                     full_ks_beta(i, 1) - full_ks_beta_from_gpu(i, 1), &
+                     full_ks_beta(i, 1)/full_ks_beta_from_gpu(i, 1)
+               end do
+            end if
+         end if
          !$omp end single
-      END IF
+      end if
 
       ! Copy the KS matrix from device to host.
-      IF (use_libGint .AND. (.NOT. use_libint)) THEN
-         IF (use_only_alpha_spin) THEN
-            CALL libGint_get_fock_matrix(full_ks_alpha)
-         ELSE
-            CALL libGint_get_fock_matrix(full_ks_alpha, full_ks_beta)
-         END IF
-      END IF
+      if (use_libGint .and. .not. use_libint) then
+         if (use_only_alpha_spin) then
+            call libGint_get_fock_matrix(full_ks_alpha)
+         else
+            call libGint_get_fock_matrix(full_ks_alpha, full_ks_beta)
+         end if
+      end if
 
 !$OMP MASTER
       logger => cp_get_default_logger()
@@ -3167,10 +3157,8 @@ CONTAINS
 !> \param mc_max ...
 !> \param md_max ...
 !> \param prim ...
-!> \param output_unit ...
 ! **************************************************************************************************
-   SUBROUTINE print_integrals(i, j, k, l, set_offsets, atom_offsets, iset, jset, kset, lset, &
-                              ma_max, mb_max, mc_max, md_max, prim, output_unit)
+   SUBROUTINE print_integrals(i, j, k, l, set_offsets, atom_offsets, iset, jset, kset, lset, ma_max, mb_max, mc_max, md_max, prim)
       INTEGER                                            :: i, j, k, l
       INTEGER, DIMENSION(:, :, :, :), POINTER            :: set_offsets
       INTEGER, DIMENSION(:, :), POINTER                  :: atom_offsets
@@ -3178,14 +3166,8 @@ CONTAINS
                                                             mc_max, md_max
       REAL(dp), DIMENSION(ma_max*mb_max*mc_max*md_max), &
          INTENT(IN)                                      :: prim
-      INTEGER, OPTIONAL                                  :: output_unit
 
-      REAL(KIND=dp), PARAMETER                           :: eps_int = 1.0E-13_dp
-
-      INTEGER                                            :: iint, ma, mb, mc, md, my_output_unit
-
-      my_output_unit = 99
-      IF (PRESENT(output_unit)) my_output_unit = output_unit
+      INTEGER                                            :: iint, ma, mb, mc, md
 
       iint = 0
       DO md = 1, md_max
@@ -3193,14 +3175,12 @@ CONTAINS
             DO mb = 1, mb_max
                DO ma = 1, ma_max
                   iint = iint + 1
-                  IF (ABS(prim(iint)) > eps_int) THEN
-                     IF (my_output_unit > 0) THEN
-                        WRITE (my_output_unit, *) atom_offsets(i, 1) + ma + set_offsets(iset, 1, i, 1) - 1, &
-                           atom_offsets(j, 1) + ma + set_offsets(jset, 1, j, 1) - 1, &
-                           atom_offsets(k, 1) + ma + set_offsets(kset, 1, k, 1) - 1, &
-                           atom_offsets(l, 1) + ma + set_offsets(lset, 1, l, 1) - 1, &
-                           prim(iint)
-                     END IF
+                  IF (ABS(prim(iint)) > 0.0000000000001) THEN
+                     WRITE (99, *) atom_offsets(i, 1) + ma + set_offsets(iset, 1, i, 1) - 1, &
+                        atom_offsets(j, 1) + ma + set_offsets(jset, 1, j, 1) - 1, &
+                        atom_offsets(k, 1) + ma + set_offsets(kset, 1, k, 1) - 1, &
+                        atom_offsets(l, 1) + ma + set_offsets(lset, 1, l, 1) - 1, &
+                        prim(iint)
                   END IF
                END DO
             END DO
@@ -3361,7 +3341,7 @@ CONTAINS
                                        x_data%screen_funct_coeffs_pgf, &
                                        x_data%pair_dist_radii_pgf, &
                                        max_set_global, max_npgf, nthreads, i_thread, p_work)
-         CALL hfx_libheric_init_screening_models(x_data, nkind, l_max, basis_parameter_l, screen) 
+         CALL hfx_libheric_init_screening_models(x_data, max_set, nkind, l_max, basis_parameter_l, screen) 
          x_data%screen_funct_is_initialized = .TRUE.
       END IF
       END BLOCK
@@ -3387,20 +3367,12 @@ CONTAINS
       BLOCK 
          TYPE(acc_kind), DIMENSION(:), ALLOCATABLE   :: acc_kinds
          TYPE(acc_device), DIMENSION(:), ALLOCATABLE :: acc_devices
-         INTEGER                                     :: i, ikind, iset, &
-                                                        ishell, l, coeff_ctr, n_coeff, & 
-                                                        iexp, exp_ctr, n_exp, quartet_class_idx, &
-                                                        n_quartet_classes, n_classes_on_rank
+         INTEGER                                     :: i, quartet_class_idx, n_quartet_classes, n_classes_on_rank
          INTEGER(int_8)                              :: atom_ij_idx
          INTEGER(int_8)                              :: mem_available
          INTEGER(int_8), DIMENSION(:), ALLOCATABLE   :: n_quartets 
          REAL(dp)                                    :: t_start, t_stop
-         INTEGER, DIMENSION(:), ALLOCATABLE          :: atom_kinds
-         INTEGER, DIMENSION(:, :), ALLOCATABLE       :: kind_nset
-         INTEGER, DIMENSION(:, :, :), ALLOCATABLE    :: set_nexp, set_nshl
-         REAL(dp), DIMENSION(:, :), ALLOCATABLE      :: atom_positions
-         REAL(dp), DIMENSION(:), ALLOCATABLE         :: exponents, coefficients, timings
-         TYPE(qs_kind_type), DIMENSION(:), POINTER   :: qs_kind_set 
+         REAL(dp), DIMENSION(:), ALLOCATABLE         :: timings
          TYPE(C_PTR), DIMENSION(:), ALLOCATABLE      :: ctx_handles
          INTEGER, DIMENSION(:), ALLOCATABLE          :: next_quartet_idx, next_quartet_buf
          TYPE(mp_win_type)                           :: next_quartet_idx_win
@@ -3426,74 +3398,18 @@ CONTAINS
             CALL m_flush(iw)
          END IF
          CALL cp_print_key_finished_output(iw, logger, hfx_section, "HF_INFO")
-
-         ALLOCATE(atom_positions(3, natom))
-         ALLOCATE(atom_kinds(natom))
-         DO i = 1, natom
-             atom_positions(:, i) = particle_set(i)%r(:)
-             atom_kinds(i) = particle_set(i)%atomic_kind%kind_number - 1 ! Make 0-indexed
-             CPASSERT(particle_set(i)%atom_index .EQ. i)
-         END DO
-
-         CALL get_qs_env(qs_env, qs_kind_set=qs_kind_set)
-         ALLOCATE(kind_nset(nkind, 0:l_max))
-         n_exp = 0
-         n_coeff = 0
-         DO l = 0, l_max
-            DO ikind = 1, nkind
-               ASSOCIATE(bp => basis_parameter_l(ikind, l))
-               kind_nset(ikind, l) = bp%nset
-               DO iset = 1, bp%nset
-                   n_exp = n_exp + bp%npgf(iset)
-                   n_coeff = n_coeff + bp%nshell(iset) * bp%npgf(iset)
-               END DO
-               END ASSOCIATE
-            END DO
-         END DO
-
-         ALLOCATE(exponents(n_exp))
-         ALLOCATE(coefficients(n_coeff))
-         ALLOCATE(set_nexp(max_set, nkind, 0:l_max))
-         ALLOCATE(set_nshl(max_set, nkind, 0:l_max))
-
-         exp_ctr = 0
-         coeff_ctr = 0
-         DO l = 0, l_max
-            DO ikind = 1, nkind
-               ASSOCIATE(bp => basis_parameter_l(ikind, l))
-               DO iset = 1, bp%nset
-                  set_nexp(iset, ikind, l) = bp%npgf(iset)
-                  set_nshl(iset, ikind, l) = bp%nshell(iset)
-                  DO iexp = 1, bp%npgf(iset)
-                     exp_ctr = exp_ctr + 1
-                     exponents(exp_ctr) = bp%zet(iexp, iset)
-                  END DO
-                  DO ishell = 1, bp%nshell(iset)
-                     DO iexp = 1, bp%npgf(iset)
-                        coeff_ctr = coeff_ctr + 1
-                        coefficients(coeff_ctr) = bp%gcc(iexp, ishell, iset)
-                     END DO
-                  END DO
-               END DO
-               END ASSOCIATE
-            END DO
-         END DO
+         
+         mem_available = 1024 * 1024 * 1024 ! 1GiB
+         CALL hfx_libheric_create_accelerator_contexts(max_set, nkind, l_max, basis_parameter_l, &
+                                                       cell%hmat, acc_devices(1), particle_set, &
+                                                       mem_available, ctx_handles)
 
          n_quartet_classes = (l_max + 1) ** 4
          ALLOCATE(n_quartets(n_quartet_classes), source=0_int_8)
          ALLOCATE(timings(n_quartet_classes), source=0.0_dp)
-
-         ALLOCATE(ctx_handles(acc_devices(1)%num_cores))
-         mem_available = 1024 * 1024 * 1024 ! 1GiB
-         CALL create_accelerator_contexts(ctx_handles(1), acc_devices(1), SIZE(ctx_handles), &
-                                          mem_available, &
-                                          cell%hmat, atom_positions, atom_kinds, &
-                                          exponents, coefficients, &
-                                          kind_nset, set_nexp, set_nshl)
-
          
          !! First num_pe quartet_classes are assigned round-robin to ranks
-         !! The remaining quartet classes are grabbed first-come-first-serve using the MPI-window
+         !! The remaining quartet classes are obtained first-come-first-serve using the MPI-window
          ALLOCATE(next_quartet_idx(1), source=(para_env%num_pe + 1))
          ALLOCATE(next_quartet_buf(1))
          CALL next_quartet_idx_win%create(next_quartet_buf(:), para_env%mp_comm_type)
