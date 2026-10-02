@@ -1182,10 +1182,14 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                                                              ", iset=", iset, "(", isetg, &
                                                              "), jset=", jset, "(", jsetg, &
                                                              "), ipgf=", ipgf, ", jpgf=", jpgf,")"
+
+                  !! Reference screening functions are only available if libint is available
+#if(__LIBINT)
                   CALL hfx_libheric_display_screening_model_error(model_params, coeff%R_pgf(jpgf, ipgf, jset, iset), &
                                                                   x_data%pair_dist_radii_pgf(jpgf, ipgf, jsetg, &
                                                                                              isetg, jkind, ikind), &
                                                                   n_data, opt_data_pgf(:, 1), opt_data_pgf(:, 2)) 
+#endif
                   cell_mat(1, 1) = pgf_radius / REAL(GRID_SIZE, KIND=dp)
                   cell_mat(1, 2) = set_radius / REAL(GRID_SIZE, KIND=dp)
                   cell_mat(1, 3) = kind_radius / REAL(GRID_SIZE, KIND=dp)
@@ -1318,11 +1322,13 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                   coeff%pgf(jpgf, ipgf, jset, iset)%cutoff2 = ((pgf_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
                   coeff%pgf(jpgf, ipgf, jset, iset)%max     = MAXVAL(opt_data_pgf(:, 2)) 
                   coeff%pgf(jpgf, ipgf, jset, iset)%y_min   = powell_min_log
+                  !! Reference screening functions are only available if libint is available
+#if(__LIBINT)
                   CALL hfx_libheric_display_screening_model_error(model_params, coeff%pgf(jpgf, ipgf, jset, iset), &
                                                                   x_data%screen_funct_coeffs_pgf(jpgf, ipgf, jsetg, &
                                                                                                  isetg, jkind, ikind), &
                                                                   n_data, opt_data_pgf(:, 1), opt_data_pgf(:, 2)) 
-
+#endif
                END DO
                END DO
                !assert_flag = ALL([(ABS(ref_data_set(i, 2) - opt_data_set(i, 2)) .LT. 1e-9, i=0,GRID_SIZE)])
@@ -1338,9 +1344,12 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                                                           ", iset=", iset, "(", isetg, &
                                                           "), jset=", jset, "(", jsetg, &
                                                           "))"
+               !! Reference screening functions are only available if libint is available
+#if(__LIBINT)
                CALL hfx_libheric_display_screening_model_error(model_params, coeff%set(jset, iset), &
                                                                x_data%screen_funct_coeffs_set(jsetg, isetg, jkind, ikind), &
                                                                n_data, opt_data_set(:, 1), opt_data_set(:, 2)) 
+#endif
                END ASSOCIATE
             END DO
             END DO
@@ -1353,9 +1362,12 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
             coeff%kind%max     = MAXVAL(opt_data_kind(:, 2)) 
             coeff%kind%y_min   = powell_min_log
             WRITE(model_params, "(A,4(I1,A))") "(la=", la, ", lb=", lb, ", ikind=", ikind, ", jkind=", jkind, ")"
+            !! Reference screening functions are only available if libint is available
+#if(__LIBINT)
             CALL hfx_libheric_display_screening_model_error(model_params, coeff%kind, &
                                                             x_data%screen_funct_coeffs_kind(jkind, ikind), &
                                                             n_data, opt_data_kind(:, 1), opt_data_kind(:, 2)) 
+#endif
 
             END ASSOCIATE
          END DO

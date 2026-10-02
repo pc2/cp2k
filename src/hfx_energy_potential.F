@@ -3331,6 +3331,8 @@ CONTAINS
       nthreads = 1
       i_thread = 0
       IF (.NOT. x_data%screen_funct_is_initialized) THEN
+         !! Reference screening functions can only be generated if libint is available
+#if(__LIBINT)
          !! Initialize pgf product radius estimate functions for crude far field screening 
          CALL calc_pair_dist_radii(qs_env, basis_parameter, x_data%pair_dist_radii_pgf, & 
                                    max_set_global, max_npgf, eps_schwarz, nthreads, i_thread)
@@ -3341,8 +3343,10 @@ CONTAINS
                                        x_data%screen_funct_coeffs_pgf, &
                                        x_data%pair_dist_radii_pgf, &
                                        max_set_global, max_npgf, nthreads, i_thread, p_work)
+#endif 
          CALL hfx_libheric_init_screening_models(x_data, max_set, nkind, l_max, basis_parameter_l, screen) 
-         x_data%screen_funct_is_initialized = .TRUE.
+         !screening functions have to be reinitialized on every iteration right now, since they are not yet part of x_data
+         !x_data%screen_funct_is_initialized = .TRUE.
       END IF
       END BLOCK
 

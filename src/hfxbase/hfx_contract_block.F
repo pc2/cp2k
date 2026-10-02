@@ -45,23 +45,6 @@ CONTAINS
                        pbc(mb_max*mc_max), pad(ma_max*md_max), pac(ma_max*mc_max), &
                        prim(ma_max*mb_max*mc_max*md_max), scale
 
-#if !defined (__LIBINT)
-      MARK_USED(ma_max)
-      MARK_USED(mb_max)
-      MARK_USED(mc_max)
-      MARK_USED(md_max)
-      MARK_USED(kbd)
-      MARK_USED(kbc)
-      MARK_USED(kad)
-      MARK_USED(kac)
-      MARK_USED(pbd)
-      MARK_USED(pbc)
-      MARK_USED(pad)
-      MARK_USED(pac)
-      MARK_USED(prim)
-      MARK_USED(scale)
-      CPABORT("libint not compiled in")
-#else
       SELECT CASE (ma_max)
       CASE (1)
          SELECT CASE (mb_max)
@@ -4013,10 +3996,8 @@ CONTAINS
       CASE DEFAULT
          CALL block_default(ma_max, mb_max, mc_max, md_max, kbd, kbc, kad, kac, pbd, pbc, pad, pac, prim, scale)
       END SELECT
-#endif
    END SUBROUTINE contract_block
 
-#if defined (__LIBINT)
 ! **************************************************************************************************
 !> \brief ...
 !> \param ma_max ...
@@ -24738,5 +24719,4 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE block_15_15
-#endif
 END MODULE hfx_contract_block

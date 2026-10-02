@@ -1034,11 +1034,14 @@ CONTAINS
             END IF
 
             ! ** Initialize libint type
+            ! ** But only if linked against libint, which can be optionally left out when using libheric
+#if(__LIBINT)
             CALL cp_libint_static_init()
             CALL cp_libint_init_eri(actual_x_data%lib, actual_x_data%basis_info%max_am)
             CALL cp_libint_init_eri1(actual_x_data%lib_deriv, actual_x_data%basis_info%max_am)
             CALL cp_libint_set_contrdepth(actual_x_data%lib, 1)
             CALL cp_libint_set_contrdepth(actual_x_data%lib_deriv, 1)
+#endif
 
             CALL alloc_containers(actual_x_data%store_ints, 1)
             CALL alloc_containers(actual_x_data%store_forces, 1)
@@ -2332,9 +2335,12 @@ CONTAINS
             CALL hfx_release_basis_types(actual_x_data%basis_parameter)
 
             !MK Release libint and libderiv data structure
+            ! ** But only if linked against libint, which can be optionally left out when using libheric
+#if(__LIBINT)
             CALL cp_libint_cleanup_eri(actual_x_data%lib)
             CALL cp_libint_cleanup_eri1(actual_x_data%lib_deriv)
             CALL cp_libint_static_cleanup()
+#endif
 
             !! Deallocate containers
             CALL dealloc_containers(actual_x_data%store_ints, actual_x_data%memory_parameter%actual_memory_usage)
