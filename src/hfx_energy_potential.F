@@ -149,7 +149,7 @@ MODULE hfx_energy_potential
                           qs_ks_env_type
    USE t_c_g0, ONLY: init
    USE util, ONLY: sort
-   use, intrinsic :: iso_c_binding, only: c_ptr
+   USE, INTRINSIC :: iso_c_binding, ONLY: C_PTR, C_BOOL
 
    use cp2k_info, only: cp2k_flags
    use offload_api, only: offload_get_chosen_device, offload_set_chosen_device, offload_activate_chosen_device
@@ -3402,7 +3402,7 @@ CONTAINS
          mem_available = 1024 * 1024 * 1024 ! 1GiB
          CALL hfx_libheric_create_accelerator_contexts(max_set, nkind, l_max, basis_parameter_l, &
                                                        cell%hmat, acc_devices(1), particle_set, &
-                                                       mem_available, ctx_handles)
+                                                       mem_available, LOGICAL(.FALSE., KIND=C_BOOL), ctx_handles)
 
          n_quartet_classes = (l_max + 1) ** 4
          ALLOCATE(n_quartets(n_quartet_classes), source=0_int_8)

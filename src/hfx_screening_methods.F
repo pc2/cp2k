@@ -24,19 +24,41 @@ MODULE hfx_screening_methods
                                               powell_min_log, &
                                               hfx_libheric_basis_type,&
                                               hfx_libheric_screening_model_type,&
-                                              hfx_libheric_screening_models
+                                              hfx_libheric_screening_models, &
+                                              hfx_libheric_create_accelerator_contexts
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE libint_wrapper,                  ONLY: cp_libint_t
-   USE libheric_interface,              ONLY: libheric_optimize_screening_function => optimize_screening_function
+   USE libheric_interface,              ONLY: libheric_optimize_screening_function => optimize_screening_function, &
+                                              query_accelerator_devices, &
+                                              free_accelerator_contexts, &
+                                              accelerator_context_is_functional, &
+                                              accelerator_context_set_potential_operator, &
+                                              accelerator_context_set_quartet_class, &
+                                              accelerator_context_set_atom_ids, &
+                                              accelerator_context_set_set_ids, &
+                                              accelerator_context_set_shell_ids, &
+                                              accelerator_context_set_B_offset, &
+                                              accelerator_context_set_D_offset, &
+                                              accelerator_context_set_exponent_ids, &
+                                              accelerator_context_set_Q_offset, &
+                                              accelerator_context_submit_peri, &
+                                              accelerator_context_finish_quartet_class, &
+                                              accelerator_context_get_next_staged_atom_quartet, &
+                                              accelerator_context_update_cell, &
+                                              flush_logger, &
+                                              atom_quartet_type, &
+                                              acc_kind, acc_device
    USE machine,                         ONLY: default_output_unit
-   USE orbital_pointers,                ONLY: ncoset, nco
+   USE orbital_pointers,                ONLY: ncoset, nco, nso
+   USE particle_types,                  ONLY: particle_type
    USE powell,                          ONLY: opt_state_type,&
                                               powell_optimize
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE, INTRINSIC :: iso_c_binding,     ONLY: C_PTR, C_BOOL
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -1030,6 +1052,7 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
 !> \brief Initialize screening parameters per angular momentum pair (la, lb); the model is documented
 !>        in hfx_libheric_eval_screen_model
 !> \param x_data - contains old models to compare the models to
+!> \param max_set - maximum number of shellsets in any basis set
 !> \param nkind - number unique basis sets
 !> \param l_max - maximum angular momentum
 !> \param basis_parameter_l - all hfx_libheric basis sets
@@ -1038,9 +1061,9 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
 !>      09.2026 created [Johannes Menzel]
 !> \author Johannes Menzel
 ! **************************************************************************************************
-   SUBROUTINE hfx_libheric_init_screening_models(x_data, nkind, l_max, basis_parameter_l, screen)
+   SUBROUTINE hfx_libheric_init_screening_models(x_data, max_set, nkind, l_max, basis_parameter_l, screen)
       TYPE(hfx_type), INTENT(IN)                  :: x_data
-      INTEGER, INTENT(IN)                         :: nkind, l_max
+      INTEGER, INTENT(IN)                         :: max_set, nkind, l_max
       TYPE(hfx_libheric_basis_type), &
           DIMENSION(1:nkind,0:l_max), INTENT(IN)  :: basis_parameter_l
       TYPE(hfx_libheric_screening_models), &
@@ -1049,20 +1072,54 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
       
       INTEGER, PARAMETER                          :: GRID_SIZE = 100
 
-      REAL(dp), DIMENSION(0:GRID_SIZE, 2)         :: opt_data_kind, opt_data_set, opt_data_pgf
+      REAL(dp), DIMENSION(0:GRID_SIZE, 2)         :: opt_data_kind, opt_data_set, opt_data_pgf!, &
+      !                                               ref_data_kind, ref_data_set, ref_data_pgf
      
       REAL(dp), DIMENSION(:), POINTER             :: p_work
+      !REAL(dp), DIMENSION(:, :), ALLOCATABLE      :: set_integrals, kind_integrals
       REAL(dp)                                    :: max_val, log_max_val, R1, & 
                                                      ra(3), rb(3), rp(3), chi, ff, rab2, prefactor, &
                                                      max_contraction_a, max_contraction_b, &
-                                                     pgf_radius, set_radius, kind_radius
+                                                     pgf_radius, set_radius, kind_radius, cell_mat(3, 3)
       INTEGER                                     :: la, lb, ikind, jkind, iset, jset, ncoa, ncob, sgfa, sgfb, &
-                                                     ipgf, jpgf, i, n_data, handle
+                                                     ipgf, jpgf, i, j, n_data, handle, nints, quartet_ctr
+      INTEGER(int_8)                              :: mem_available
+      LOGICAL                                     :: assert_flag
       CHARACTER(len=256)                          :: model_params
+      TYPE(particle_type), DIMENSION(:), &
+          ALLOCATABLE                             :: particle_set
+      TYPE(acc_kind), DIMENSION(:), ALLOCATABLE   :: acc_kinds
+      TYPE(acc_device), DIMENSION(:), ALLOCATABLE :: acc_devices
+      TYPE(C_PTR), DIMENSION(:), ALLOCATABLE      :: ctx_handles
+      TYPE(C_PTR)                                 :: local_ctx
+      TYPE(atom_quartet_type)                     :: atom_quartet
+      
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_init_screening_models'
 
       CALL timeset(routineN, handle)
 
+      mem_available = 1024 * 1024 * 1024 ! 1GiB
+      cell_mat(:, :) = 0.0_dp
+
+      ALLOCATE(particle_set(nkind))
+      !ALLOCATE(set_integrals(nso(l_max) ** 4, 0:GRID_SIZE), kind_integrals(nso(l_max) ** 4, 0:GRID_SIZE))
+      DO ikind = 1, nkind
+         particle_set(ikind)%r(:) = 0.0_dp
+         particle_set(ikind)%atom_index = ikind
+         ALLOCATE(particle_set(ikind)%atomic_kind)
+         particle_set(ikind)%atomic_kind%kind_number = ikind
+      END DO
+      
+      ALLOCATE(acc_kinds(0))
+      ! Search for CPU accelerator is implicit
+      CALL query_accelerator_devices(acc_kinds, acc_devices)
+
+      CALL hfx_libheric_create_accelerator_contexts(max_set, nkind, l_max, basis_parameter_l, &
+                                                    cell_mat, acc_devices(1), particle_set, &
+                                                    mem_available, LOGICAL(.TRUE., KIND=C_BOOL), ctx_handles)
+      local_ctx = ctx_handles(1)
+      CALL accelerator_context_set_potential_operator(local_ctx, x_data%potential_parameter%potential_type, &
+                                                      x_data%potential_parameter%omega)
 
       ALLOCATE(screen%coeffs(nkind, nkind, 0:l_max, 0:l_max))
 
@@ -1072,9 +1129,11 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
 
       DO la = 0, l_max
       DO lb = 0, l_max
+         nints = (nco(la) * nco(lb)) ** 2
          DO ikind = 1, nkind
          DO jkind = 1, nkind
             opt_data_kind = -HUGE(max_val)
+            !ref_data_kind = -HUGE(max_val)
             ASSOCIATE(bas_lai => basis_parameter_l(ikind, la), bas_lbj => basis_parameter_l(jkind, lb), &
                       coeff => screen%coeffs(jkind, ikind, lb, la))
             ALLOCATE(coeff%set(bas_lbj%nset, bas_lai%nset))
@@ -1086,12 +1145,15 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                ASSOCIATE(isetg => bas_lai%global_set(iset), jsetg => bas_lbj%global_set(jset)) 
                set_radius = bas_lai%set_radius(iset) + bas_lbj%set_radius(jset)
                opt_data_set = -HUGE(max_val)
+               !ref_data_set = -HUGE(max_val)
                ncoa = bas_lai%npgf(iset) * nco(la)
                ncob = bas_lbj%npgf(jset) * nco(lb)
                sgfa = bas_lai%first_sgf(1, iset)
                sgfb = bas_lbj%first_sgf(1, jset)
                max_contraction_a = MAXVAL([(SUM(ABS(bas_lai%sphi(1:ncoa, i))), i=sgfa, sgfa + bas_lai%nsgf(iset) - 1)])
                max_contraction_b = MAXVAL([(SUM(ABS(bas_lbj%sphi(1:ncob, i))), i=sgfb, sgfb + bas_lbj%nsgf(jset) - 1)])
+               !set_integrals(:, :) = 0.0_dp
+               !kind_integrals(:, :) = 0.0_dp
                DO ipgf = 1, bas_lai%npgf(iset)
                DO jpgf = 1, bas_lbj%npgf(jset)
                   pgf_radius = bas_lai%pgf_radius(ipgf, iset) + bas_lbj%pgf_radius(jpgf, jset)
@@ -1124,49 +1186,132 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                                                                   x_data%pair_dist_radii_pgf(jpgf, ipgf, jsetg, &
                                                                                              isetg, jkind, ikind), &
                                                                   n_data, opt_data_pgf(:, 1), opt_data_pgf(:, 2)) 
-                  opt_data_pgf = -HUGE(max_val)
-                  ASSOCIATE(rad_x => coeff%R_pgf(jpgf, ipgf, jset, iset)%x, &
-                            zeta => bas_lai%zet(ipgf, iset), zetb => bas_lbj%zet(jpgf, jset))
-                  DO i = 0, GRID_SIZE 
-                     !! ra is set to the origin, and rb only moves along the x-axis
-                     !! Collect data for pgf_coeff optimization
-                     rb(1) = (pgf_radius * i) / REAL(GRID_SIZE, KIND=dp)
-                     R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
-                     max_val = 0.0_dp 
-                     CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
-                                              la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
-                     max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
-                     log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
-                     log_max_val = MAX(log_max_val, powell_min_log)
-                     opt_data_pgf(i, 1) = rb(1)
-                     opt_data_pgf(i, 2) = log_max_val
+                  cell_mat(1, 1) = pgf_radius / REAL(GRID_SIZE, KIND=dp)
+                  cell_mat(1, 2) = set_radius / REAL(GRID_SIZE, KIND=dp)
+                  cell_mat(1, 3) = kind_radius / REAL(GRID_SIZE, KIND=dp)
 
-                     !! Collect data for set_coeff optimization
-                     rb(1) = REAL(i, dp) / REAL(GRID_SIZE, dp) * set_radius
-                     R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
-                     max_val = 0.0_dp 
-                     CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
-                                              la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
-                     max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
-                     log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
-                     log_max_val = MAX(log_max_val, powell_min_log)
-                     opt_data_set(i, 1) = rb(1)
-                     opt_data_set(i, 2) = MAX(log_max_val, opt_data_set(i, 2))
+                  CALL accelerator_context_update_cell(local_ctx, cell_mat(1, 1))
+                  quartet_ctr = 0
+                  opt_data_pgf = -HUGE(max_val)
+                  CALL accelerator_context_set_quartet_class(local_ctx, la, lb, la, lb)
+                  IF(.NOT. accelerator_context_is_functional(local_ctx)) &
+                      CPABORT("ACC not functional")
+                  DO i = 0, GRID_SIZE
+                     CALL accelerator_context_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
+                     CALL accelerator_context_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
+                     CALL accelerator_context_set_shell_ids(local_ctx, 0, 0, 0, 0)
+                     CALL accelerator_context_set_B_offset(local_ctx, i, 0, 0)
+                     CALL accelerator_context_set_D_offset(local_ctx, i, 0, 0)
+                     CALL accelerator_context_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
+                     CALL accelerator_context_set_Q_offset(local_ctx, 0, 0, 0)
+                     CALL accelerator_context_submit_peri(local_ctx)
                      
-                     !! Collect data for kind_coeff optimization
-                     rb(1) = (kind_radius * i) / REAL(GRID_SIZE, KIND=dp)
-                     R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
-                     max_val = 0.0_dp 
-                     CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
-                                              la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
-                     max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
+                     CALL accelerator_context_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
+                     CALL accelerator_context_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
+                     CALL accelerator_context_set_shell_ids(local_ctx, 0, 0, 0, 0)
+                     CALL accelerator_context_set_B_offset(local_ctx, 0, i, 0)
+                     CALL accelerator_context_set_D_offset(local_ctx, 0, i, 0)
+                     CALL accelerator_context_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
+                     CALL accelerator_context_set_Q_offset(local_ctx, 0, 0, 0)
+                     CALL accelerator_context_submit_peri(local_ctx)
+                     
+                     CALL accelerator_context_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
+                     CALL accelerator_context_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
+                     CALL accelerator_context_set_shell_ids(local_ctx, 0, 0, 0, 0)
+                     CALL accelerator_context_set_B_offset(local_ctx, 0, 0, i)
+                     CALL accelerator_context_set_D_offset(local_ctx, 0, 0, i)
+                     CALL accelerator_context_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
+                     CALL accelerator_context_set_Q_offset(local_ctx, 0, 0, 0)
+                     CALL accelerator_context_submit_peri(local_ctx)
+
+                     DO WHILE(accelerator_context_get_next_staged_atom_quartet(local_ctx, atom_quartet))
+                        j = quartet_ctr / 3
+                        max_val = SQRT(MAX(MAXVAL(atom_quartet%integrals(1:nints, 1)), &
+                                          -MINVAL(atom_quartet%integrals(1:nints, 1)))) * max_contraction_a * max_contraction_b
+                        log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
+                        log_max_val = MAX(log_max_val, powell_min_log)
+                        IF(MODULO(quartet_ctr, 3) .EQ. 0) THEN
+                           opt_data_pgf(j, 1) = pgf_radius * j / REAL(GRID_SIZE, KIND=dp)
+                           opt_data_pgf(j, 2) = log_max_val
+                        ELSEIF(MODULO(quartet_ctr, 3) .EQ. 1) THEN
+                           opt_data_set(j, 1) = set_radius * j / REAL(GRID_SIZE, KIND=dp)
+                           opt_data_set(j, 2) = MAX(opt_data_set(j, 2), log_max_val)
+                           !set_integrals(1:nints, j) = set_integrals(1:nints, j) + atom_quartet%integrals(1:nints, 1)
+                        ELSE
+                           opt_data_kind(j, 1) = kind_radius * j / REAL(GRID_SIZE, KIND=dp)
+                           opt_data_kind(j, 2) = MAX(opt_data_kind(j, 2), log_max_val)
+                           !kind_integrals(1:nints, j) = kind_integrals(1:nints, j) + atom_quartet%integrals(1:nints, 1)
+                        END IF
+                        quartet_ctr = quartet_ctr + 1
+                     END DO
+                  END DO
+                  CALL accelerator_context_finish_quartet_class(local_ctx)
+                  DO WHILE(accelerator_context_get_next_staged_atom_quartet(local_ctx, atom_quartet))
+                     j = quartet_ctr / 3
+                     max_val = SQRT(MAX(MAXVAL(atom_quartet%integrals(1:nints, 1)), &
+                                       -MINVAL(atom_quartet%integrals(1:nints, 1)))) * max_contraction_a * max_contraction_b
                      log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
                      log_max_val = MAX(log_max_val, powell_min_log)
-                     opt_data_kind(i, 1) = rb(1)
-                     opt_data_kind(i, 2) = MAX(log_max_val, opt_data_kind(i, 2))
+                     IF(MODULO(quartet_ctr, 3) .EQ. 0) THEN
+                        opt_data_pgf(j, 1) = pgf_radius * j / REAL(GRID_SIZE, KIND=dp)
+                        opt_data_pgf(j, 2) = log_max_val
+                     ELSEIF(MODULO(quartet_ctr, 3) .EQ. 1) THEN
+                        opt_data_set(j, 1) = set_radius * j / REAL(GRID_SIZE, KIND=dp)
+                        opt_data_set(j, 2) = MAX(opt_data_set(j, 2), log_max_val)
+                        !set_integrals(1:nints, j) = set_integrals(1:nints, j) + atom_quartet%integrals(1:nints, 1)
+                     ELSE
+                        opt_data_kind(j, 1) = kind_radius * j / REAL(GRID_SIZE, KIND=dp)
+                        opt_data_kind(j, 2) = MAX(opt_data_kind(j, 2), log_max_val)
+                        !kind_integrals(1:nints, j) = kind_integrals(1:nints, j) + atom_quartet%integrals(1:nints, 1)
+                     END IF
+                     quartet_ctr = quartet_ctr + 1
                   END DO
-                  END ASSOCIATE
-                  
+                  !ref_data_pgf = -HUGE(max_val)
+                  !ASSOCIATE(rad_x => coeff%R_pgf(jpgf, ipgf, jset, iset)%x, &
+                  !          zeta => bas_lai%zet(ipgf, iset), zetb => bas_lbj%zet(jpgf, jset))
+                  !DO i = 0, GRID_SIZE 
+                  !   !! ra is set to the origin, and rb only moves along the x-axis
+                  !   !! Collect data for pgf_coeff optimization
+                  !   rb(1) = (pgf_radius * i) / REAL(GRID_SIZE, KIND=dp)
+                  !   R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
+                  !   max_val = 0.0_dp 
+                  !   CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
+                  !                            la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
+                  !   max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
+                  !   log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
+                  !   log_max_val = MAX(log_max_val, powell_min_log)
+                  !   ref_data_pgf(i, 1) = rb(1)
+                  !   ref_data_pgf(i, 2) = log_max_val
+
+                  !   !! Collect data for set_coeff optimization
+                  !   rb(1) = REAL(i, dp) / REAL(GRID_SIZE, dp) * set_radius
+                  !   R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
+                  !   max_val = 0.0_dp 
+                  !   CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
+                  !                            la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
+                  !   max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
+                  !   log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
+                  !   log_max_val = MAX(log_max_val, powell_min_log)
+                  !   ref_data_set(i, 1) = rb(1)
+                  !   ref_data_set(i, 2) = MAX(log_max_val, ref_data_set(i, 2))
+                  !   
+                  !   !! Collect data for kind_coeff optimization
+                  !   rb(1) = (kind_radius * i) / REAL(GRID_SIZE, KIND=dp)
+                  !   R1 = MAX(0.0_dp, rad_x(1) * rb(1) ** 2 + rad_x(2))
+                  !   max_val = 0.0_dp 
+                  !   CALL evaluate_eri_screen(x_data%lib, ra, rb, ra, rb, zeta, zetb, zeta, zetb, &
+                  !                            la, lb, la, lb, max_val, x_data%potential_parameter, R1, R1, p_work)
+                  !   max_val = SQRT(max_val) * max_contraction_a * max_contraction_b
+                  !   log_max_val = MERGE(powell_min_log, LOG10(max_val), max_val .EQ. 0.0_dp)
+                  !   log_max_val = MAX(log_max_val, powell_min_log)
+                  !   ref_data_kind(i, 1) = rb(1)
+                  !   ref_data_kind(i, 2) = MAX(log_max_val, ref_data_kind(i, 2))
+                  !END DO
+                  !END ASSOCIATE
+                 
+                  !assert_flag = ALL([(ABS(ref_data_pgf(i, 2) - opt_data_pgf(i, 2)) .LT. 1e-9, i=0,GRID_SIZE)])
+                  !CPASSERT(assert_flag)
+                   
                   n_data = GRID_SIZE + 1
                   CALL libheric_optimize_screening_function(opt_data_pgf(0, 1), opt_data_pgf(0, 2), n_data, powell_min_log, &
                                                             coeff%pgf(jpgf, ipgf, jset, iset)%x(1), 4)
@@ -1180,6 +1325,9 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
 
                END DO
                END DO
+               !assert_flag = ALL([(ABS(ref_data_set(i, 2) - opt_data_set(i, 2)) .LT. 1e-9, i=0,GRID_SIZE)])
+               !CPASSERT(assert_flag)
+
                n_data = GRID_SIZE + 1
                CALL libheric_optimize_screening_function(opt_data_set(0, 1), opt_data_set(0, 2), n_data, powell_min_log, &
                                                              coeff%set(jset, iset)%x(1), 4)
@@ -1196,6 +1344,8 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                END ASSOCIATE
             END DO
             END DO
+            !assert_flag = ALL([(ABS(ref_data_kind(i, 2) - opt_data_kind(i, 2)) .LT. 1e-9, i=0,GRID_SIZE)])
+            !CPASSERT(assert_flag)
             n_data = GRID_SIZE + 1
             CALL libheric_optimize_screening_function(opt_data_kind(0, 1), opt_data_kind(0, 2), n_data, powell_min_log, &
                                              coeff%kind%x(1), 4)

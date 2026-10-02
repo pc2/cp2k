@@ -93,7 +93,7 @@ MODULE hfx_types
    USE string_utilities,                ONLY: compress
    USE t_c_g0,                          ONLY: free_C0
    USE util,                            ONLY: sort
-   USE, INTRINSIC :: iso_c_binding,     ONLY: C_PTR
+   USE, INTRINSIC :: iso_c_binding,     ONLY: C_PTR, C_BOOL
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num, omp_get_num_threads
 
@@ -2083,7 +2083,7 @@ CONTAINS
 
    SUBROUTINE hfx_libheric_create_accelerator_contexts(max_set, nkind, l_max, basis_parameter_l, &
                                                        cell_mat, acc_dev, particle_set, & 
-                                                       mem_available, ctx_handles) 
+                                                       mem_available, compute_raw_cartesian, ctx_handles) 
       INTEGER, INTENT(IN)                                 :: max_set, nkind, l_max
       TYPE(hfx_libheric_basis_type), &
          DIMENSION(nkind, 0:l_max), INTENT(IN)            :: basis_parameter_l
@@ -2091,6 +2091,7 @@ CONTAINS
       TYPE(acc_device), INTENT(IN)                        :: acc_dev
       TYPE(particle_type), DIMENSION(:), INTENT(IN)       :: particle_set
       INTEGER(int_8), INTENT(IN)                          :: mem_available
+      LOGICAL(C_BOOL), INTENT(IN)                         :: compute_raw_cartesian
       TYPE(C_PTR), DIMENSION(:), ALLOCATABLE, INTENT(OUT) :: ctx_handles
 
       INTEGER                                  :: i, ikind, iset, &
@@ -2156,6 +2157,7 @@ CONTAINS
       ALLOCATE(ctx_handles(acc_dev%num_cores))
       CALL create_accelerator_contexts(ctx_handles(1), acc_dev, SIZE(ctx_handles), &
                                        mem_available, &
+                                       compute_raw_cartesian, &
                                        cell_mat, atom_positions, atom_kinds, &
                                        exponents, coefficients, &
                                        kind_nset, set_nexp, set_nshl)
