@@ -1074,17 +1074,14 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
 
       REAL(dp), DIMENSION(0:GRID_SIZE, 2)         :: opt_data_kind, opt_data_set, opt_data_pgf!, &
       !                                               ref_data_kind, ref_data_set, ref_data_pgf
-     
-      REAL(dp), DIMENSION(:), POINTER             :: p_work
       !REAL(dp), DIMENSION(:, :), ALLOCATABLE      :: set_integrals, kind_integrals
-      REAL(dp)                                    :: max_val, log_max_val, R1, & 
+      REAL(dp)                                    :: max_val, log_max_val, & 
                                                      ra(3), rb(3), rp(3), chi, ff, rab2, prefactor, &
                                                      max_contraction_a, max_contraction_b, &
                                                      pgf_radius, set_radius, kind_radius, cell_mat(3, 3)
       INTEGER                                     :: la, lb, ikind, jkind, iset, jset, ncoa, ncob, sgfa, sgfb, &
                                                      ipgf, jpgf, i, j, n_data, handle, nints, quartet_ctr
       INTEGER(int_8)                              :: mem_available
-      LOGICAL                                     :: assert_flag
       CHARACTER(len=256)                          :: model_params
       TYPE(particle_type), DIMENSION(:), &
           ALLOCATABLE                             :: particle_set
@@ -1093,6 +1090,9 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
       TYPE(C_PTR), DIMENSION(:), ALLOCATABLE      :: ctx_handles
       TYPE(C_PTR)                                 :: local_ctx
       TYPE(atom_quartet_type)                     :: atom_quartet
+      !REAL(dp), DIMENSION(:), POINTER             :: p_work
+      !LOGICAL                                     :: assert_flag
+      !REAL(dp)                                    :: R1
       
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_libheric_init_screening_models'
 
@@ -1113,7 +1113,6 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
       ALLOCATE(acc_kinds(0))
       ! Search for CPU accelerator is implicit
       CALL query_accelerator_devices(acc_kinds, acc_devices)
-
       CALL hfx_libheric_create_accelerator_contexts(max_set, nkind, l_max, basis_parameter_l, &
                                                     cell_mat, acc_devices(1), particle_set, &
                                                     mem_available, LOGICAL(.TRUE., KIND=C_BOOL), ctx_handles)
@@ -1374,6 +1373,7 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
          END DO
      END DO
      END DO
+     CALL free_accelerator_contexts(ctx_handles(1), SIZE(ctx_handles))
      CALL timestop(handle)
    END SUBROUTINE hfx_libheric_init_screening_models
    
