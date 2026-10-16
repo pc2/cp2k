@@ -44,7 +44,6 @@ MODULE hfx_pair_list_methods
              build_atomic_pair_list, &
              pgf_product_list_size, &
              build_pair_list_pbc_pgf, &
-             bra_t, allocate_bra, &
              bra_t, allocate_bra, min_image_gap_sq, &
              hfx_libheric_build_pgf_pair_list, &
              hfx_libheric_build_atom_pair_lists, &
