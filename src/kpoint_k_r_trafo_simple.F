@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------------------------------!
 
 ! **************************************************************************************************
-!> \brief Implements transformations from k-space to R-space for Fortran array matrices
+!> \brief Implements simple k-space/R-space transformations and Gamma-point MIC reconstruction.
 !> \note This code is less performant/more memory consuming than the methods in kpoint_methods.F
 !>       Use only when transformations are not the computational bottleneck.
 !> \par History
@@ -14,18 +14,25 @@
 !> \author Stepan Marek
 ! **************************************************************************************************
 MODULE kpoint_k_r_trafo_simple
-   USE cp_cfm_types,                    ONLY: cp_cfm_type
+   USE cell_types,                      ONLY: cell_type,&
+                                              minimum_image_weights
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_get_info,&
                                               dbcsr_get_readonly_block_p,&
                                               dbcsr_p_type,&
                                               dbcsr_type,&
+                                              dbcsr_type_antisymmetric,&
                                               dbcsr_type_no_symmetry
-   USE cp_fm_types,                     ONLY: cp_fm_type
+   USE cp_fm_struct,                    ONLY: cp_fm_struct_equivalent
+   USE cp_fm_types,                     ONLY: cp_fm_get_info,&
+                                              cp_fm_type
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_type
    USE mathconstants,                   ONLY: twopi,&
                                               z_zero
    USE message_passing,                 ONLY: mp_comm_type
+   USE particle_types,                  ONLY: particle_type
    USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
                                               neighbor_list_iterate,&
                                               neighbor_list_iterator_create,&
@@ -42,6 +49,7 @@ MODULE kpoint_k_r_trafo_simple
 
    PUBLIC :: replicate_rs_matrices, &
              rs_to_kp, &
+             fm_gamma_to_kp, &
              fm_rs_to_kp, &
              add_kp_to_all_rs, &
              fm_add_kp_to_all_rs, &
@@ -102,7 +110,8 @@ CONTAINS
                                        rs_array_out(ispin, :, :, :), cell_to_index_out)
             ELSE
                CALL write_block_symmetric(iatom, jatom, cell, rs_dbcsr_in(ispin, src_index)%matrix, &
-                                          rs_array_out(ispin, :, :, :), cell_to_index_out)
+                                          rs_array_out(ispin, :, :, :), cell_to_index_out, &
+                                          MERGE(-1.0_dp, 1.0_dp, matrix_sym == dbcsr_type_antisymmetric))
             END IF
          END DO
          CALL neighbor_list_iterator_release(iterator)
@@ -111,22 +120,24 @@ CONTAINS
       CALL timestop(handle)
    END SUBROUTINE replicate_rs_matrices
 ! **************************************************************************************************
-!> \brief Write a single block from the dbcsr matrix to correct place, with assumed symmetric dbcsr
+!> \brief Expand a triangular image block and its symmetric or antisymmetric mirror.
 !> \param iatom first atom index
 !> \param jatom second atom index
 !> \param cell Current cell (of second atom)
-!> \param matrix_in DBCSR matrix input, symmetric assumed (A_(mu nu)^(R) = A_(nu mu)^(-R))
+!> \param matrix_in Input DBCSR matrix in canonical atom order
 !> \param array_out Multidimensional array - dim 1 : rows, dim 2 : cols, dim 3 : rs_index
 !> \param cell_to_index_out Mapping of cell coords to rs_indices
+!> \param transpose_sign -1 for antisymmetric SOC image matrices, +1 otherwise
 !> \date 11.2025
 !> \author Stepan Marek
 ! **************************************************************************************************
-   SUBROUTINE write_block_symmetric(iatom, jatom, cell, matrix_in, array_out, cell_to_index_out)
+   SUBROUTINE write_block_symmetric(iatom, jatom, cell, matrix_in, array_out, cell_to_index_out, transpose_sign)
       INTEGER, INTENT(IN)                                :: iatom, jatom
       INTEGER, DIMENSION(3), INTENT(IN)                  :: cell
       TYPE(dbcsr_type), INTENT(IN)                       :: matrix_in
       REAL(kind=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: array_out
       INTEGER, DIMENSION(:, :, :), INTENT(IN), POINTER   :: cell_to_index_out
+      REAL(dp), INTENT(IN)                               :: transpose_sign
 
       INTEGER                                            :: col_offset, col_size, dest_index, &
                                                             dest_index_t, i, i_g, j, j_g, &
@@ -159,16 +170,16 @@ CONTAINS
          row_offset = row_offsets(iatom)
          col_offset = col_offsets(jatom)
       END IF
-      ! Do the write
+      ! The stored block is already in canonical atom order. Only the mirror changes sign.
       !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(i,j,i_g,j_g) &
       !$OMP SHARED(row_size, col_size, row_offset, col_offset, array_out, &
-      !$OMP dest_index, dest_index_t, block, iatom, jatom)
+      !$OMP dest_index, dest_index_t, block, iatom, jatom, transpose_sign)
       DO i = 1, row_size
          i_g = i + row_offset - 1
          DO j = 1, col_size
             j_g = j + col_offset - 1
             array_out(i_g, j_g, dest_index) = block(i, j)
-            IF (iatom /= jatom) array_out(j_g, i_g, dest_index_t) = block(i, j)
+            IF (iatom /= jatom) array_out(j_g, i_g, dest_index_t) = transpose_sign*block(i, j)
          END DO
       END DO
       !$OMP END PARALLEL DO
@@ -255,6 +266,91 @@ CONTAINS
       END DO
       CALL timestop(handle)
    END SUBROUTINE rs_to_kp
+
+! **************************************************************************************************
+!> \brief Reconstruct a complex k-point matrix from a real Gamma matrix using one MIC phase.
+!>        Among images within 1.0E-6 of the minimum distance, select the last candidate
+!>        in index_to_cell order whose lattice coordinates lie between -1 and 1.
+!> \param cfm_kp Complex output, with the same distributed layout as fm_gamma.
+!> \param fm_gamma Real Gamma matrix.
+!> \param cell Simulation cell.
+!> \param particle_set Atom positions defining the minimum images.
+!> \param atom_from_bf Atom index of each row/column basis function.
+!> \param index_to_cell Candidate lattice translations, indexed (direction, image).
+!> \param xkp Target k-point in reciprocal-cell coordinates.
+! **************************************************************************************************
+   SUBROUTINE fm_gamma_to_kp(cfm_kp, fm_gamma, cell, particle_set, atom_from_bf, index_to_cell, xkp)
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: cfm_kp
+      TYPE(cp_fm_type), INTENT(IN)                       :: fm_gamma
+      TYPE(cell_type), INTENT(IN), POINTER               :: cell
+      TYPE(particle_type), DIMENSION(:), INTENT(IN)      :: particle_set
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: atom_from_bf
+      INTEGER, DIMENSION(:, :), INTENT(IN)               :: index_to_cell
+      REAL(KIND=dp), DIMENSION(3), INTENT(IN)            :: xkp
+
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'fm_gamma_to_kp'
+
+      COMPLEX(KIND=dp)                                   :: phase
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: phases, row_phases
+      INTEGER                                            :: handle, i_atom, i_atom_old, i_cell, &
+                                                            i_mic_cell, i_row, j_atom, j_atom_old, &
+                                                            j_col, ncol_local, nrow_local, &
+                                                            num_cells
+      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+      LOGICAL                                            :: same_layout
+      REAL(KIND=dp)                                      :: arg
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: weights
+
+      CALL timeset(routineN, handle)
+
+      CPASSERT(ASSOCIATED(fm_gamma%matrix_struct))
+      CPASSERT(fm_gamma%matrix_struct%nrow_global == fm_gamma%matrix_struct%ncol_global)
+      CPASSERT(SIZE(atom_from_bf) == fm_gamma%matrix_struct%nrow_global)
+      CPASSERT(ALL(atom_from_bf >= 1) .AND. ALL(atom_from_bf <= SIZE(particle_set)))
+      CPASSERT(SIZE(index_to_cell, 1) == 3 .AND. SIZE(index_to_cell, 2) > 0)
+      IF (.NOT. ASSOCIATED(cfm_kp%local_data)) CALL cp_cfm_create(cfm_kp, fm_gamma%matrix_struct)
+      same_layout = cp_fm_struct_equivalent(cfm_kp%matrix_struct, fm_gamma%matrix_struct)
+      same_layout = same_layout .AND. ALL(cfm_kp%matrix_struct%descriptor == fm_gamma%matrix_struct%descriptor)
+      CPASSERT(same_layout)
+      CALL cp_fm_get_info(fm_gamma, nrow_local=nrow_local, ncol_local=ncol_local, &
+                          row_indices=row_indices, col_indices=col_indices)
+
+      num_cells = SIZE(index_to_cell, 2)
+      ALLOCATE (weights(num_cells), phases(num_cells), row_phases(nrow_local))
+      DO i_cell = 1, num_cells
+         arg = DOT_PRODUCT(REAL(index_to_cell(:, i_cell), KIND=dp), xkp)
+         phases(i_cell) = CMPLX(COS(twopi*arg), SIN(twopi*arg), KIND=dp)
+      END DO
+
+      j_atom_old = 0
+      DO j_col = 1, ncol_local
+         j_atom = atom_from_bf(col_indices(j_col))
+         IF (j_atom /= j_atom_old) THEN
+            ! Reuse the atom-pair phases for all local columns on the same atom.
+            i_atom_old = 0
+            DO i_row = 1, nrow_local
+               i_atom = atom_from_bf(row_indices(i_row))
+               IF (i_atom /= i_atom_old) THEN
+                  CALL minimum_image_weights(particle_set(i_atom)%r, particle_set(j_atom)%r, &
+                                             cell, index_to_cell, weights)
+                  ! The weights identify the nearest images; use only the last eligible phase.
+                  i_mic_cell = FINDLOC(weights > 0.0_dp .AND. &
+                                       ALL(ABS(index_to_cell) <= 1, DIM=1), .TRUE., DIM=1, BACK=.TRUE.)
+                  CPASSERT(i_mic_cell > 0)
+                  phase = phases(i_mic_cell)
+               END IF
+               row_phases(i_row) = phase
+               i_atom_old = i_atom
+            END DO
+            j_atom_old = j_atom
+         END IF
+         cfm_kp%local_data(1:nrow_local, j_col) = row_phases*fm_gamma%local_data(1:nrow_local, j_col)
+      END DO
+
+      CALL timestop(handle)
+
+   END SUBROUTINE fm_gamma_to_kp
+
 ! **************************************************************************************************
 !> \brief Transforms array of fm RS matrices into cfm k-space matrix, at given kpoint index
 !> \param cfm_kp The resulting complex fm matrix, containing the k-space matrix elements

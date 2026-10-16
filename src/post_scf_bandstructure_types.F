@@ -27,8 +27,7 @@ MODULE post_scf_bandstructure_types
    USE gw_auto_ri_types,                ONLY: auto_ri_release,&
                                               auto_ri_type
    USE input_constants,                 ONLY: G0W0,&
-                                              rtp_method_bse,&
-                                              rtp_method_bse_linearized,&
+                                              cohsex_off,&
                                               tensor_small_cell_full_kp
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
@@ -63,7 +62,8 @@ MODULE post_scf_bandstructure_types
       REAL(KIND=dp)                                   :: VBM = -1.0_dp, &
                                                          CBM = -1.0_dp, &
                                                          DBG = -1.0_dp, &
-                                                         IDBG = -1.0_dp
+                                                         IDBG = -1.0_dp, &
+                                                         E_fermi = -1.0_dp
    END TYPE band_edges_type
 
    ! data types for GW RI-RS code
@@ -85,14 +85,8 @@ MODULE post_scf_bandstructure_types
       ! Input parameters for RI-RS
       INTEGER                                          :: grid_select = 1
       REAL(KIND=dp)                                    :: tikhonov = 1.0E-08_dp
-      REAL(KIND=dp)                                    :: cutoff_radius_ri_rs = -1.0_dp
       REAL(KIND=dp)                                    :: cutoff_radius_ri_ao = -1.0_dp
-      INTEGER                                          :: n_procs_per_atom_z_lp = -1
-      INTEGER                                          :: n_panels = 1
-      LOGICAL                                          :: keep_sparsity_rirs = .TRUE.
       REAL(KIND=dp)                                    :: cutoff_radius_v_w = -1.0_dp
-      REAL(KIND=dp)                                    :: cutoff_radius_g_w = -1.0_dp
-      CHARACTER(LEN=default_string_length)             :: grid_file_suffix = ""
       TYPE(ri_rs_grid_opt_type)                        :: grid_opt
 
       ! Geometry references used by RI-RS grid setup and optimization.
@@ -110,8 +104,6 @@ MODULE post_scf_bandstructure_types
 
       ! Data types for cutoffs based DBCSR matrices
       REAL(KIND=dp), ALLOCATABLE                       :: chunk_centroids(:, :)
-      ! Centers of atom-blocked AO/RI matrices for CUTOFF_RADIUS_G_W.
-      REAL(KIND=dp), ALLOCATABLE                       :: atom_centers(:, :)
       INTEGER, ALLOCATABLE                             :: grid_atom_boundaries(:)
       INTEGER, ALLOCATABLE                             :: pan_first(:), pan_last(:)
 
@@ -161,7 +153,8 @@ MODULE post_scf_bandstructure_types
                                                          do_ldos = .FALSE., &
                                                          do_gw_ri_rs = .FALSE., &
                                                          do_dos_pdos = .FALSE., &
-                                                         do_floquet = .FALSE.
+                                                         do_floquet = .FALSE., &
+                                                         do_static_cohsex = .FALSE.
 
       ! various eigenvalues computed in GW code, some depend on k-points
       ! and have therefore three dimensions (band index, k-point, spin)
@@ -183,6 +176,12 @@ MODULE post_scf_bandstructure_types
       LOGICAL                                         :: do_hedin_shift = .FALSE.
       ! which GW flavour was requested; constants from input_constants (G0W0, evGW0, ...)
       INTEGER                                         :: gw_flavour = G0W0
+
+      ! parameters for static COHSEX approximation to GW
+      ! static COHSEX: OFF, DIAGONAL (ϵ^DG only) or QP_UPDATE (also diagonalization, ϵ^CN, MOs)
+      INTEGER                                         :: cohsex_flavor = cohsex_off
+      REAL(KIND=dp)                                   :: cohsex_scale_occ = 1.0_dp, &
+                                                         cohsex_scale_virt = 1.0_dp
 
       ! parameters for RI-RS implementation of GW
       TYPE(ri_rs_env)                                 :: ri_rs
@@ -216,6 +215,15 @@ MODULE post_scf_bandstructure_types
                                                        max_AO_idx_from_RI_AO_atom
       INTEGER, DIMENSION(2)                        :: n_occ = -1, &
                                                       n_vir = -1
+      INTEGER, DIMENSION(2)                        :: n_electron = -1
+      ! n_occ above is the HOMO index: under smearing,
+      ! not the true T=0 electron count. n_occ_nosmear is the smearing-independent
+      ! NINT(nelectron/maxocc) count, used only to center the SOC truncation window.
+      INTEGER, DIMENSION(2)                        :: n_occ_nosmear = -1
+      LOGICAL                                      :: do_smear = .FALSE.
+      INTEGER                                      :: smear_method = -1
+      REAL(KIND=dp)                                :: smear_width = 0.0_dp
+      REAL(KIND=dp)                                :: fixed_mag_mom = -1.0_dp
       REAL(KIND=dp)                                :: spin_degeneracy = -1.0_dp
       REAL(KIND=dp), DIMENSION(2)                  :: e_fermi = -1.0_dp
 
@@ -347,16 +355,22 @@ MODULE post_scf_bandstructure_types
                                                       skip_chi
       ! rtbse_method (Stepan Marek)
       INTEGER                                      :: rtp_method = -1
+      ! what PROPERTIES%BSE needs the GW to keep for it; set at init, read at the W(0) and de-init
+      ! sites; the consumer frees both itself once read
+      LOGICAL                                      :: keep_W_freq_zero = .FALSE., &
+                                                      keep_3c_nl = .FALSE.
 
       ! check-arrays and names for restarting
       LOGICAL, DIMENSION(:), ALLOCATABLE           :: read_chi, &
                                                       calc_chi
       LOGICAL, DIMENSION(:, :), ALLOCATABLE        :: Sigma_c_exists
       LOGICAL                                      :: all_W_exist = .FALSE., &
-                                                      Sigma_x_exists = .FALSE.
+                                                      Sigma_x_exists = .FALSE., &
+                                                      Sigma_c_freq_zero_exists = .FALSE.
       CHARACTER(LEN=3)                             :: chi_name = "chi"
       CHARACTER(LEN=6)                             :: W_time_name = "W_time"
       CHARACTER(LEN=7)                             :: Sigma_x_name = "Sigma_x"
+      CHARACTER(LEN=17)                            :: Sigma_c_freq_zero_name = "Sigma_c_freq_zero"
       CHARACTER(LEN=13)                            :: Sigma_p_name = "Sigma_pos_tau", &
                                                       Sigma_n_name = "Sigma_neg_tau"
       CHARACTER(LEN=default_path_length)           :: prefix = ""
@@ -376,6 +390,9 @@ MODULE post_scf_bandstructure_types
       REAL(KIND=dp)                                :: soc_window_occ = -1.0_dp
       REAL(KIND=dp)                                :: soc_window_virt = -1.0_dp
       REAL(KIND=dp)                                :: soc_window_smearing = 1.0_dp/evolt
+      INTEGER                                      :: soc_nbands_occ = -1.0_dp
+      INTEGER                                      :: soc_nbands_virt = -1.0_dp
+
       ! sizes: mat_V_SOC_xyz: xyz, img
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER :: mat_V_SOC_xyz => NULL()
       ! small-cell GW: dimension = number of kpoints; large-cell GW: Gamma-point, dimension = 1
@@ -537,9 +554,7 @@ CONTAINS
       CALL cp_fm_release(bs_env%fm_Minv_Gamma)
       CALL cp_fm_release(bs_env%fm_chi_Gamma_freq)
       CALL cp_fm_release(bs_env%fm_W_MIC_freq)
-      IF (bs_env%rtp_method == rtp_method_bse .OR. bs_env%rtp_method == rtp_method_bse_linearized) THEN
-         CALL cp_fm_release(bs_env%fm_W_MIC_freq_zero)
-      END IF
+      CALL cp_fm_release(bs_env%fm_W_MIC_freq_zero)
       CALL cp_fm_release(bs_env%fm_W_MIC_freq_1_extra)
       CALL cp_fm_release(bs_env%fm_W_MIC_freq_1_no_extra)
       CALL cp_cfm_release(bs_env%cfm_work_mo)
@@ -592,7 +607,6 @@ CONTAINS
       IF (ALLOCATED(bs_env%ri_rs%radius_ao_per_atom)) DEALLOCATE (bs_env%ri_rs%radius_ao_per_atom)
       IF (ALLOCATED(bs_env%ri_rs%radius_ri_per_atom)) DEALLOCATE (bs_env%ri_rs%radius_ri_per_atom)
       IF (ALLOCATED(bs_env%ri_rs%chunk_centroids)) DEALLOCATE (bs_env%ri_rs%chunk_centroids)
-      IF (ALLOCATED(bs_env%ri_rs%atom_centers)) DEALLOCATE (bs_env%ri_rs%atom_centers)
       IF (ALLOCATED(bs_env%ri_rs%grid_atom_boundaries)) DEALLOCATE (bs_env%ri_rs%grid_atom_boundaries)
       NULLIFY (bs_env%ri_rs%atomic_kind_set, bs_env%ri_rs%cell, bs_env%ri_rs%particle_set)
       IF (ALLOCATED(bs_env%ri_rs%pan_first)) DEALLOCATE (bs_env%ri_rs%pan_first)

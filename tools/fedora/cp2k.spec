@@ -35,6 +35,7 @@ BuildRequires: cmake(libxsmm)
 %endif
 BuildRequires: cmake(libxc)
 BuildRequires: cmake(Spglib)
+BuildRequires: cmake(wignernj)
 # Test dependencies
 BuildRequires: python3
 
@@ -129,7 +130,6 @@ cmake_common_args=(
   "-DCP2K_BLAS_VENDOR:STRING=FlexiBLAS"
   "-DCP2K_USE_EVERYTHING:BOOL=OFF"
   "-DCP2K_USE_STATIC_BLAS:BOOL=OFF"
-  "-DCP2K_USE_FFTW3:BOOL=ON"
   "-DCP2K_USE_LIBINT2:BOOL=ON"
   "-DCP2K_USE_LIBXC:BOOL=ON"
   "-DCP2K_USE_SPGLIB:BOOL=ON"

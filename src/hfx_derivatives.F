@@ -294,7 +294,7 @@ CONTAINS
          my_adiabatic_rescale_factor = adiabatic_rescale_factor
       END IF
 
-      !$OMP PARALLEL DEFAULT(OMP_DEFAULT_NONE_WITH_OOP) &
+      !$OMP PARALLEL DEFAULT(NONE) &
 !$OMP SHARED(qs_env,&
 !$OMP                                  rho_ao,&
 !$OMP                                  rho_ao_resp,&
@@ -1213,8 +1213,6 @@ CONTAINS
                      !! Near field screening
                      IF (max_val1 + (screen_coeffs_kind(lkind, kkind)%x(1)*rcd2 + &
                                      screen_coeffs_kind(lkind, kkind)%x(2)) + pmax_atom < log10_eps_schwarz) CYCLE
-                     sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
-                     sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
 
                      DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
                         kset = set_list_kl(i_set_list_kl)%pair(1)
@@ -1226,8 +1224,6 @@ CONTAINS
 
                         !! Near field screening
                         IF (max_val2 + pmax_atom < log10_eps_schwarz) CYCLE
-                        sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
-                        sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
 
                         IF (screen_pmat_forces) THEN
                            CALL get_pmax_val(ptr_p_1, ptr_p_2, ptr_p_3, ptr_p_4, &
@@ -1279,6 +1275,10 @@ CONTAINS
                         END IF
                         !! Calculate integrals if we run out of buffer or the geometry did change
                         IF (actual_x_data%memory_parameter%recalc_forces .OR. buffer_overflow) THEN
+                           sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
+                           sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
+                           sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
+                           sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
                            max_contraction_val = max_contraction(iset, iatom)* &
                                                  max_contraction(jset, jatom)* &
                                                  max_contraction(kset, katom)* &
@@ -1340,12 +1340,14 @@ CONTAINS
 
                            !! Compress the array for storage
                            spherical_estimate = 0.0_dp
-                           DO i = 1, nints
-                              spherical_estimate = MAX(spherical_estimate, ABS(primitive_forces(i)))
-                           END DO
+                           IF (cartesian_estimate /= 0.0_dp) THEN
+                              DO i = 1, nints
+                                 spherical_estimate = MAX(spherical_estimate, ABS(primitive_forces(i)))
+                              END DO
+                           END IF
 
                            spherical_estimate_virial = 0.0_dp
-                           IF (use_virial) THEN
+                           IF (use_virial .AND. cartesian_estimate_virial /= 0.0_dp) THEN
                               DO i = 1, 3*nints
                                  spherical_estimate_virial = MAX(spherical_estimate_virial, ABS(primitive_forces_virial(i)))
                               END DO
@@ -1386,7 +1388,7 @@ CONTAINS
                            ELSE
                               !! In order to be consistent with in-core part, round all the eris wrt. eps_schwarz
                               !! but only if we treat forces in-core
-                              IF (treat_forces_in_core) THEN
+                              IF (treat_forces_in_core .AND. cartesian_estimate /= 0.0_dp) THEN
                                  DO i = 1, nints
                                     primitive_forces(i) = primitive_forces(i)*pmax_entry
                                     IF (ABS(primitive_forces(i)) > eps_storage) THEN
@@ -1397,6 +1399,8 @@ CONTAINS
                                  END DO
                               END IF
                            END IF
+                           IF (cartesian_estimate == 0.0_dp .AND. &
+                               (.NOT. use_virial .OR. cartesian_estimate_virial == 0.0_dp)) CYCLE
                         END IF
                         IF (with_resp_density) THEN
                            CALL prefetch_density_matrix(nsgfa(iset), nsgfb(jset), nsgfc(kset), nsgfd(lset), &
@@ -1906,15 +1910,6 @@ CONTAINS
       REAL(dp)                                           :: EtaInv, tmp_max, tmp_max_virial, Zeta_A, &
                                                             Zeta_B, Zeta_C, Zeta_D, ZetaInv
 
-      CALL build_pair_list_pgf(npgfa, npgfb, pgf_list_ij, zeta, zetb, screen1, screen2, &
-                               pgf1, R1_pgf, log10_pmax, log10_eps_schwarz, ra, rb, &
-                               nelements_ij, &
-                               neighbor_cells, nimages, do_periodic)
-      CALL build_pair_list_pgf(npgfc, npgfd, pgf_list_kl, zetc, zetd, screen2, screen1, &
-                               pgf2, R2_pgf, log10_pmax, log10_eps_schwarz, rc, rd, &
-                               nelements_kl, &
-                               neighbor_cells, nimages, do_periodic)
-
       cart_estimate = 0.0_dp
       primitive_integrals = 0.0_dp
       IF (use_virial) THEN
@@ -1922,6 +1917,18 @@ CONTAINS
          cart_estimate_virial = 0.0_dp
       END IF
       neris_tmp = 0_int_8
+
+      CALL build_pair_list_pgf(npgfa, npgfb, pgf_list_ij, zeta, zetb, screen1, screen2, &
+                               pgf1, R1_pgf, log10_pmax, log10_eps_schwarz, ra, rb, &
+                               nelements_ij, &
+                               neighbor_cells, nimages, do_periodic, cell)
+      IF (nelements_ij == 0) RETURN
+      CALL build_pair_list_pgf(npgfc, npgfd, pgf_list_kl, zetc, zetd, screen2, screen1, &
+                               pgf2, R2_pgf, log10_pmax, log10_eps_schwarz, rc, rd, &
+                               nelements_kl, &
+                               neighbor_cells, nimages, do_periodic, cell)
+      IF (nelements_kl == 0) RETURN
+
       max_l = la_max + lb_max + lc_max + ld_max + 1
       DO list_ij = 1, nelements_ij
          Zeta_A = pgf_list_ij(list_ij)%zeta
@@ -1940,6 +1947,7 @@ CONTAINS
             CALL build_pgf_product_list(pgf_list_ij(list_ij), pgf_list_kl(list_kl), pgf_product_list, &
                                         nproducts, log10_pmax, log10_eps_schwarz, neighbor_cells, cell, &
                                         potential_parameter, max_l, do_periodic)
+            IF (nproducts == 0) CYCLE
             s_offset_a = 0
             DO la = la_min, la_max
                s_offset_b = 0

@@ -42,6 +42,7 @@ MODULE gw_utils
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_fm_basic_linalg,              ONLY: cp_fm_scale_and_add
+   USE cp_fm_redistribution,            ONLY: cp_fm_to_replicated_array
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
@@ -61,16 +62,15 @@ MODULE gw_utils
    USE distribution_2d_types,           ONLY: distribution_2d_type
    USE gw_auto_ri_generate_RI_basis,    ONLY: generate_auto_ri_basis
    USE gw_auto_ri_types,                ONLY: auto_ri_type
-   USE gw_utils_communication,          ONLY: fm_to_local_array
    USE gw_utils_compute_integrals,      ONLY: build_3c_integral_block
    USE gw_utils_fm,                     ONLY: cfm_contract_ABA,&
                                               fm_invert,&
                                               local_complex_power
    USE input_constants,                 ONLY: &
-        G0W0, do_potential_coulomb, do_potential_truncated, evGW0, ri_rpa_g0w0_crossing_newton, &
-        ri_rs_large_cell_Gamma, ri_rs_non_periodic, rtp_bse_kernel_ri_ao, rtp_bse_kernel_ri_rs, &
-        rtp_method_bse, rtp_method_bse_linearized, tensor_large_cell_Gamma, &
-        tensor_small_cell_full_kp, xc_none
+        G0W0, cohsex_qp_update, do_potential_coulomb, do_potential_truncated, evGW0, &
+        ri_rpa_g0w0_crossing_newton, ri_rs_large_cell_Gamma, ri_rs_non_periodic, &
+        rtp_bse_kernel_ri_ao, rtp_bse_kernel_ri_rs, rtp_method_bse, rtp_method_bse_linearized, &
+        tensor_large_cell_Gamma, tensor_small_cell_full_kp, tensor_static_cohsex, xc_none
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -88,8 +88,6 @@ MODULE gw_utils
    USE libint_wrapper,                  ONLY: cp_libint_static_cleanup,&
                                               cp_libint_static_init
    USE machine,                         ONLY: m_walltime
-   USE mathconstants,                   ONLY: gaussi,&
-                                              z_one
    USE mathlib,                         ONLY: gcd
    USE message_passing,                 ONLY: mp_cart_type,&
                                               mp_mem_avail_per_rank_GB,&
@@ -139,7 +137,7 @@ MODULE gw_utils
    PRIVATE
 
    PUBLIC :: create_and_init_bs_env_for_gw, de_init_bs_env, &
-             compute_xkp, time_to_freq, analyt_conti_and_print, &
+             compute_xkp, analyt_conti_and_print, &
              add_R, is_cell_in_index_to_cell, get_V_tr_R, &
              rtbse_resolve_rirs_flag
 
@@ -197,7 +195,7 @@ CONTAINS
       CALL allocate_GW_eigenvalues(bs_env)
 
       SELECT CASE (bs_env%gw_implementation)
-      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
 
          IF (.NOT. bs_env%do_gw_ri_rs) THEN
             CALL check_sparsity_3c(qs_env, bs_env)
@@ -296,6 +294,8 @@ CONTAINS
       CALL section_vals_val_get(gw_sec, "KPOINTS_W", i_vals=bs_env%nkp_grid_chi_eps_W_input)
       CALL section_vals_val_get(gw_sec, "HEDIN_SHIFT", l_val=bs_env%do_hedin_shift)
       CALL section_vals_val_get(gw_sec, "FREQ_MAX_FIT", r_val=bs_env%freq_max_fit)
+      CALL section_vals_val_get(gw_sec, "COHSEX_SCALE_OCC", r_val=bs_env%cohsex_scale_occ)
+      CALL section_vals_val_get(gw_sec, "COHSEX_SCALE_VIRT", r_val=bs_env%cohsex_scale_virt)
       CALL read_rirs_input(bs_env%ri_rs, ri_rs_sec)
       CALL read_rirs_grid_opt(bs_env%ri_rs, grid_opt_sec)
       CALL read_evgw0_input(bs_env%ri_rs, evgw0_sec, do_evgw0)
@@ -323,14 +323,8 @@ CONTAINS
 
       CALL section_vals_val_get(ri_rs_sec, "TIKHONOV", r_val=ri_rs%tikhonov)
       CALL section_vals_val_get(ri_rs_sec, "GRID_SELECT", i_val=ri_rs%grid_select)
-      CALL section_vals_val_get(ri_rs_sec, "GRID_FILE_SUFFIX", c_val=ri_rs%grid_file_suffix)
-      CALL section_vals_val_get(ri_rs_sec, "CUTOFF_RADIUS_RL_RI", r_val=ri_rs%cutoff_radius_ri_rs)
       CALL section_vals_val_get(ri_rs_sec, "CUTOFF_RADIUS_RL_AO", r_val=ri_rs%cutoff_radius_ri_ao)
-      CALL section_vals_val_get(ri_rs_sec, "N_PROCS_PER_ATOM_Z_LP", i_val=ri_rs%n_procs_per_atom_z_lp)
-      CALL section_vals_val_get(ri_rs_sec, "N_PANELS", i_val=ri_rs%n_panels)
-      CALL section_vals_val_get(ri_rs_sec, "KEEP_SPARSITY_RL", l_val=ri_rs%keep_sparsity_rirs)
       CALL section_vals_val_get(ri_rs_sec, "CUTOFF_RADIUS_RL_W", r_val=ri_rs%cutoff_radius_v_w)
-      CALL section_vals_val_get(ri_rs_sec, "CUTOFF_RADIUS_G_W", r_val=ri_rs%cutoff_radius_g_w)
 
       CALL timestop(handle)
 
@@ -467,8 +461,6 @@ CONTAINS
          CPASSERT(bs_env%do_gw_ri_rs)
          ! AUTO_RI is implemented only for nonperiodic systems.
          CPASSERT(.NOT. bs_env%do_periodic)
-         ! AUTO_RI is incompatible with real-space truncation of G and W.
-         CPASSERT(bs_env%ri_rs%cutoff_radius_g_w <= 0.0_dp)
       END IF
 
       bs_env%gw_flavour = G0W0
@@ -581,6 +573,18 @@ CONTAINS
                bs_env%input_memory_per_proc_GB, ' GB'
          END IF
          IF (bs_env%do_gw_ri_rs) CALL print_gw_rirs_input(bs_env)
+         IF (bs_env%do_static_cohsex) THEN
+            IF (bs_env%cohsex_flavor == cohsex_qp_update) THEN
+               WRITE (u, FMT="(T2,A,T71,A10)") "static COHSEX approximation (COHSEX)", "QP_UPDATE"
+            ELSE
+               WRITE (u, FMT="(T2,A,T71,A10)") "static COHSEX approximation (COHSEX)", "DIAGONAL"
+            END IF
+            WRITE (u, FMT="(T2,A,T74,F8.6)") "static COHSEX scaling of Σ^c, occ-occ (COHSEX_SCALE_OCC):", &
+               bs_env%cohsex_scale_occ
+            WRITE (u, FMT="(T2,A,T74,F8.6)") "static COHSEX scaling of Σ^c, virt-virt (COHSEX_SCALE_VIRT):", &
+               bs_env%cohsex_scale_virt
+         END IF
+         WRITE (u, '(A)') ' '
       END IF
 
       CALL timestop(handle)
@@ -605,18 +609,10 @@ CONTAINS
       WRITE (unit_nr, '(A)') ' '
       WRITE (unit_nr, '(T2,A,ES43.2)') 'Input: RI-RS Tikhonov regularization', &
          bs_env%ri_rs%tikhonov
-      CALL print_cutoff_radius_input(unit_nr, 'RI-RS integration sphere cutoff', &
-                                     bs_env%ri_rs%cutoff_radius_ri_rs)
       CALL print_cutoff_radius_input(unit_nr, 'AO grid hard cutoff radius', &
                                      bs_env%ri_rs%cutoff_radius_ri_ao)
-      WRITE (unit_nr, '(T2,A,I40)') 'Input: MPI ranks per atom in Z_lP solve', &
-         bs_env%ri_rs%n_procs_per_atom_z_lp
-      WRITE (unit_nr, '(T2,A,L43)') 'Input: Keep sparsity in χ/G/W panels', &
-         bs_env%ri_rs%keep_sparsity_rirs
       CALL print_cutoff_radius_input(unit_nr, 'G/W panel truncation radius', &
                                      bs_env%ri_rs%cutoff_radius_v_w)
-      CALL print_cutoff_radius_input(unit_nr, 'G/W operator truncation radius', &
-                                     bs_env%ri_rs%cutoff_radius_g_w)
       WRITE (unit_nr, '(T2,A,A62)') 'Input: GW flavour', TRIM(gw_flavour_label(bs_env))
 
       IF (bs_env%ri_rs%grid_opt%enabled) THEN
@@ -1004,7 +1000,7 @@ CONTAINS
                nkp_grid_extra(i_dim) = 1
             CASE (1)
                SELECT CASE (bs_env%gw_implementation)
-               CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+               CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
                   nkp_grid(i_dim) = 4
                   nkp_grid_extra(i_dim) = 6
                CASE (tensor_small_cell_full_kp)
@@ -1850,7 +1846,7 @@ CONTAINS
       energy_ex = energy%ex
 
       SELECT CASE (bs_env%gw_implementation)
-      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
 
          NULLIFY (mat_ks_without_v_xc)
          CALL dbcsr_allocate_matrix_set(mat_ks_without_v_xc, bs_env%n_spin)
@@ -2535,12 +2531,21 @@ CONTAINS
          bs_env%Sigma_x_exists = bs_env%Sigma_x_exists .AND. Sigma_x_spin_exists
       END DO
 
+      ! static COHSEX: Σ^c(iω=0,k=0) restart, one file per spin; if present, χ and W are not needed
+      bs_env%Sigma_c_freq_zero_exists = bs_env%do_static_cohsex
+      DO i_spin = 1, n_spin
+         WRITE (f_S_x, '(3A,I1,A)') TRIM(prefix), bs_env%Sigma_c_freq_zero_name, "_0", i_spin, ".matrix"
+         INQUIRE (file=TRIM(f_S_x), exist=Sigma_x_spin_exists)
+         bs_env%Sigma_c_freq_zero_exists = bs_env%Sigma_c_freq_zero_exists .AND. Sigma_x_spin_exists
+      END DO
+
       ! If any restart files are read, check if the SCF converged in 1 step.
       ! This is important because a re-iterated SCF can lead to spurious GW results
       IF (ANY(bs_env%read_chi(:)) &
           .OR. ANY(bs_env%Sigma_c_exists) &
           .OR. bs_env%all_W_exist &
           .OR. bs_env%Sigma_x_exists &
+          .OR. bs_env%Sigma_c_freq_zero_exists &
           ) THEN
 
          IF (qs_env%scf_env%iter_count /= 1) THEN
@@ -3293,7 +3298,7 @@ CONTAINS
          ALLOCATE (V_tr_R(bs_env%n_RI, bs_env%n_RI, nimages_scf_desymm))
       END IF
 
-      CALL fm_to_local_array(fm_V_tr_R, V_tr_R)
+      CALL cp_fm_to_replicated_array(fm_V_tr_R, V_tr_R)
 
       CALL cp_fm_release(fm_V_tr_R)
       CALL dbcsr_distribution_release(dbcsr_dist)
@@ -3334,7 +3339,7 @@ CONTAINS
          n_top = MAX(MIN(bs_env%n_mo_retained, n_mo), homo + 1)
 
          SELECT CASE (bs_env%gw_implementation)
-         CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic)
+         CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
             E_min_ispin = bs_env%eigenval_scf_Gamma(homo + 1, ispin) - &
                           bs_env%eigenval_scf_Gamma(homo, ispin)
             E_max_ispin = bs_env%eigenval_scf_Gamma(n_top, ispin) - &
@@ -3422,16 +3427,16 @@ CONTAINS
       ! 2. consume a lot of memory and should not be kept until the quantity is
       !    deallocated in bs_env_release
 
-      ! nl_3c feeds only the AO-RI SEX self-energy (compute_3c_integrals); the RI-RS SEX
-      ! path never reads it, and AO-RI Hartree builds its own blocks. Retain iff AO-RI SEX.
-      retain_nl_3c = .FALSE.
+      ! nl_3c feeds compute_3c_integrals after the GW: the AO-RI RT-BSE SEX self-energy (the RI-RS
+      ! path never reads it, and AO-RI Hartree builds its own blocks) and PROPERTIES%BSE (keep_3c_nl).
+      retain_nl_3c = bs_env%keep_3c_nl
       IF (ASSOCIATED(bs_env%nl_3c%ij_list) .AND. (bs_env%rtp_method == rtp_method_bse)) THEN
          CALL rtbse_resolve_rirs_flag(qs_env, bs_env, rirs_kernel=rirs_kernel)
-         retain_nl_3c = .NOT. rirs_kernel
+         retain_nl_3c = retain_nl_3c .OR. .NOT. rirs_kernel
       END IF
 
       IF (retain_nl_3c) THEN
-         IF (bs_env%unit_nr > 0) WRITE (bs_env%unit_nr, *) "Retaining nl_3c for AO-RI RT-BSE self-energy"
+         IF (bs_env%unit_nr > 0) WRITE (bs_env%unit_nr, *) "Keep nl_3c for BSE"
       ELSE
          CALL neighbor_list_3c_destroy(bs_env%nl_3c)
       END IF
@@ -3491,67 +3496,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param bs_env ...
-!> \param Sigma_c_n_time ...
-!> \param Sigma_c_n_freq ...
-!> \param ispin ...
-! **************************************************************************************************
-   SUBROUTINE time_to_freq(bs_env, Sigma_c_n_time, Sigma_c_n_freq, ispin)
-      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
-      REAL(KIND=dp), DIMENSION(:, :, :)                  :: Sigma_c_n_time, Sigma_c_n_freq
-      INTEGER                                            :: ispin
-
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'time_to_freq'
-
-      INTEGER                                            :: handle, i_t, j_w, n_occ
-      REAL(KIND=dp)                                      :: freq_j, time_i, w_cos_ij, w_sin_ij
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: Sigma_c_n_cos_time, Sigma_c_n_sin_time
-
-      CALL timeset(routineN, handle)
-
-      ALLOCATE (Sigma_c_n_cos_time(bs_env%n_ao, bs_env%num_time_freq_points))
-      ALLOCATE (Sigma_c_n_sin_time(bs_env%n_ao, bs_env%num_time_freq_points))
-
-      Sigma_c_n_cos_time(:, :) = 0.5_dp*(Sigma_c_n_time(:, :, 1) + Sigma_c_n_time(:, :, 2))
-      Sigma_c_n_sin_time(:, :) = 0.5_dp*(Sigma_c_n_time(:, :, 1) - Sigma_c_n_time(:, :, 2))
-
-      Sigma_c_n_freq(:, :, :) = 0.0_dp
-
-      DO i_t = 1, bs_env%num_time_freq_points
-
-         DO j_w = 1, bs_env%num_time_freq_points
-
-            freq_j = bs_env%time_frequency_grid%frequency(j_w)
-            time_i = bs_env%time_frequency_grid%imaginary_time(i_t)
-            ! integration weights for cosine and sine transform
-            w_cos_ij = bs_env%time_frequency_grid%cosine_time_to_frequency_weights(j_w, i_t)*COS(freq_j*time_i)
-            w_sin_ij = bs_env%time_frequency_grid%sine_time_to_frequency_weights(j_w, i_t)*SIN(freq_j*time_i)
-
-            ! 1. Re(Σ^c_nn(k_i,iω)) from cosine transform
-            Sigma_c_n_freq(:, j_w, 1) = Sigma_c_n_freq(:, j_w, 1) + &
-                                        w_cos_ij*Sigma_c_n_cos_time(:, i_t)
-
-            ! 2. Im(Σ^c_nn(k_i,iω)) from sine transform
-            Sigma_c_n_freq(:, j_w, 2) = Sigma_c_n_freq(:, j_w, 2) + &
-                                        w_sin_ij*Sigma_c_n_sin_time(:, i_t)
-
-         END DO
-
-      END DO
-
-      ! for occupied levels, we need the correlation self-energy for negative omega.
-      ! Therefore, weight_sin should be computed with -omega, which results in an
-      ! additional minus for the imaginary part:
-      n_occ = bs_env%n_occ(ispin)
-      Sigma_c_n_freq(1:n_occ, :, 2) = -Sigma_c_n_freq(1:n_occ, :, 2)
-
-      CALL timestop(handle)
-
-   END SUBROUTINE time_to_freq
-
-! **************************************************************************************************
-!> \brief ...
-!> \param bs_env ...
-!> \param Sigma_c_ikp_n_freq ...
+!> \param Sigma_c_ikp_n_freq Complex diagonal self-energy at the signed fit frequencies.
 !> \param Sigma_x_ikp_n ...
 !> \param V_xc_ikp_n ...
 !> \param eigenval_scf ...
@@ -3562,7 +3507,7 @@ CONTAINS
                                      eigenval_scf, ikp, ispin)
 
       TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
-      REAL(KIND=dp), DIMENSION(:, :, :)                  :: Sigma_c_ikp_n_freq
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: Sigma_c_ikp_n_freq
       REAL(KIND=dp), DIMENSION(:)                        :: Sigma_x_ikp_n, V_xc_ikp_n, eigenval_scf
       INTEGER                                            :: ikp, ispin
 
@@ -3600,8 +3545,7 @@ CONTAINS
 
          CALL continuation_pade(Sigma_c_ikp_n_qp, &
                                 bs_env%imag_freq_points_fit, dummy, dummy, &
-                                Sigma_c_ikp_n_freq(:, 1:bs_env%num_freq_points_fit, 1)*z_one + &
-                                Sigma_c_ikp_n_freq(:, 1:bs_env%num_freq_points_fit, 2)*gaussi, &
+                                Sigma_c_ikp_n_freq, &
                                 Sigma_x_ikp_n(:) - V_xc_ikp_n(:), &
                                 eigenval_G(:), eigenval_scf(:), &
                                 bs_env%do_hedin_shift, &

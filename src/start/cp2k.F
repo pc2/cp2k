@@ -50,7 +50,6 @@ PROGRAM cp2k
    USE cp2k_runs,                       ONLY: run_input,&
                                               write_xml_file
    USE cp2k_shell,                      ONLY: launch_cp2k_shell
-   USE cp_files,                        ONLY: open_file
    USE f77_interface,                   ONLY: check_input,&
                                               default_para_env,&
                                               finalize_cp2k,&
@@ -58,10 +57,12 @@ PROGRAM cp2k
    USE input_cp2k,                      ONLY: create_cp2k_root_section
    USE input_section_types,             ONLY: section_release,&
                                               section_type
+   USE iso_c_binding,                   ONLY: C_NULL_CHAR
    USE iso_fortran_env,                 ONLY: compiler_options,&
                                               compiler_version
    USE kinds,                           ONLY: default_path_length
-   USE machine,                         ONLY: default_output_unit,&
+   USE machine,                         ONLY: default_error_unit,&
+                                              default_output_unit,&
                                               m_cpuid,&
                                               m_cpuid_name,&
                                               m_cpuid_static,&
@@ -130,12 +131,15 @@ PROGRAM cp2k
                command_line_error = .TRUE.
             ELSE
                output_file_name = arg_att
-               CALL open_file(file_name=output_file_name, &
-                              file_status="UNKNOWN", &
-                              file_action="WRITE", &
-                              file_position="APPEND", &
-                              skip_get_unit_number=.TRUE., &
-                              unit_number=output_unit)
+               ! Redirect the standard output (default_output_unit) to the output file
+               OPEN (UNIT=output_unit, FILE=TRIM(output_file_name), STATUS="UNKNOWN", &
+                     FORM="FORMATTED", ACTION="WRITE", POSITION="APPEND", IOSTAT=ierr)
+               IF (ierr /= 0) THEN
+                  ! The standard output might not be connected anymore
+                  WRITE (default_error_unit, "(/,T2,A)") &
+                     "ERROR: The output file "//TRIM(output_file_name)//" cannot be opened"
+                  command_line_error = .TRUE.
+               END IF
             END IF
          ELSE
             i_arg = i_arg + 1
@@ -336,7 +340,11 @@ PROGRAM cp2k
                WRITE (output_unit, "(T2,A)") cp2k_version, &
                   "Source code revision "//TRIM(compile_revision), &
                   TRIM(cp2k_flags())
-               compiler_options_string = compiler_options()
+               ! The trailing NUL character bounds the in-place prefix replacement of
+               ! package managers like conda to this string, which would otherwise
+               ! shift and corrupt the subsequent string literals in the binary
+               compiler_options_string = compiler_options()//C_NULL_CHAR
+               l = INDEX(compiler_options_string, C_NULL_CHAR) - 1
                WRITE (output_unit, "(T2,A,A)") "compiler: ", compiler_version()
                cpuid = m_cpuid()
                cpuid_static = m_cpuid_static()
@@ -356,9 +364,9 @@ PROGRAM cp2k
                      "to enable them."
                END IF
                WRITE (output_unit, "(T2,A)") "compiler options:"
-               DO i = 0, (LEN(compiler_options_string) - 1)/68
+               DO i = 0, (l - 1)/68
                   WRITE (output_unit, "(T4,A)") &
-                     compiler_options_string(i*68 + 1:MIN(LEN(compiler_options_string), (i + 1)*68))
+                     compiler_options_string(i*68 + 1:MIN(l, (i + 1)*68))
                END DO
                DEALLOCATE (compiler_options_string)
             END IF

@@ -4,6 +4,8 @@
 dbt_tas_unittest
 dbt_unittest
 cell_types_unittest
+hfx_pair_list_methods_unittest
+cell_opt_utils_unittest
 grid_unittest
 kpoint_lattice_fft_unittest
 kpoint_smearing_unittest
@@ -12,6 +14,7 @@ topology_symmetry_unittest
 topology_curvature_unittest
 topology_snapshot_unittest
 kpsym_unittest
+wannier90_projections_unittest
 qs_ot_minimizer_unittest
 low_rank_preconditioner_unittest
 ot_covariant_preconditioner_unittest
@@ -24,13 +27,19 @@ nequip_unittest                                          libtorch
 parallel_rng_types_unittest
 qs_charge_mixing_unittest
 atom_upf_unittest
+xc_semilocal_unittest
 upf_projector_integrals_unittest
 upf_local_integrals_unittest
-gapw_background_unittest
-gapw_1c_basis_unittest
+gapw_unittest
 qs_fod_unittest
+qs_active_space_utils_unittest
 qs_ot_complex_ref_unittest
-realspace_grid_cube_unittest
 gx_ac_unittest                                           greenx
+
+spectral_localizer_unittest
+quadratic_pseudospectrum_unittest
+pw_unittest
+
+kubo_unittest
 
 #EOF

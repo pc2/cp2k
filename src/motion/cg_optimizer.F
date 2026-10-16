@@ -38,7 +38,6 @@ MODULE cg_optimizer
                                               default_minimization_method_id,&
                                               default_ts_method_id
    USE input_section_types,             ONLY: section_vals_type,&
-                                              section_vals_val_get,&
                                               section_vals_val_set
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: m_walltime
@@ -53,7 +52,6 @@ MODULE cg_optimizer
    PRIVATE
 
    PUBLIC :: geoopt_cg
-   LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .TRUE.
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cg_optimizer'
 
 CONTAINS
@@ -102,7 +100,6 @@ CONTAINS
 
       ! find space_group
       CALL force_env_get(force_env, subsys=subsys)
-      CALL section_vals_val_get(geo_section, "KEEP_SPACE_GROUP", l_val=spgr%keep_space_group)
       IF (spgr%keep_space_group) THEN
          SELECT CASE (gopt_env%type_id)
          CASE (default_minimization_method_id, default_ts_method_id, default_cell_method_id)
@@ -119,7 +116,6 @@ CONTAINS
                       gopt_env, do_update=my_do_update)
 
       ! show space_group
-      CALL section_vals_val_get(geo_section, "SHOW_SPACE_GROUP", l_val=spgr%show_space_group)
       IF (spgr%show_space_group) THEN
          IF (spgr%keep_space_group) THEN
             CALL force_env_get(force_env, subsys=subsys)

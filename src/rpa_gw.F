@@ -18,7 +18,8 @@ MODULE rpa_gw
    USE cell_types,                      ONLY: cell_type,&
                                               get_cell
    USE core_ppnl,                       ONLY: build_core_ppnl
-   USE cp_cfm_basic_linalg,             ONLY: cp_cfm_scale,&
+   USE cp_cfm_basic_linalg,             ONLY: cp_cfm_get_diag,&
+                                              cp_cfm_scale,&
                                               cp_cfm_scale_and_add,&
                                               cp_cfm_scale_and_add_fm,&
                                               cp_cfm_transpose
@@ -50,9 +51,14 @@ MODULE rpa_gw
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
-   USE cp_fm_types,                     ONLY: &
-        cp_fm_copy_general, cp_fm_create, cp_fm_get_diag, cp_fm_get_info, cp_fm_release, &
-        cp_fm_set_all, cp_fm_to_fm, cp_fm_to_fm_submat, cp_fm_type
+   USE cp_fm_types,                     ONLY: cp_fm_copy_general,&
+                                              cp_fm_create,&
+                                              cp_fm_get_info,&
+                                              cp_fm_release,&
+                                              cp_fm_set_all,&
+                                              cp_fm_to_fm,&
+                                              cp_fm_to_fm_submat,&
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
@@ -65,6 +71,7 @@ MODULE rpa_gw
         dbt_get_block, dbt_get_info, dbt_iterator_blocks_left, dbt_iterator_next_block, &
         dbt_iterator_start, dbt_iterator_stop, dbt_iterator_type, dbt_nblks_total, &
         dbt_pgrid_create, dbt_pgrid_destroy, dbt_pgrid_type, dbt_type
+   USE gw_utils_fm,                     ONLY: cfm_contract_ABA
    USE hfx_types,                       ONLY: block_ind_type,&
                                               dealloc_containers,&
                                               hfx_compression_type
@@ -78,6 +85,7 @@ MODULE rpa_gw
                                               section_vals_type
    USE kinds,                           ONLY: default_path_length,&
                                               dp
+   USE kpoint_k_r_trafo_simple,         ONLY: fm_gamma_to_kp
    USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
                                               kpoint_density_transform,&
                                               kpoint_init_cell_index
@@ -133,17 +141,19 @@ MODULE rpa_gw
    USE qs_tensors,                      ONLY: decompress_tensor
    USE qs_tensors_types,                ONLY: create_2c_tensor
    USE rpa_gw_ic,                       ONLY: apply_ic_corr
-   USE rpa_gw_im_time_util,             ONLY: get_tensor_3c_overl_int_gw
-   USE rpa_gw_kpoints_util,             ONLY: get_mat_cell_T_from_mat_gamma,&
-                                              mat_kp_from_mat_gamma,&
-                                              real_space_to_kpoint_transform_rpa
+   USE rpa_gw_im_time_util,             ONLY: get_atom_index_from_basis_function_index,&
+                                              get_tensor_3c_overl_int_gw
+   USE rpa_gw_kpoints_util,             ONLY: mat_kp_from_mat_gamma
    USE rpa_im_time,                     ONLY: compute_gamma_propagator,&
                                               compute_periodic_dm,&
                                               create_propagator_matrix_set,&
                                               propagator_sector_occupied,&
                                               propagator_sector_virtual
    USE scf_control_types,               ONLY: scf_control_type
-   USE time_frequency_grids,            ONLY: time_frequency_grid_type
+   USE time_frequency_grids,            ONLY: negative_time,&
+                                              positive_time,&
+                                              time_frequency_grid_type,&
+                                              transform_time_to_frequency
    USE util,                            ONLY: sort
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -777,7 +787,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :), &
          INTENT(INOUT)                                   :: vec_W_gw
       TYPE(time_frequency_grid_type), INTENT(IN)         :: grid
-      TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_Q, fm_mat_R_gw
+      TYPE(cp_fm_type), INTENT(INOUT)                    :: fm_mat_Q
+      TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_R_gw
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_S_gw, fm_mat_S_gw_work
       TYPE(cp_fm_type), INTENT(IN)                       :: mo_coeff
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_RPA
@@ -796,10 +807,8 @@ CONTAINS
       nspins = SIZE(fm_mat_S_gw)
 
       IF (.NOT. do_im_time) THEN
-         ! calculate [1+Q(iw')]^-1
-         CALL cp_fm_cholesky_invert(fm_mat_Q)
-         ! symmetrize the result, fm_mat_R_gw is only temporary work matrix
-         CALL cp_fm_uplo_to_full(fm_mat_Q, fm_mat_R_gw)
+         ! Invert [1+Q(iw')], using fm_mat_R_gw as temporary workspace.
+         CALL cp_fm_cholesky_invert(fm_mat_Q, n=dimen_RI, work=fm_mat_R_gw)
 
          ! periodic correction for GW (paper Phys. Rev. B 95, 235123 (2017))
          IF (do_periodic) THEN
@@ -817,7 +826,7 @@ CONTAINS
          CALL para_env_RPA%sync()
 
          ! subtract 1 from the diagonal to get rid of exchange self-energy
-         CALL cp_fm_add_on_diag(fm_mat_Q, -1.0_dp, dimen_RI)
+         CALL cp_fm_add_on_diag(fm_mat_Q, -1.0_dp, n_active=dimen_RI)
 
          CALL para_env_RPA%sync()
 
@@ -874,7 +883,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param fm_mat_W ...
-!> \param fm_mat_Q ...
+!> \param fm_mat_Q upper Cholesky factor of epsilon from RPA, overwritten by the screened interaction
 !> \param fm_mat_work ...
 !> \param dimen_RI ...
 !> \param fm_mat_L ...
@@ -885,7 +894,8 @@ CONTAINS
    SUBROUTINE compute_W_cubic_GW(fm_mat_W, fm_mat_Q, fm_mat_work, dimen_RI, fm_mat_L, &
                                  grid, jquad, omega)
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_W
-      TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_Q, fm_mat_work
+      TYPE(cp_fm_type), INTENT(INOUT)                    :: fm_mat_Q
+      TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_work
       INTEGER, INTENT(IN)                                :: dimen_RI
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_L
       TYPE(time_frequency_grid_type), INTENT(IN)         :: grid
@@ -895,20 +905,17 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'compute_W_cubic_GW'
 
       INTEGER                                            :: handle, iquad, num_integ_points
-      REAL(KIND=dp)                                      :: tau, weight
+      REAL(KIND=dp)                                      :: weight
 
       CALL timeset(routineN, handle)
 
       num_integ_points = SIZE(grid%imaginary_time)
 
       ! calculate [1+Q(iw')]^-1
-      CALL cp_fm_cholesky_invert(fm_mat_Q)
-
-      ! symmetrize the result
-      CALL cp_fm_uplo_to_full(fm_mat_Q, fm_mat_work)
+      CALL cp_fm_cholesky_invert(fm_mat_Q, n=dimen_RI, work=fm_mat_work)
 
       ! subtract 1 from the diagonal to get rid of exchange self-energy
-      CALL cp_fm_add_on_diag(fm_mat_Q, -1.0_dp, dimen_RI)
+      CALL cp_fm_add_on_diag(fm_mat_Q, -1.0_dp, n_active=dimen_RI)
 
       ! multiply with L from the left and the right to get the screened Coulomb interaction
       CALL parallel_gemm('T', 'N', dimen_RI, dimen_RI, dimen_RI, 1.0_dp, fm_mat_L, fm_mat_Q, &
@@ -918,11 +925,10 @@ CONTAINS
                          0.0_dp, fm_mat_Q)
 
       ! Fourier transform from w to t
+      omega = grid%frequency(jquad)
       DO iquad = 1, num_integ_points
 
-         omega = grid%frequency(jquad)
-         tau = grid%imaginary_time(iquad)
-         weight = grid%cosine_frequency_to_time_weights(iquad, jquad)*COS(tau*omega)
+         weight = grid%cosine_frequency_to_time(iquad, jquad)
 
          IF (jquad == 1) THEN
 
@@ -1237,7 +1243,7 @@ CONTAINS
                                                       mat_W, mat_MinvVMinv, &
                                                       vec_Sigma_c_gw(:, :, :, :), &
                                                       qs_env, para_env, &
-                                                      mp2_env, num_fit_points, mo_coeff(1), &
+                                                      mp2_env, mo_coeff(1), &
                                                       do_ri_Sigma_x, vec_Sigma_x_gw(:, :, :), unit_nr, nspins, &
                                                       starts_array_mc, ends_array_mc, eps_filter)
 
@@ -4064,14 +4070,12 @@ CONTAINS
                   func_val = func_val + Lambda(jjj)/(level_energ_GW - e_fermi - Lambda(jjj + 1))
                END DO
 
-               ! calculate the derivative of the fit function for level_energ_GW
+               ! Derivative of the QP residual: Re[sum_j -r_j/(E-e_fermi-p_j)^2] - 1.
                deriv_val_real = -1.0_dp
                DO iii = 1, num_poles
                   jjj = iii*2
-                  deriv_val_real = deriv_val_real + REAL(Lambda(jjj))/((ABS(level_energ_GW - e_fermi - Lambda(jjj + 1)))**2) &
-                                   - (REAL(Lambda(jjj))*(level_energ_GW - e_fermi) - REAL(Lambda(jjj)*CONJG(Lambda(jjj + 1))))* &
-                                   2.0_dp*(level_energ_GW - e_fermi - REAL(Lambda(jjj + 1)))/ &
-                                   ((ABS(level_energ_GW - e_fermi - Lambda(jjj + 1)))**2)
+                  deriv_val_real = deriv_val_real - REAL(Lambda(jjj)/ &
+                                                         (level_energ_GW - e_fermi - Lambda(jjj + 1))**2, KIND=dp)
 
                END DO
 
@@ -5328,12 +5332,9 @@ CONTAINS
       INTEGER, DIMENSION(2)                              :: mo_bounds, pdims_2d
       INTEGER, DIMENSION(3, 1)                           :: index_to_cell_zero
       LOGICAL                                            :: memory_info
-      REAL(KIND=dp)                                      :: ext_scaling, omega, omega_i, omega_sign, &
-                                                            sign_occ_virt, t_i_Clenshaw, tau, &
-                                                            weight_cos, weight_i, weight_sin
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: vec_Sigma_c_gw_cos_omega, &
-         vec_Sigma_c_gw_cos_tau, vec_Sigma_c_gw_neg_tau, vec_Sigma_c_gw_pos_tau, &
-         vec_Sigma_c_gw_sin_omega, vec_Sigma_c_gw_sin_tau
+      REAL(KIND=dp)                                      :: ext_scaling, omega_i, omega_sign, &
+                                                            sign_occ_virt, t_i_Clenshaw, weight_i
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: samples_tau
       TYPE(cp_fm_type)                                   :: fm_scaled_dm_occ_tau
       TYPE(dbcsr_p_type), DIMENSION(:, :, :), POINTER    :: greens_fct
       TYPE(dbcsr_type), POINTER                          :: mat_greens_fct_occ, mat_greens_fct_virt
@@ -5366,20 +5367,7 @@ CONTAINS
       mo_end = homo + gw_corr_lev_virt
       CPASSERT(mo_end - mo_start + 1 == gw_corr_lev_tot)
 
-      vec_Sigma_c_gw = z_zero
-      ALLOCATE (vec_Sigma_c_gw_pos_tau(gw_corr_lev_tot, num_integ_points))
-      vec_Sigma_c_gw_pos_tau = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_neg_tau(gw_corr_lev_tot, num_integ_points))
-      vec_Sigma_c_gw_neg_tau = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_cos_tau(gw_corr_lev_tot, num_integ_points))
-      vec_Sigma_c_gw_cos_tau = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_sin_tau(gw_corr_lev_tot, num_integ_points))
-      vec_Sigma_c_gw_sin_tau = 0.0_dp
-
-      ALLOCATE (vec_Sigma_c_gw_cos_omega(gw_corr_lev_tot, num_integ_points))
-      vec_Sigma_c_gw_cos_omega = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_sin_omega(gw_corr_lev_tot, num_integ_points))
-      vec_Sigma_c_gw_sin_omega = 0.0_dp
+      ALLOCATE (samples_tau(gw_corr_lev_tot, num_integ_points, 2), SOURCE=0.0_dp)
 
       ALLOCATE (delta_corr_omega(1 + homo - gw_corr_lev_occ:homo + gw_corr_lev_virt, num_integ_points))
       delta_corr_omega(:, :) = z_zero
@@ -5453,14 +5441,16 @@ CONTAINS
                                    t_greens_fct_occ, t_W, [1.0_dp, -1.0_dp], &
                                    mo_bounds, unit_nr_prv, &
                                    t_3c_ctr_RI, t_3c_ctr_AO, calculate_ctr_ri=.TRUE.)
-            CALL trace_sigma_gw(t_3c_ctr_AO, t_3c_ctr_RI, vec_Sigma_c_gw_neg_tau(:, jquad), mo_start, mo_bounds, para_env)
+            CALL trace_sigma_gw(t_3c_ctr_AO, t_3c_ctr_RI, samples_tau(:, jquad, negative_time), &
+                                mo_start, mo_bounds, para_env)
 
             CALL contract_cubic_gw(t_3c_overl_int_gw_AO, t_3c_overl_int_gw_RI, &
                                    t_greens_fct_virt, t_W, [1.0_dp, 1.0_dp], &
                                    mo_bounds, unit_nr_prv, &
                                    t_3c_ctr_RI, t_3c_ctr_AO, calculate_ctr_ri=.FALSE.)
 
-            CALL trace_sigma_gw(t_3c_ctr_AO, t_3c_ctr_RI, vec_Sigma_c_gw_pos_tau(:, jquad), mo_start, mo_bounds, para_env)
+            CALL trace_sigma_gw(t_3c_ctr_AO, t_3c_ctr_RI, samples_tau(:, jquad, positive_time), &
+                                mo_start, mo_bounds, para_env)
          END DO
          CALL dbt_batched_contract_finalize(t_3c_overl_int_gw_AO)
          CALL dbt_batched_contract_finalize(t_3c_overl_int_gw_RI)
@@ -5473,44 +5463,15 @@ CONTAINS
          CALL dbt_clear(t_3c_ctr_AO)
          CALL dbt_clear(t_3c_ctr_RI)
 
-         vec_Sigma_c_gw_cos_tau(:, jquad) = 0.5_dp*(vec_Sigma_c_gw_pos_tau(:, jquad) + &
-                                                    vec_Sigma_c_gw_neg_tau(:, jquad))
-
-         vec_Sigma_c_gw_sin_tau(:, jquad) = 0.5_dp*(vec_Sigma_c_gw_pos_tau(:, jquad) - &
-                                                    vec_Sigma_c_gw_neg_tau(:, jquad))
-
       END DO ! jquad (tau)
       CALL dbt_destroy(t_W)
 
       CALL dbt_destroy(t_greens_fct_occ)
       CALL dbt_destroy(t_greens_fct_virt)
 
-      ! Fourier transform from time to frequency
-      DO jquad = 1, num_fit_points
-
-         DO iquad = 1, num_integ_points
-
-            omega = grid%frequency(jquad)
-            tau = grid%imaginary_time(iquad)
-            weight_cos = grid%cosine_time_to_frequency_weights(jquad, iquad)*COS(omega*tau)
-            weight_sin = grid%sine_time_to_frequency_weights(jquad, iquad)*SIN(omega*tau)
-
-            vec_Sigma_c_gw_cos_omega(:, jquad) = vec_Sigma_c_gw_cos_omega(:, jquad) + &
-                                                 weight_cos*vec_Sigma_c_gw_cos_tau(:, iquad)
-
-            vec_Sigma_c_gw_sin_omega(:, jquad) = vec_Sigma_c_gw_sin_omega(:, jquad) + &
-                                                 weight_sin*vec_Sigma_c_gw_sin_tau(:, iquad)
-
-         END DO
-
-      END DO
-
-      ! for occupied levels, we need the correlation self-energy for negative omega. Therefore, weight_sin
-      ! should be computed with -omega, which results in an additional minus for vec_Sigma_c_gw_sin_omega:
-      vec_Sigma_c_gw_sin_omega(1:gw_corr_lev_occ, :) = -vec_Sigma_c_gw_sin_omega(1:gw_corr_lev_occ, :)
-
-      vec_Sigma_c_gw(:, 1:num_fit_points, 1) = vec_Sigma_c_gw_cos_omega(:, 1:num_fit_points) + &
-                                               gaussi*vec_Sigma_c_gw_sin_omega(:, 1:num_fit_points)
+      CALL transform_time_to_frequency(grid, samples_tau, vec_Sigma_c_gw(:, :, 1))
+      ! Occupied levels use negative frequencies; the time-domain samples are real.
+      vec_Sigma_c_gw(1:gw_corr_lev_occ, :, 1) = CONJG(vec_Sigma_c_gw(1:gw_corr_lev_occ, :, 1))
 
       CALL dbcsr_deallocate_matrix_set(greens_fct)
 
@@ -5652,14 +5613,6 @@ CONTAINS
 
       END IF
 
-      DEALLOCATE (vec_Sigma_c_gw_pos_tau)
-      DEALLOCATE (vec_Sigma_c_gw_neg_tau)
-      DEALLOCATE (vec_Sigma_c_gw_cos_tau)
-      DEALLOCATE (vec_Sigma_c_gw_sin_tau)
-      DEALLOCATE (vec_Sigma_c_gw_cos_omega)
-      DEALLOCATE (vec_Sigma_c_gw_sin_omega)
-      DEALLOCATE (delta_corr_omega)
-
       CALL timestop(handle)
 
    END SUBROUTINE compute_self_energy_cubic_gw
@@ -5687,7 +5640,6 @@ CONTAINS
 !> \param qs_env ...
 !> \param para_env ...
 !> \param mp2_env ...
-!> \param num_fit_points ...
 !> \param fm_mo_coeff ...
 !> \param do_ri_Sigma_x ...
 !> \param vec_Sigma_x_gw ...
@@ -5705,7 +5657,7 @@ CONTAINS
                                                    mat_W, mat_MinvVMinv, &
                                                    vec_Sigma_c_gw, &
                                                    qs_env, para_env, &
-                                                   mp2_env, num_fit_points, fm_mo_coeff, &
+                                                   mp2_env, fm_mo_coeff, &
                                                    do_ri_Sigma_x, vec_Sigma_x_gw, unit_nr, nspins, &
                                                    starts_array_mc, ends_array_mc, eps_filter)
 
@@ -5730,7 +5682,6 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(mp2_type), INTENT(INOUT)                      :: mp2_env
-      INTEGER, INTENT(IN)                                :: num_fit_points
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_mo_coeff
       LOGICAL, INTENT(IN)                                :: do_ri_Sigma_x
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: vec_Sigma_x_gw
@@ -5740,7 +5691,7 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'compute_self_energy_cubic_gw_kpoints'
 
-      INTEGER :: cut_memory, handle, handle2, i_mem, iquad, ispin, j_mem, jquad, nkp_self_energy, &
+      INTEGER :: cut_memory, handle, handle2, i_mem, ikp, ispin, j_mem, jquad, nkp_self_energy, &
          num_integ_points, num_points, unit_nr_prv
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: dist1, dist2, sizes_AO, sizes_RI
       INTEGER, DIMENSION(2)                              :: mo_end, mo_start, pdims_2d
@@ -5748,11 +5699,9 @@ CONTAINS
       INTEGER, DIMENSION(2, 2)                           :: bounds_ao_ao_j
       INTEGER, DIMENSION(3)                              :: dims_3c
       LOGICAL                                            :: memory_info
-      REAL(KIND=dp)                                      :: omega, t1, t2, tau, weight_cos, &
-                                                            weight_sin
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :) :: vec_Sigma_c_gw_cos_omega, &
-         vec_Sigma_c_gw_cos_tau, vec_Sigma_c_gw_neg_tau, vec_Sigma_c_gw_pos_tau, &
-         vec_Sigma_c_gw_sin_omega, vec_Sigma_c_gw_sin_tau
+      REAL(KIND=dp)                                      :: t1, t2, tau
+      REAL(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :, :, :)                        :: samples_tau
       TYPE(dbcsr_p_type), DIMENSION(:, :, :), POINTER    :: propagator
       TYPE(dbcsr_type), TARGET :: mat_greens_fct_occ, mat_greens_fct_virt, mat_mo_coeff, &
          mat_self_energy_ao_ao_neg_tau, mat_self_energy_ao_ao_pos_tau
@@ -5784,20 +5733,7 @@ CONTAINS
 
       nkp_self_energy = mp2_env%ri_g0w0%nkp_self_energy
 
-      vec_Sigma_c_gw = z_zero
-      ALLOCATE (vec_Sigma_c_gw_pos_tau(gw_corr_lev_tot, num_integ_points, nkp_self_energy, nspins))
-      vec_Sigma_c_gw_pos_tau = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_neg_tau(gw_corr_lev_tot, num_integ_points, nkp_self_energy, nspins))
-      vec_Sigma_c_gw_neg_tau = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_cos_tau(gw_corr_lev_tot, num_integ_points, nkp_self_energy, nspins))
-      vec_Sigma_c_gw_cos_tau = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_sin_tau(gw_corr_lev_tot, num_integ_points, nkp_self_energy, nspins))
-      vec_Sigma_c_gw_sin_tau = 0.0_dp
-
-      ALLOCATE (vec_Sigma_c_gw_cos_omega(gw_corr_lev_tot, num_integ_points, nkp_self_energy, nspins))
-      vec_Sigma_c_gw_cos_omega = 0.0_dp
-      ALLOCATE (vec_Sigma_c_gw_sin_omega(gw_corr_lev_tot, num_integ_points, nkp_self_energy, nspins))
-      vec_Sigma_c_gw_sin_omega = 0.0_dp
+      ALLOCATE (samples_tau(gw_corr_lev_tot, num_integ_points, 2, nkp_self_energy, nspins), SOURCE=0.0_dp)
 
       CALL dbcsr_create(matrix=mat_greens_fct_occ, &
                         template=matrix_s(1)%matrix, &
@@ -5980,17 +5916,13 @@ CONTAINS
 
             IF (jquad <= num_integ_points) THEN
 
-               CALL trafo_to_mo_and_kpoints(qs_env, mat_self_energy_ao_ao_neg_tau, vec_Sigma_c_gw_neg_tau(:, jquad, :, ispin), &
+               CALL trafo_to_mo_and_kpoints(qs_env, mat_self_energy_ao_ao_neg_tau, &
+                                            samples_tau(:, jquad, negative_time, :, ispin), &
                                             homo(ispin), gw_corr_lev_occ(ispin), gw_corr_lev_virt(ispin), ispin)
 
-               CALL trafo_to_mo_and_kpoints(qs_env, mat_self_energy_ao_ao_pos_tau, vec_Sigma_c_gw_pos_tau(:, jquad, :, ispin), &
+               CALL trafo_to_mo_and_kpoints(qs_env, mat_self_energy_ao_ao_pos_tau, &
+                                            samples_tau(:, jquad, positive_time, :, ispin), &
                                             homo(ispin), gw_corr_lev_occ(ispin), gw_corr_lev_virt(ispin), ispin)
-
-               vec_Sigma_c_gw_cos_tau(:, jquad, :, ispin) = 0.5_dp*(vec_Sigma_c_gw_pos_tau(:, jquad, :, ispin) + &
-                                                                    vec_Sigma_c_gw_neg_tau(:, jquad, :, ispin))
-
-               vec_Sigma_c_gw_sin_tau(:, jquad, :, ispin) = 0.5_dp*(vec_Sigma_c_gw_pos_tau(:, jquad, :, ispin) - &
-                                                                    vec_Sigma_c_gw_neg_tau(:, jquad, :, ispin))
             ELSE
 
                CALL trafo_to_mo_and_kpoints(qs_env, mat_self_energy_ao_ao_neg_tau, &
@@ -6020,35 +5952,15 @@ CONTAINS
 
       END IF
 
-      ! Fourier transform from time to frequency
-      DO jquad = 1, num_fit_points
-
-         DO iquad = 1, num_integ_points
-
-            omega = grid%frequency(jquad)
-            tau = grid%imaginary_time(iquad)
-            weight_cos = grid%cosine_time_to_frequency_weights(jquad, iquad)*COS(omega*tau)
-            weight_sin = grid%sine_time_to_frequency_weights(jquad, iquad)*SIN(omega*tau)
-
-            vec_Sigma_c_gw_cos_omega(:, jquad, :, :) = vec_Sigma_c_gw_cos_omega(:, jquad, :, :) + &
-                                                       weight_cos*vec_Sigma_c_gw_cos_tau(:, iquad, :, :)
-
-            vec_Sigma_c_gw_sin_omega(:, jquad, :, :) = vec_Sigma_c_gw_sin_omega(:, jquad, :, :) + &
-                                                       weight_sin*vec_Sigma_c_gw_sin_tau(:, iquad, :, :)
-
-         END DO
-
-      END DO
-
-      ! for occupied levels, we need the correlation self-energy for negative omega. Therefore, weight_sin
-      ! should be computed with -omega, which results in an additional minus for vec_Sigma_c_gw_sin_omega:
       DO ispin = 1, nspins
-         vec_Sigma_c_gw_sin_omega(1:gw_corr_lev_occ(ispin), :, :, ispin) = &
-            -vec_Sigma_c_gw_sin_omega(1:gw_corr_lev_occ(ispin), :, :, ispin)
+         DO ikp = 1, nkp_self_energy
+            CALL transform_time_to_frequency(grid, samples_tau(:, :, :, ikp, ispin), &
+                                             vec_Sigma_c_gw(:, :, ikp, ispin))
+         END DO
+         ! Occupied levels use negative frequencies; the time-domain samples are real.
+         vec_Sigma_c_gw(1:gw_corr_lev_occ(ispin), :, :, ispin) = &
+            CONJG(vec_Sigma_c_gw(1:gw_corr_lev_occ(ispin), :, :, ispin))
       END DO
-
-      vec_Sigma_c_gw(:, 1:num_fit_points, :, :) = vec_Sigma_c_gw_cos_omega(:, 1:num_fit_points, :, :) + &
-                                                  gaussi*vec_Sigma_c_gw_sin_omega(:, 1:num_fit_points, :, :)
 
       CALL dbt_pgrid_destroy(pgrid_2d)
 
@@ -6069,13 +5981,6 @@ CONTAINS
       CALL dbt_destroy(t_3c_M_W_tmp)
       CALL dbt_destroy(t_3c_O_W)
 
-      DEALLOCATE (vec_Sigma_c_gw_pos_tau)
-      DEALLOCATE (vec_Sigma_c_gw_neg_tau)
-      DEALLOCATE (vec_Sigma_c_gw_cos_tau)
-      DEALLOCATE (vec_Sigma_c_gw_sin_tau)
-      DEALLOCATE (vec_Sigma_c_gw_cos_omega)
-      DEALLOCATE (vec_Sigma_c_gw_sin_omega)
-
       CALL timestop(handle)
 
    END SUBROUTINE compute_self_energy_cubic_gw_kpoints
@@ -6089,15 +5994,12 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'compute_minus_vxc_kpoints'
 
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: diag_Sigma_x_minus_vxc_mo_mo
       INTEGER                                            :: handle, ikp, ispin, nkp_self_energy, &
                                                             nmo, nspins
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diag_Sigma_x_minus_vxc_mo_mo
-      TYPE(cp_cfm_type)                                  :: cfm_dummy, cfm_mo_coeff, ks_mat_ao_ao, &
-                                                            ks_mat_no_xc_ao_ao, vxc_ao_ao, &
-                                                            vxc_ao_mo, vxc_mo_mo
+      TYPE(cp_cfm_type)                                  :: cfm_dummy, cfm_mo_coeff, cfm_work, vxc
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
-      TYPE(cp_fm_type)                                   :: fm_dummy, fm_Sigma_x_minus_vxc_mo_mo, &
-                                                            fm_tmp_im, fm_tmp_re
+      TYPE(cp_fm_type)                                   :: fm_dummy, fm_tmp_im, fm_tmp_re
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints_Sigma, kpoints_Sigma_no_xc
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -6116,13 +6018,9 @@ CONTAINS
 
       matrix_struct => kpoints_Sigma%kp_env(1)%kpoint_env%wmat(1, 1)%matrix_struct
 
-      CALL cp_cfm_create(ks_mat_ao_ao, matrix_struct)
-      CALL cp_cfm_create(ks_mat_no_xc_ao_ao, matrix_struct)
-      CALL cp_cfm_create(vxc_ao_ao, matrix_struct)
-      CALL cp_cfm_create(vxc_ao_mo, matrix_struct)
-      CALL cp_cfm_create(vxc_mo_mo, matrix_struct)
+      CALL cp_cfm_create(vxc, matrix_struct)
       CALL cp_cfm_create(cfm_mo_coeff, matrix_struct)
-      CALL cp_fm_create(fm_Sigma_x_minus_vxc_mo_mo, matrix_struct)
+      CALL cp_cfm_create(cfm_work, matrix_struct)
       CALL cp_fm_create(fm_tmp_re, matrix_struct)
       CALL cp_fm_create(fm_tmp_im, matrix_struct)
 
@@ -6155,8 +6053,6 @@ CONTAINS
             END IF
             END ASSOCIATE
 
-            CALL cp_fm_to_cfm(kpoints_Sigma%kp_env(ikp)%kpoint_env%wmat(1, ispin), &
-                              kpoints_Sigma%kp_env(ikp)%kpoint_env%wmat(2, ispin), ks_mat_ao_ao)
             ASSOCIATE (wmat => kpoints_Sigma_no_xc%kp_env(ikp)%kpoint_env%wmat)
             IF (ASSOCIATED(wmat(1, ispin)%matrix_struct)) THEN
                CALL cp_fm_copy_general(wmat(1, ispin), fm_tmp_re, para_env)
@@ -6170,28 +6066,22 @@ CONTAINS
             END IF
             END ASSOCIATE
 
-            CALL cp_fm_to_cfm(fm_tmp_re, fm_tmp_im, vxc_ao_ao)
+            CALL cp_fm_to_cfm(fm_tmp_re, fm_tmp_im, vxc)
 
-            CALL parallel_gemm('N', 'N', nmo, nmo, nmo, z_one, vxc_ao_ao, cfm_mo_coeff, z_zero, vxc_ao_mo)
-            CALL parallel_gemm('C', 'N', nmo, nmo, nmo, z_one, cfm_mo_coeff, vxc_ao_mo, z_zero, vxc_mo_mo)
+            CALL cfm_contract_ABA(cfm_mo_coeff, vxc, workspace=cfm_work)
 
-            CALL cp_cfm_to_fm(vxc_mo_mo, fm_Sigma_x_minus_vxc_mo_mo)
+            CALL cp_cfm_get_diag(vxc, diag_Sigma_x_minus_vxc_mo_mo)
 
-            CALL cp_fm_get_diag(fm_Sigma_x_minus_vxc_mo_mo, diag_Sigma_x_minus_vxc_mo_mo)
-
-            qs_env%mp2_env%ri_g0w0%vec_Sigma_x_minus_vxc_gw(:, ispin, ikp) = diag_Sigma_x_minus_vxc_mo_mo(:)
+            qs_env%mp2_env%ri_g0w0%vec_Sigma_x_minus_vxc_gw(:, ispin, ikp) = &
+               REAL(diag_Sigma_x_minus_vxc_mo_mo, KIND=dp)
 
          END DO
 
       END DO
 
-      CALL cp_cfm_release(ks_mat_ao_ao)
-      CALL cp_cfm_release(ks_mat_no_xc_ao_ao)
-      CALL cp_cfm_release(vxc_ao_ao)
-      CALL cp_cfm_release(vxc_ao_mo)
-      CALL cp_cfm_release(vxc_mo_mo)
+      CALL cp_cfm_release(vxc)
       CALL cp_cfm_release(cfm_mo_coeff)
-      CALL cp_fm_release(fm_Sigma_x_minus_vxc_mo_mo)
+      CALL cp_cfm_release(cfm_work)
       CALL cp_fm_release(fm_tmp_re)
       CALL cp_fm_release(fm_tmp_im)
 
@@ -6221,126 +6111,56 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'trafo_to_mo_and_kpoints'
 
-      INTEGER                                            :: handle, ikp, nkp_self_energy, nmo, &
-                                                            periodic(3), size_real_space
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diag_self_energy
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: diag_self_energy
+      INTEGER                                            :: handle, ikp, nao, ncol_ao, &
+                                                            nkp_self_energy
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_from_bf
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(cp_cfm_type)                                  :: cfm_self_energy_ao_ao, &
-                                                            cfm_self_energy_ao_mo, &
-                                                            cfm_self_energy_mo_mo
+      TYPE(cp_cfm_type)                                  :: cfm_self_energy, cfm_work
       TYPE(cp_cfm_type), POINTER                         :: cfm_mo_coeff
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
-      TYPE(cp_fm_type)                                   :: fm_self_energy_mo_mo
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: mat_self_energy_ao_ao_kp_im, &
-         mat_self_energy_ao_ao_kp_re, mat_self_energy_ao_ao_real_space
+      TYPE(cp_fm_type)                                   :: fm_gamma
       TYPE(kpoint_type), POINTER                         :: kpoints_Sigma
-      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
       CALL timeset(routineN, handle)
 
-      CALL get_qs_env(qs_env, cell=cell, para_env=para_env)
-      CALL get_cell(cell=cell, periodic=periodic)
-
-      size_real_space = 3**(periodic(1) + periodic(2) + periodic(3))
-
-      CALL alloc_mat_set(mat_self_energy_ao_ao_real_space, size_real_space, mat_self_energy_ao_ao)
-
-      CALL dbcsr_copy(mat_self_energy_ao_ao_real_space(1)%matrix, mat_self_energy_ao_ao)
-
+      CALL get_qs_env(qs_env, cell=cell, particle_set=particle_set)
       kpoints_Sigma => qs_env%mp2_env%ri_rpa_im_time%kpoints_Sigma
-
-      CALL get_mat_cell_T_from_mat_gamma(mat_self_energy_ao_ao_real_space, qs_env, kpoints_Sigma, 0, 0)
-
       nkp_self_energy = kpoints_Sigma%nkp
+      CALL dbcsr_get_info(mat_self_energy_ao_ao, nfullrows_total=nao, nfullcols_total=ncol_ao)
+      CPASSERT(nao == ncol_ao)
+      ALLOCATE (diag_self_energy(nao), atom_from_bf(nao))
+      CALL get_atom_index_from_basis_function_index(qs_env, atom_from_bf, nao, "ORB")
 
-      CALL alloc_mat_set(mat_self_energy_ao_ao_kp_re, nkp_self_energy, mat_self_energy_ao_ao)
-      CALL alloc_mat_set(mat_self_energy_ao_ao_kp_im, nkp_self_energy, mat_self_energy_ao_ao)
-
-      CALL real_space_to_kpoint_transform_rpa(mat_self_energy_ao_ao_kp_re, mat_self_energy_ao_ao_kp_im, &
-                                              mat_self_energy_ao_ao_real_space, kpoints_Sigma, 1.0E-50_dp)
-
-      CALL dbcsr_get_info(mat_self_energy_ao_ao, nfullrows_total=nmo)
-      ALLOCATE (diag_self_energy(nmo))
-
-      matrix_struct => kpoints_Sigma%kp_env(1)%kpoint_env%mos(1)%cmo_coeff%matrix_struct
-
-      CALL cp_cfm_create(cfm_self_energy_ao_ao, matrix_struct)
-      CALL cp_cfm_create(cfm_self_energy_ao_mo, matrix_struct)
-      CALL cp_cfm_create(cfm_self_energy_mo_mo, matrix_struct)
-      CALL cp_cfm_set_all(cfm_self_energy_ao_ao, z_zero)
-      CALL cp_cfm_set_all(cfm_self_energy_ao_mo, z_zero)
-      CALL cp_cfm_set_all(cfm_self_energy_mo_mo, z_zero)
-
-      CALL cp_fm_create(fm_self_energy_mo_mo, matrix_struct)
+      ! Use the AO layout for the operator; the auxiliary k-point solver supplies all nao MOs.
+      matrix_struct => kpoints_Sigma%kp_env(1)%kpoint_env%wmat(1, ispin)%matrix_struct
+      CALL cp_fm_create(fm_gamma, matrix_struct)
+      ! The Gamma self-energy is real symmetric in exact arithmetic. Its general
+      ! DBCSR storage allows tensor batches to accumulate both matrix orientations.
+      CALL copy_dbcsr_to_fm(mat_self_energy_ao_ao, fm_gamma)
+      CALL cp_cfm_create(cfm_self_energy, matrix_struct)
+      CALL cp_cfm_create(cfm_work, kpoints_Sigma%kp_env(1)%kpoint_env%mos(ispin)%cmo_coeff%matrix_struct)
 
       DO ikp = 1, nkp_self_energy
-
-         CALL dbcsr_to_cfm(mat_self_energy_ao_ao_kp_re(ikp)%matrix, &
-                           mat_self_energy_ao_ao_kp_im(ikp)%matrix, cfm_self_energy_ao_ao)
-
+         CALL fm_gamma_to_kp(cfm_self_energy, fm_gamma, cell, particle_set, atom_from_bf, &
+                             kpoints_Sigma%index_to_cell, kpoints_Sigma%xkp(:, ikp))
          cfm_mo_coeff => kpoints_Sigma%kp_env(ikp)%kpoint_env%mos(ispin)%cmo_coeff
-
-         CALL parallel_gemm('N', 'N', nmo, nmo, nmo, z_one, cfm_self_energy_ao_ao, cfm_mo_coeff, &
-                            z_zero, cfm_self_energy_ao_mo)
-
-         CALL parallel_gemm('C', 'N', nmo, nmo, nmo, z_one, cfm_mo_coeff, cfm_self_energy_ao_mo, &
-                            z_zero, cfm_self_energy_mo_mo)
-
-         CALL cp_cfm_to_fm(cfm_self_energy_mo_mo, fm_self_energy_mo_mo)
-
-         CALL cp_fm_get_diag(fm_self_energy_mo_mo, diag_self_energy)
-
-         vec_Sigma(:, ikp) = diag_self_energy(homo - gw_corr_lev_occ + 1:homo + gw_corr_lev_virt)
-
+         CPASSERT(cfm_mo_coeff%matrix_struct%nrow_global == nao)
+         CPASSERT(cfm_mo_coeff%matrix_struct%ncol_global == nao)
+         CALL cfm_contract_ABA(cfm_mo_coeff, cfm_self_energy, workspace=cfm_work)
+         CALL cp_cfm_get_diag(cfm_self_energy, diag_self_energy)
+         ! Taking the real MO diagonal selects the Hermitian part of the operator.
+         vec_Sigma(:, ikp) = REAL(diag_self_energy(homo - gw_corr_lev_occ + 1:homo + gw_corr_lev_virt), KIND=dp)
       END DO
 
-      CALL dbcsr_deallocate_matrix_set(mat_self_energy_ao_ao_real_space)
-      CALL dbcsr_deallocate_matrix_set(mat_self_energy_ao_ao_kp_re)
-      CALL dbcsr_deallocate_matrix_set(mat_self_energy_ao_ao_kp_im)
-
-      CALL cp_cfm_release(cfm_self_energy_ao_ao)
-      CALL cp_cfm_release(cfm_self_energy_ao_mo)
-      CALL cp_cfm_release(cfm_self_energy_mo_mo)
-      CALL cp_fm_release(fm_self_energy_mo_mo)
-
-      DEALLOCATE (diag_self_energy)
+      CALL cp_fm_release(fm_gamma)
+      CALL cp_cfm_release(cfm_self_energy)
+      CALL cp_cfm_release(cfm_work)
 
       CALL timestop(handle)
 
    END SUBROUTINE trafo_to_mo_and_kpoints
-
-! **************************************************************************************************
-!> \brief ...
-!> \param dbcsr_re ...
-!> \param dbcsr_im ...
-!> \param cfm_mat ...
-! **************************************************************************************************
-   SUBROUTINE dbcsr_to_cfm(dbcsr_re, dbcsr_im, cfm_mat)
-
-      TYPE(dbcsr_type), POINTER                          :: dbcsr_re, dbcsr_im
-      TYPE(cp_cfm_type), INTENT(IN)                      :: cfm_mat
-
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'dbcsr_to_cfm'
-
-      INTEGER                                            :: handle
-      TYPE(cp_fm_type)                                   :: fm_mat_im, fm_mat_re
-
-      CALL timeset(routineN, handle)
-
-      CALL cp_fm_create(fm_mat_re, cfm_mat%matrix_struct)
-      CALL cp_fm_create(fm_mat_im, cfm_mat%matrix_struct)
-
-      CALL copy_dbcsr_to_fm(dbcsr_re, fm_mat_re)
-      CALL copy_dbcsr_to_fm(dbcsr_im, fm_mat_im)
-
-      CALL cp_fm_to_cfm(fm_mat_re, fm_mat_im, cfm_mat)
-
-      CALL cp_fm_release(fm_mat_re)
-      CALL cp_fm_release(fm_mat_im)
-
-      CALL timestop(handle)
-
-   END SUBROUTINE dbcsr_to_cfm
 
 ! **************************************************************************************************
 !> \brief ...

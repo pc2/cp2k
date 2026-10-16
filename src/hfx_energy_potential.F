@@ -401,7 +401,7 @@ CONTAINS
       shm_neris_disk = 0
       shm_stor_count_max_val = 0
 
-!$OMP PARALLEL DEFAULT(OMP_DEFAULT_NONE_WITH_OOP) &
+!$OMP PARALLEL DEFAULT(NONE) &
 !$OMP SHARED(qs_env,&
 !$OMP                                  x_data,&
 !$OMP                                  ks_matrix,&
@@ -1557,8 +1557,6 @@ CONTAINS
 
                      IF (max_val1 + screen_kind_kl + pmax_atom < log10_eps_schwarz) CYCLE
 
-                     sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
-                     sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
                      DO i_set_list_kl = i_set_list_kl_start, i_set_list_kl_stop
                         kset = set_list_kl(i_set_list_kl)%pair(1)
                         lset = set_list_kl(i_set_list_kl)%pair(2)
@@ -1569,8 +1567,6 @@ CONTAINS
 
                         !! Near field screening
                         IF (max_val2 + pmax_atom < log10_eps_schwarz) CYCLE
-                        sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
-                        sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
                         !! get max_vals if we screen on initial density
                         IF (do_p_screening) THEN
                            CALL get_pmax_val(ptr_p_1, ptr_p_2, ptr_p_3, ptr_p_4, &
@@ -1676,6 +1672,10 @@ CONTAINS
                            END IF
                            !! Calculate integrals if we run out of buffer or the geometry did change
                            IF (my_geo_change .OR. buffer_overflow) THEN
+                              sphi_a_ext_set => sphi_a_ext(:, :, :, iset)
+                              sphi_b_ext_set => sphi_b_ext(:, :, :, jset)
+                              sphi_c_ext_set => sphi_c_ext(:, :, :, kset)
+                              sphi_d_ext_set => sphi_d_ext(:, :, :, lset)
 
                               max_contraction_val = max_contraction(iset, iatom)* &
                                                     max_contraction(jset, jatom)* &
@@ -1719,9 +1719,13 @@ CONTAINS
 
                               !! Compress the array for storage
                               spherical_estimate = 0.0_dp
-                              DO i = 1, nints
-                                 spherical_estimate = MAX(spherical_estimate, ABS(primitive_integrals(i)))
-                              END DO
+                              IF (cartesian_estimate /= 0.0_dp) THEN
+                                 DO i = 1, nints
+                                    spherical_estimate = MAX(spherical_estimate, ABS(primitive_integrals(i)))
+                                 END DO
+                              ELSE IF (buffer_overflow) THEN
+                                 CYCLE
+                              END IF
 
                               IF (spherical_estimate == 0.0_dp) spherical_estimate = TINY(spherical_estimate)
                               estimate_to_store_int = EXPONENT(spherical_estimate)
@@ -1811,6 +1815,7 @@ CONTAINS
                                     END IF
                                  END DO
                               END IF
+                              IF (cartesian_estimate == 0.0_dp) CYCLE
                            END IF
                            !!!  DEBUG, print out primitive integrals and indices. Only works serial no OMP  !!!
                            IF (.FALSE.) THEN
@@ -2517,18 +2522,21 @@ CONTAINS
                  nsob, nsoc, nsod, s_offset_a, s_offset_b, s_offset_c, s_offset_d
       REAL(dp)                                           :: EtaInv, tmp_max, ZetaInv
 
-      CALL build_pair_list_pgf(npgfa, npgfb, pgf_list_ij, zeta, zetb, screen1, screen2, &
-                               pgf1, R1_pgf, log10_pmax, log10_eps_schwarz, ra, rb, &
-                               nelements_ij, &
-                               neighbor_cells, nimages, do_periodic)
-      CALL build_pair_list_pgf(npgfc, npgfd, pgf_list_kl, zetc, zetd, screen2, screen1, &
-                               pgf2, R2_pgf, log10_pmax, log10_eps_schwarz, rc, rd, &
-                               nelements_kl, &
-                               neighbor_cells, nimages, do_periodic)
-
       cart_estimate = 0.0_dp
       neris_tmp = 0
       primitive_integrals = 0.0_dp
+
+      CALL build_pair_list_pgf(npgfa, npgfb, pgf_list_ij, zeta, zetb, screen1, screen2, &
+                               pgf1, R1_pgf, log10_pmax, log10_eps_schwarz, ra, rb, &
+                               nelements_ij, &
+                               neighbor_cells, nimages, do_periodic, cell)
+      IF (nelements_ij == 0) RETURN
+      CALL build_pair_list_pgf(npgfc, npgfd, pgf_list_kl, zetc, zetd, screen2, screen1, &
+                               pgf2, R2_pgf, log10_pmax, log10_eps_schwarz, rc, rd, &
+                               nelements_kl, &
+                               neighbor_cells, nimages, do_periodic, cell)
+      IF (nelements_kl == 0) RETURN
+
       max_l = la_max + lb_max + lc_max + ld_max
 
       DO list_ij = 1, nelements_ij
@@ -2544,6 +2552,7 @@ CONTAINS
             CALL build_pgf_product_list(pgf_list_ij(list_ij), pgf_list_kl(list_kl), pgf_product_list, &
                                         nproducts, log10_pmax, log10_eps_schwarz, neighbor_cells, cell, &
                                         potential_parameter, max_l, do_periodic)
+            IF (nproducts == 0) CYCLE
 
             s_offset_a = 0
             DO la = la_min, la_max

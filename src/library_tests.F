@@ -22,7 +22,7 @@ MODULE library_tests
                                               init_cell
    USE cell_types,                      ONLY: cell_release,&
                                               cell_type
-   USE cg_test,                         ONLY: clebsch_gordon_test
+   USE cg_test,                         ONLY: gaunt_coefficient_test
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_release,&
                                               cp_blacs_env_type
@@ -153,11 +153,12 @@ CONTAINS
       IF (runtest(5) /= 0) CALL matmul_test(para_env, test_matmul=.FALSE., test_dgemm=.TRUE., iw=iw)
       !
       IF (runtest(3) /= 0) CALL fft_test(para_env, iw, globenv%fftw_plan_type, &
-                                         globenv%fftw_wisdom_file_name)
+                                         globenv%fftw_wisdom_file_name, &
+                                         globenv%fftw_wisdom_file_explicit)
       !
       IF (runtest(4) /= 0) CALL eri_test(iw)
       !
-      IF (runtest(6) /= 0) CALL clebsch_gordon_test()
+      IF (runtest(6) /= 0) CALL gaunt_coefficient_test()
       !
       ! runtest 7 has been deleted and can be recycled
       !
@@ -239,7 +240,7 @@ CONTAINS
 !> I    FFT      n                                                             I
 !> I    ERI      n                                                             I
 !> I    PW_FFT   n                                                             I
-!> I    Clebsch-Gordon n                                                       I
+!> I    Clebsch-Gordon n         -> Gaunt coefficients                         I
 !> I    RS_GRIDS n                                                             I
 !> I    MPI      n                                                             I
 !> I    RNG      n             -> Parallel random number generator             I
@@ -546,15 +547,17 @@ CONTAINS
 !> \param iw ...
 !> \param fftw_plan_type ...
 !> \param wisdom_file where FFTW3 should look to save/load wisdom
+!> \param export_wisdom whether the FFTW3 wisdom is saved to wisdom_file
 !> \par History
 !>      none
 !> \author JGH  6-NOV-2000
 ! **************************************************************************************************
-   SUBROUTINE fft_test(para_env, iw, fftw_plan_type, wisdom_file)
+   SUBROUTINE fft_test(para_env, iw, fftw_plan_type, wisdom_file, export_wisdom)
 
       TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER                                            :: iw, fftw_plan_type
       CHARACTER(LEN=*), INTENT(IN)                       :: wisdom_file
+      LOGICAL, INTENT(IN)                                :: export_wisdom
 
       INTEGER, PARAMETER                                 :: ndate(3) = [12, 48, 96]
 
@@ -675,7 +678,7 @@ CONTAINS
             DEALLOCATE (cb)
             DEALLOCATE (cc)
          END IF
-         CALL finalize_fft(para_env, wisdom_file=wisdom_file)
+         CALL finalize_fft(para_env, wisdom_file=wisdom_file, export_wisdom=export_wisdom)
       END DO
 
    END SUBROUTINE fft_test
@@ -784,7 +787,8 @@ CONTAINS
       CALL ca%release()
       CALL pw_grid_release(grid)
       CALL cell_release(box)
-      CALL finalize_fft(para_env, wisdom_file=globenv%fftw_wisdom_file_name)
+      CALL finalize_fft(para_env, wisdom_file=globenv%fftw_wisdom_file_name, &
+                        export_wisdom=globenv%fftw_wisdom_file_explicit)
 
       CALL timestop(handle)
 
@@ -1003,7 +1007,8 @@ CONTAINS
 
       ! cleanup
       CALL cell_release(box)
-      CALL finalize_fft(para_env, wisdom_file=globenv%fftw_wisdom_file_name)
+      CALL finalize_fft(para_env, wisdom_file=globenv%fftw_wisdom_file_name, &
+                        export_wisdom=globenv%fftw_wisdom_file_explicit)
 
    END SUBROUTINE pw_fft_test
 

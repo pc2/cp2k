@@ -17,7 +17,7 @@ MODULE input_cp2k_dft
    USE bibliography,                    ONLY: &
         Andermatt2016, Andreussi2012, Andreussi2019, Avezac2005, Bengtsson1999, Blochl1995, &
         Brelaz1979, Chai2024a, Chai2025a, Fattebert2002, Guidon2010, Iannuzzi2006, Kunert2003, &
-        Marek2025, Merlot2014, Perdew1981, VandeVondele2005b, Yin2017
+        Marek2025, Mattiat2022, Merlot2014, Perdew1981, VandeVondele2005b, Yin2017
    USE cp_output_handling,              ONLY: add_last_numeric,&
                                               cp_print_key_section_create,&
                                               high_print_level,&
@@ -1563,7 +1563,11 @@ CONTAINS
       CALL section_create(section, __LOCATION__, name="LOW_SPIN_ROKS", &
                           description="Specify the details of the low spin ROKS method. "// &
                           "In particular, one can specify various terms added to the energy of the high spin roks configuration"// &
-                          " with a energy scaling factor, and a prescription of the spin state.", &
+                          " with an energy scaling factor, and a prescription of the spin state. "// &
+                          "With METHOD GAPW, energies and orbital derivatives are supported for LDA/GGA, "// &
+                          "full-AO hybrids without ADMM, tau-dependent meta-GGAs, and molecular GauXC/Skala. "// &
+                          "Nuclear forces, analytical stress, and native-grid Skala are not supported with GAPW. "// &
+                          "The GauXC path requires isolated all-electron calculations with HOST execution.", &
                           n_keywords=6, n_subsections=0, repeats=.FALSE.)
 
       NULLIFY (keyword)
@@ -1601,7 +1605,7 @@ CONTAINS
                           description="Parameters needed to set up the real time propagation"// &
                           " for the electron dynamics. This currently works only in the NVE ensemble.", &
                           n_keywords=4, n_subsections=4, repeats=.FALSE., &
-                          citations=[Kunert2003, Andermatt2016])
+                          citations=[Kunert2003, Andermatt2016, Mattiat2022])
 
       CALL keyword_create(keyword, __LOCATION__, name="MAX_ITER", &
                           description="Maximal number of iterations for the self consistent propagator loop.", &
@@ -2407,8 +2411,8 @@ CONTAINS
                           name="SCCS", &
                           description="Define the parameters for self-consistent continuum solvation (SCCS) model", &
                           citations=[Fattebert2002, Andreussi2012, Yin2017], &
-                          n_keywords=8, &
-                          n_subsections=3, &
+                          n_keywords=10, &
+                          n_subsections=4, &
                           repeats=.FALSE.)
 
       NULLIFY (keyword)
@@ -2566,7 +2570,56 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="CORE_FILL", &
+                          description="Add a normalised Gaussian fill density $Z_{val}/(\sqrt{\pi}\sigma)^3 "// &
+                          "\exp(-r^2/\sigma^2)$ on each atom to the electronic density used for the "// &
+                          "definition of the dielectric function. This fills the low valence density "// &
+                          "region at the nuclei of pseudopotential atoms, which otherwise may be treated "// &
+                          "as solvent if a grid point is close to a nucleus (similar to the solvent_mode "// &
+                          "'full' of the Environ library). Kinds without removed core electrons (Z_val = Z, "// &
+                          "e.g. H, He-q2, Li-q3, Be-q4) are not filled by default. "// &
+                          "The resulting ionic forces are included.", &
+                          usage="CORE_FILL", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="CORE_FILL_SPREAD", &
+                          description="Default spread $\sigma$ of the Gaussian fill density used with CORE_FILL "// &
+                          "(Environ default 0.5 bohr). Can be overwritten per kind in the CORE_FILL_KIND section.", &
+                          repeats=.FALSE., &
+                          n_var=1, &
+                          type_of_var=real_t, &
+                          unit_str="bohr", &
+                          default_r_val=0.5_dp, &
+                          usage="CORE_FILL_SPREAD [bohr] 0.5")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       NULLIFY (subsection)
+
+      CALL section_create(subsection, __LOCATION__, &
+                          name="CORE_FILL_KIND", &
+                          description="Per-kind spread of the CORE_FILL Gaussian fill density. "// &
+                          "Each line contains a kind label (as defined in &KIND) and the spread in bohr. "// &
+                          "A spread <= 0 disables the fill for that kind. Kinds not listed use "// &
+                          "CORE_FILL_SPREAD, except kinds without removed core electrons (Z_val = Z) which are "// &
+                          "not filled.", &
+                          n_keywords=1, &
+                          n_subsections=0, &
+                          repeats=.FALSE.)
+      CALL keyword_create(keyword, __LOCATION__, name="_DEFAULT_KEYWORD_", &
+                          description="Kind label and spread in bohr", &
+                          repeats=.TRUE., &
+                          usage="{kind label} {spread in bohr}", &
+                          type_of_var=lchar_t)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
 
       CALL section_create(subsection, __LOCATION__, &
                           name="ANDREUSSI", &

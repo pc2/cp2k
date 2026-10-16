@@ -419,17 +419,14 @@ CONTAINS
       CALL pw_grid_setup_internal(cell_hmat, cell_h_inv, cell_deth, pw_grid, mp_comm, bounds_local=bounds_local, &
                                   blocked=blocked, ref_grid=ref_grid, rs_dims=rs_dims, iounit=iounit)
 
-#if defined(__OFFLOAD) && !defined(__NO_OFFLOAD_PW)
       CALL pw_grid_create_ghatmap(pw_grid)
-#endif
 
       CALL timestop(handle)
 
    END SUBROUTINE pw_grid_create_extended
 
-#if defined(__OFFLOAD) && !defined(__NO_OFFLOAD_PW)
 ! **************************************************************************************************
-!> \brief sets up a combined index for CUDA gather and scatter
+!> \brief sets up a combined index for gather and scatter
 !> \param pw_grid ...
 !> \author Gloess Andreas (xx-Dec-2012)
 ! **************************************************************************************************
@@ -453,9 +450,10 @@ CONTAINS
                  nmapm => pw_grid%mapm%neg, nmapn => pw_grid%mapn%neg, ngpts => SIZE(pw_grid%gsq), &
                  npts => pw_grid%npts, yzq => pw_grid%para%yzq)
          ! initialize map array to minus one, to guarantee memory
-         ! range checking errors in CUDA part (just to be sure)
+         ! range checking errors (just to be sure)
          g_hatmap(:, :) = -1
          IF (pw_grid%para%mode /= PW_MODE_DISTRIBUTED) THEN
+            CPASSERT(PRODUCT(INT(npts, KIND=int_8)) <= INT(HUGE(0), KIND=int_8))
             DO gpt = 1, ngpts
                l = pmapl(g_hat(1, gpt))
                m = pmapm(g_hat(2, gpt))
@@ -501,7 +499,6 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE pw_grid_create_ghatmap
-#endif
 
 ! **************************************************************************************************
 !> \brief sets up a pw_grid, needs valid bounds as input, it is up to you to
@@ -1002,6 +999,13 @@ CONTAINS
 
             pw_grid%para%ray_distribution = .TRUE.
 
+            ! the mirror tags below only handle lower-skewed or symmetric
+            ! frequency windows (the only ones the grid setup produces today)
+            IF (pw_grid%grid_span == HALFSPACE) THEN
+               CPASSERT(pw_grid%bounds(2, 2) <= -pw_grid%bounds(1, 2))
+               CPASSERT(pw_grid%bounds(2, 3) <= -pw_grid%bounds(1, 3))
+            END IF
+
             pw_grid%para%yzq = -1
             IF (PRESENT(ref_grid)) THEN
                ! tag all vectors from the reference grid
@@ -1357,6 +1361,32 @@ CONTAINS
    END SUBROUTINE pw_vec_length
 
 ! **************************************************************************************************
+!> \brief True for rays that must stay out of the stored half-space: on an
+!>        asymmetric (even) frequency window the -g mirror of a ray on the
+!>        lower extreme plane falls outside the grid, while the ray
+!>        distribution and the negation maps both require the stored
+!>        half-space to be closed under negation (the z = 0 plane cut in
+!>        pw_grid_count and the tally check in pw_grid_remap serve the same
+!>        contract). Symmetric (odd) windows are never affected.
+!> \param grid_span ...
+!> \param m ray frequency in direction 2
+!> \param n ray frequency in direction 3
+!> \param bounds global frequency bounds of the grid
+!> \return whether the -g mirror of the ray falls outside the grid
+! **************************************************************************************************
+   PURE FUNCTION mirror_outside_bounds(grid_span, m, n, bounds) RESULT(outside)
+
+      INTEGER, INTENT(IN)                                :: grid_span, m, n
+      INTEGER, DIMENSION(2, 3), INTENT(IN)               :: bounds
+      LOGICAL                                            :: outside
+
+      outside = grid_span == HALFSPACE .AND. &
+                ((m == bounds(1, 2) .AND. bounds(2, 2) < -bounds(1, 2)) .OR. &
+                 (n == bounds(1, 3) .AND. bounds(2, 3) < -bounds(1, 3)))
+
+   END FUNCTION mirror_outside_bounds
+
+! **************************************************************************************************
 !> \brief Count total number of g vectors
 !> \param h_inv ...
 !> \param pw_grid ...
@@ -1413,6 +1443,10 @@ CONTAINS
                   IF (pw_grid%grid_span == HALFSPACE .AND. n == 0) THEN
                      IF ((m == 0 .AND. l > 0) .OR. (m > 0)) CYCLE
                   END IF
+                  ! keep the stored half-space closed under negation: the ray
+                  ! distribution and the negation maps rely on it (see also the
+                  ! z = 0 plane cut above and mirror_outside_bounds)
+                  IF (mirror_outside_bounds(pw_grid%grid_span, m, n, bounds)) CYCLE
 
                   CALL pw_vec_length(h_inv, length_x, length_y, length_z, length, l, m, n)
 
@@ -1482,6 +1516,8 @@ CONTAINS
                   IF (pw_grid%grid_span == HALFSPACE .AND. n == 0) THEN
                      IF ((m == 0 .AND. l > 0) .OR. (m > 0)) CYCLE
                   END IF
+                  ! keep the stored half-space closed under negation (see pw_grid_count)
+                  IF (mirror_outside_bounds(pw_grid%grid_span, m, n, bounds)) CYCLE
 
                   CALL pw_vec_length(h_inv, length_x, length_y, length_z, length, l, m, n)
 
@@ -1510,6 +1546,8 @@ CONTAINS
                n = pw_grid%para%yzp(2, i, ip) + lbz - 1
                m = pw_grid%para%yzp(1, i, ip) + lby - 1
                IF (n > n_upperlimit) CYCLE
+               ! keep the stored half-space closed under negation (see pw_grid_count)
+               IF (mirror_outside_bounds(pw_grid%grid_span, m, n, bounds)) CYCLE
                DO l = bounds(1, 1), bounds(2, 1)
                   IF (pw_grid%grid_span == HALFSPACE .AND. n == 0) THEN
                      IF ((m == 0 .AND. l > 0) .OR. (m > 0)) CYCLE
@@ -1719,7 +1757,7 @@ CONTAINS
       CPASSERT(stat == 0)
       CALL c_f_pointer(cptr_g_hatmap, pw_grid%g_hatmap, [MAX(ng, 1), MAX(nmaps, 1)])
 #else
-      ALLOCATE (pw_grid%g_hatmap(1, 1))
+      ALLOCATE (pw_grid%g_hatmap(MAX(ng, 1), MAX(nmaps, 1)))
 #endif
 
       IF (pw_grid%para%mode == PW_MODE_DISTRIBUTED) THEN

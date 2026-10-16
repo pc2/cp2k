@@ -15,7 +15,14 @@ MODULE cell_opt_types
 
    USE cell_methods,                    ONLY: canonicalize_cell_matrix,&
                                               cell_create
-   USE cell_opt_utils,                  ONLY: read_external_press_tensor
+   USE cell_opt_utils,                  ONLY: cell_opt_constraint_label,&
+                                              keep_angles_conflict,&
+                                              keep_symmetry_conflict,&
+                                              keep_symmetry_coupled_set,&
+                                              mask_shear,&
+                                              parse_cell_constraint,&
+                                              pres_crit_shear_pinned,&
+                                              read_external_press_tensor
    USE cell_types,                      ONLY: cell_clone,&
                                               cell_release,&
                                               cell_type
@@ -26,22 +33,18 @@ MODULE cell_opt_types
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE force_env_types,                 ONLY: force_env_get,&
                                               force_env_type
-   USE input_constants,                 ONLY: fix_none,&
-                                              fix_x,&
-                                              fix_xy,&
-                                              fix_xz,&
-                                              fix_y,&
-                                              fix_yz,&
-                                              fix_z
+   USE input_constants,                 ONLY: fix_none
    USE input_section_types,             ONLY: section_vals_type,&
-                                              section_vals_val_get
-   USE kinds,                           ONLY: dp
+                                              section_vals_val_get,&
+                                              section_vals_val_set
+   USE kinds,                           ONLY: default_string_length,&
+                                              dp
+   USE string_utilities,                ONLY: uppercase
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
 
-   LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .FALSE.
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cell_opt_types'
 
    PUBLIC :: cell_opt_env_type, &
@@ -56,6 +59,8 @@ MODULE cell_opt_types
 ! **************************************************************************************************
    TYPE cell_opt_env_type
       ! Simulation cell optimization parameters
+      ! constraint_id is a mask of fixed cell components (comp_* / mask_*):
+      ! a set bit means fixed, 0 (= fix_none) leaves all components relaxable
       INTEGER                                    :: constraint_id = fix_none
       LOGICAL                                    :: keep_angles = .FALSE., &
                                                     keep_symmetry = .FALSE., &
@@ -85,13 +90,15 @@ CONTAINS
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(section_vals_type), POINTER                   :: geo_section
 
-      CHARACTER(LEN=4)                                   :: label
-      INTEGER                                            :: output_unit, required_constraint_id
-      LOGICAL                                            :: constraint_explicit, valid_constraint
+      CHARACTER(LEN=default_string_length)               :: label
+      CHARACTER(LEN=default_string_length), &
+         DIMENSION(:), POINTER                           :: canonical_tokens, constraint_tokens
+      INTEGER                                            :: output_unit
+      LOGICAL                                            :: constraint_explicit
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
 
-      NULLIFY (cell_env%opt_cell, cell)
+      NULLIFY (cell_env%opt_cell, cell, canonical_tokens, constraint_tokens)
       CALL force_env_get(force_env, cell=cell)
       CALL cell_create(cell_env%opt_cell)
       CALL cell_clone(cell, cell_env%opt_cell, tag="CELL_OPT_CANONICAL")
@@ -105,37 +112,54 @@ CONTAINS
       CALL section_vals_val_get(geo_section, "KEEP_SYMMETRY", l_val=cell_env%keep_symmetry)
       CALL section_vals_val_get(geo_section, "PRESSURE_TOLERANCE", r_val=cell_env%pres_tol)
       CALL section_vals_val_get(geo_section, "CONSTRAINT", &
-                                i_val=cell_env%constraint_id, explicit=constraint_explicit)
-      IF (COUNT(cell%perd /= 0) == 2) THEN
-         required_constraint_id = fix_none
-         IF (cell%perd(1) == 0) required_constraint_id = fix_x
-         IF (cell%perd(2) == 0) required_constraint_id = fix_y
-         IF (cell%perd(3) == 0) required_constraint_id = fix_z
+                                c_vals=constraint_tokens, explicit=constraint_explicit)
+      CALL parse_cell_constraint(constraint_tokens, cell, constraint_explicit, &
+                                 cell_env%constraint_id)
+      ! Only for explicitly set values: an unset keyword must stay unparsed so
+      ! the restart echo keeps omitting the line, as it always has.
+      IF (constraint_explicit) THEN
+         ALLOCATE (canonical_tokens(SIZE(constraint_tokens)))
+         canonical_tokens = constraint_tokens
+         CALL uppercase(canonical_tokens)
+         CALL section_vals_val_set(geo_section, "CONSTRAINT", c_vals_ptr=canonical_tokens)
+      END IF
 
-         SELECT CASE (required_constraint_id)
-         CASE (fix_x)
-            valid_constraint = cell_env%constraint_id == fix_x .OR. &
-                               cell_env%constraint_id == fix_xy .OR. &
-                               cell_env%constraint_id == fix_xz
-         CASE (fix_y)
-            valid_constraint = cell_env%constraint_id == fix_y .OR. &
-                               cell_env%constraint_id == fix_xy .OR. &
-                               cell_env%constraint_id == fix_yz
-         CASE (fix_z)
-            valid_constraint = cell_env%constraint_id == fix_z .OR. &
-                               cell_env%constraint_id == fix_xz .OR. &
-                               cell_env%constraint_id == fix_yz
-         CASE DEFAULT
-            valid_constraint = .FALSE.
-         END SELECT
+      CALL cell_opt_validate_constraint(cell_env)
 
-         IF (cell_env%constraint_id == fix_none .AND. .NOT. constraint_explicit) THEN
-            cell_env%constraint_id = required_constraint_id
+      ! The masked pressure criterion is structurally off target for this
+      ! combination on a non-orthorhombic cell. The run stays legal: the
+      ! geometry criteria still work, and the pressure criterion may still
+      ! be met when the pinned shear stresses vanish by symmetry. The
+      ! decision lives in pres_crit_shear_pinned, which the unit test
+      ! checks over all 64 masks.
+      IF (pres_crit_shear_pinned(cell_env%constraint_id, &
+                                 cell_env%opt_cell%orthorhombic, &
+                                 cell_env%keep_angles)) THEN
+         IF (IAND(cell_env%constraint_id, mask_shear) /= 0) THEN
             CALL cp_warn(__LOCATION__, &
-                         "2D CELL_OPT: constraining non-periodic cell direction.")
-         ELSE IF (.NOT. valid_constraint) THEN
-            CALL cp_abort(__LOCATION__, &
-                          "2D CELL_OPT needs constrained non-periodic cell direction.")
+                         "CELL_OPT: CONSTRAINT ("// &
+                         TRIM(cell_opt_constraint_label(cell_env%constraint_id))// &
+                         ") pins a shear component of a non-orthorhombic cell. "// &
+                         "The masked pressure criterion is met at the constrained minimum "// &
+                         "only if the stresses conjugate to the pinned components vanish "// &
+                         "there, for example when the pinned values are the stress-free "// &
+                         "ones; otherwise it can stay off the external pressure. Check "// &
+                         "the per-step ""Pressure is converged"" line: with L-BFGS the "// &
+                         """run CONVERGED"" banner can appear while it is NO. The "// &
+                         "projected-stress criterion planned in #6031 removes this limitation.")
+         ELSE
+            CALL cp_warn(__LOCATION__, &
+                         "CELL_OPT: CONSTRAINT ("// &
+                         TRIM(cell_opt_constraint_label(cell_env%constraint_id))// &
+                         ") fixes a diagonal component while KEEP_ANGLES pins the "// &
+                         "angles of a non-orthorhombic cell. The masked pressure criterion "// &
+                         "is met at the constrained minimum only if the stresses conjugate "// &
+                         "to the pinned components vanish there, for example when the "// &
+                         "pinned values are the stress-free ones; otherwise it can stay "// &
+                         "off the external pressure. Check the per-step ""Pressure is "// &
+                         "converged"" line: with L-BFGS the ""run CONVERGED"" banner can "// &
+                         "appear while it is NO. The projected-stress criterion planned "// &
+                         "in #6031 removes this limitation.")
          END IF
       END IF
 
@@ -171,28 +195,69 @@ CONTAINS
             WRITE (UNIT=output_unit, FMT="(T2,A,T78,A3)") &
                "CELL_OPT| Keep cell symmetry: ", " NO"
          END IF
-         SELECT CASE (cell_env%constraint_id)
-         CASE (fix_x)
-            label = "   X"
-         CASE (fix_y)
-            label = "   Y"
-         CASE (fix_z)
-            label = "   Z"
-         CASE (fix_xy)
-            label = "  XY"
-         CASE (fix_xz)
-            label = "  XZ"
-         CASE (fix_yz)
-            label = "  YZ"
-         CASE (fix_none)
-            label = "NONE"
-         END SELECT
-         WRITE (UNIT=output_unit, FMT="(T2,A,T77,A4)") &
-            "CELL_OPT| Constraint: ", label
+         label = cell_opt_constraint_label(cell_env%constraint_id)
+         IF (COUNT(cell%perd /= 0) == 2 .AND. .NOT. constraint_explicit) THEN
+            label = TRIM(label)//" (auto)"
+         END IF
+         WRITE (UNIT=output_unit, FMT="(T2,A,T77,A)") &
+            "CELL_OPT| Constraint: ", TRIM(label)
       END IF
       CALL cp_print_key_finished_output(output_unit, logger, geo_section, "PRINT%CELL")
 
    END SUBROUTINE cell_opt_env_create
+
+! **************************************************************************************************
+!> \brief Abort on constraint combinations that corrupt the KEEP_* projections
+!> \param cell_env ...
+! **************************************************************************************************
+   SUBROUTINE cell_opt_validate_constraint(cell_env)
+      TYPE(cell_opt_env_type), INTENT(IN)                :: cell_env
+
+      LOGICAL                                            :: bad_constraint
+
+      ! Reject CONSTRAINT combinations that would silently corrupt the
+      ! KEEP_ANGLES projection or the KEEP_SYMMETRY symmetrization.
+      ! Slot order of apply_cell_constraints: AX, BX, BY, CX, CY, CZ.
+      ! KEEP_ANGLES projects the gradient slots {BX,BY} onto b and {CX,CY,CZ} onto c.
+      ! Gradient slots that a legacy value zeroes:
+      !    x  = {AX,BX,CX}          B partial,  C partial   -> breaks parallelism
+      !    y  = {BX,BY,CY}          B complete, C partial   -> breaks parallelism
+      !    z  = {CX,CY,CZ}          B untouched, C complete -> safe
+      !    xy = {AX..CY}            B complete, C partial   -> breaks parallelism
+      !    xz = {AX,BX,CX,CY,CZ}    B partial,  C complete  -> breaks parallelism
+      !    yz = {BX..CZ}            B complete, C complete  -> safe
+      ! A partial group breaks the parallelism. A complete or untouched group keeps it.
+      IF (cell_env%keep_angles) THEN
+         ! The decision lives in keep_angles_conflict, which the unit test
+         ! checks over all 64 masks.
+         IF (keep_angles_conflict(cell_env%constraint_id, &
+                                  cell_env%opt_cell%orthorhombic)) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "CELL_OPT: CONSTRAINT ("// &
+                          TRIM(cell_opt_constraint_label(cell_env%constraint_id))// &
+                          ") fixes only part of the b or c cell vector and would "// &
+                          "destroy the KEEP_ANGLES projection.")
+         END IF
+      END IF
+
+      IF (cell_env%keep_symmetry .AND. cell_env%constraint_id /= fix_none) THEN
+         ! The decision lives in keep_symmetry_conflict, which the unit test
+         ! checks over all 64 masks for every crystal system.
+         bad_constraint = keep_symmetry_conflict(cell_env%constraint_id, &
+                                                 cell_env%opt_cell%symmetry_id)
+         IF (bad_constraint) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "CELL_OPT: CONSTRAINT ("// &
+                          TRIM(cell_opt_constraint_label(cell_env%constraint_id))// &
+                          ") fixes only part of the components coupled by "// &
+                          "KEEP_SYMMETRY ("// &
+                          TRIM(cell_opt_constraint_label( &
+                               keep_symmetry_coupled_set(cell_env%opt_cell%symmetry_id)))// &
+                          ") and would break the cell symmetry.")
+         END IF
+      END IF
+
+   END SUBROUTINE cell_opt_validate_constraint
 
 ! **************************************************************************************************
 !> \brief ...

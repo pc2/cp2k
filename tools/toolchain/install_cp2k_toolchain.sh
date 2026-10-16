@@ -256,8 +256,12 @@ Specific options of --with-PKG:
                           Default = install
   --with-gauxc            Enable GauXC for external exchange-correlation
                           integration. Installing GauXC with Skala
-                          support also enables libtorch and installs Skala-1.1.
+                          support also enables libtorch and installs Skala.
                           Default = no
+  --with-skala-ftorch     Enable Skala neural network density functional
+                          via ftorch. This also installs Skala and libtorch. 
+                          Use either this option or --with-gauxc, not both.
+                          Default = no 
   --with-eigen            Enable Eigen3; required by libint and SIRIUS.
                           Default = no
   --with-libint           Enable libint for two-body molecular integrals in
@@ -351,6 +355,9 @@ Specific options of --with-PKG:
                           Default = no
   --with-trexio           Enable the trexio library for TREXIO file format.
                           Default = no
+  --with-libwignernj      Select libwignernj for the angular momentum algebra.
+                          This dependency is required.
+                          Default = install
   --with-libfci           Enable the libfci active-space solver library.
                           Default = no
   --with-mcl              Install MCL library for MiMiC with toolchain.
@@ -418,7 +425,7 @@ math_list="mkl acml openblas"
 lib_list="fftw eigen libint libxc gauxc libxsmm libxs libxstream cosma scalapack
           elpa dbcsr cusolvermp plumed spfft spla gsl spglib hdf5 libvdwxc sirius
           libvori libtorch deepmd ace dftd4 tblite pugixml libsmeagol fmt trexio
-          libfci greenx gmp mcl libgint"
+          libfci greenx gmp mcl libgint skala_ftorch libwignernj"
 package_list="${tool_list} ${mpi_list} ${math_list} ${lib_list}"
 # ------------------------------------------------------------------------
 
@@ -459,6 +466,8 @@ with_spfft="__DONTUSE__"
 with_spla="__DONTUSE__"
 with_cosma="__INSTALL__"
 with_libvori="__INSTALL__"
+with_skala_ftorch="__DONTUSE__"
+with_libwignernj="__INSTALL__"
 with_libtorch="__DONTUSE__"
 with_ninja="__DONTUSE__"
 with_dftd4="__DONTUSE__"
@@ -775,6 +784,9 @@ Otherwise use option no."
     --with-gauxc*)
       with_gauxc=$(read_with "${1}")
       ;;
+    --with-skala-ftorch*)
+      with_skala_ftorch=$(read_with "${1}")
+      ;;
     --with-fftw*)
       with_fftw=$(read_with "${1}")
       ;;
@@ -876,6 +888,9 @@ Otherwise use option no."
       ;;
     --with-trexio*)
       with_trexio=$(read_with "${1}")
+      ;;
+    --with-libwignernj*)
+      with_libwignernj=$(read_with "${1}")
       ;;
     --with-libfci*)
       with_libfci=$(read_with "${1}")
@@ -1021,6 +1036,11 @@ supported. Please install manually and check executable path before rerunning."
   esac
 fi
 
+# FFTW is a hard dependency
+if [ "${with_fftw}" = "__DONTUSE__" ] && [ "${MATH_MODE}" != "mkl" ]; then
+  report_error "FFTW is a hard dependency required by CP2K and cannot be disabled. Please either install FFTW, detect FFTW from system, or use MKL implementation through \"--with-mkl\"."
+fi
+
 # If CUDA or HIP are enabled, make sure the GPU version has been defined.
 if [ "${ENABLE_CUDA}" = "__TRUE__" ] || [ "${ENABLE_HIP}" = "__TRUE__" ]; then
   if [ "${GPUVER}" = "no" ]; then
@@ -1033,13 +1053,9 @@ fi
 if [ "${ENABLE_GAUXC_CUTLASS}" = "__TRUE__" ]; then
   if [ "${ENABLE_CUDA}" != "__TRUE__" ]; then
     report_error ${LINENO} "--enable-gauxc-cutlass requires --enable-cuda=yes."
+  elif ! case "${GPUVER}" in A100 | A40 | H100 | B200 | GB10) true ;; *) false ;; esac then
+    report_error ${LINENO} "--enable-gauxc-cutlass requires CUDA compute capability >= 8.0 (found: ${GPUVER})."
   fi
-  case "${GPUVER}" in
-    A100 | A40 | H100 | B200 | GB10) ;;
-    *)
-      report_error ${LINENO} "--enable-gauxc-cutlass requires CUDA compute capability >= 8.0."
-      ;;
-  esac
   if [ "${with_gauxc}" = "__DONTUSE__" ]; then
     report_warning ${LINENO} "--enable-gauxc-cutlass requires GauXC, enabling --with-gauxc=install."
     with_gauxc="__INSTALL__"
@@ -1047,6 +1063,22 @@ if [ "${ENABLE_GAUXC_CUTLASS}" = "__TRUE__" ]; then
     report_error ${LINENO} "--enable-gauxc-cutlass is only supported with --with-gauxc=install."
   fi
 fi
+
+if [ "${with_gauxc}" != "__DONTUSE__" ] && [ "${with_skala_ftorch}" != "__DONTUSE__" ]; then
+  report_warning ${LINENO} "Since gauxc is enabled, skala-ftorch will not be installed."
+  with_skala_ftorch="__DONTUSE__"
+fi
+
+# Install shared skala model if either GAUXC or skala_ftorch is enabled
+if [ "${with_gauxc}" != "__DONTUSE__" ] || [ "${with_skala_ftorch}" != "__DONTUSE__" ]; then
+  echo "Info: Installing shared skala model for GauXC or Skala_Ftorch"
+  with_skala="__INSTALL__"
+  export SKALA="__TRUE__"
+else
+  with_skala="__DONTUSE__"
+  export SKALA="__FALSE__"
+fi
+export with_skala
 
 # If OpenCL is enabled, ensure LIBXS and LIBXSTREAM are available.
 if [ "${ENABLE_OPENCL}" = "__TRUE__" ]; then
@@ -1085,13 +1117,10 @@ if [ "${with_gauxc}" != "__DONTUSE__" ] &&
   with_libxc="__INSTALL__"
 fi
 
-# Since tblite includes dftd4, a separate dftd4 is not needed.
-if [ "${with_tblite}" != "__DONTUSE__" ]; then
-  if [ "${with_dftd4}" != "__DONTUSE__" ]; then
-    report_warning ${LINENO} "Since tblite includes dft-d4, a standalone dft-d4
-package will not be used separately."
-    with_dftd4="__DONTUSE__"
-  fi
+# tblite includes dftd4, so disable standalone dftd4 when tblite is enabled
+if [ "${with_tblite}" != "__DONTUSE__" ] && [ "${with_dftd4}" != "__DONTUSE__" ]; then
+  report_warning ${LINENO} "tblite includes dft-d4, disabling standalone dftd4"
+  with_dftd4="__DONTUSE__"
 fi
 
 # Require cmake as hard dependency.
@@ -1151,6 +1180,10 @@ if [ "${with_gauxc}" = "__INSTALL__" ]; then
   [ "${with_libtorch}" = "__DONTUSE__" ] && with_libtorch="__INSTALL__"
 fi
 
+if [ "${with_skala_ftorch}" = "__INSTALL__" ]; then
+  [ "${with_libtorch}" = "__DONTUSE__" ] && with_libtorch="__INSTALL__"
+fi
+
 # MKL may provide the FFTW3 interface and ScaLAPACK/BLACS. Resolve these
 # choices here so the package plan, toolchain.conf and summary stay in sync.
 if [ "${MATH_MODE}" = "mkl" ]; then
@@ -1173,7 +1206,7 @@ if [ "${MATH_MODE}" = "mkl" ]; then
     with_scalapack="__DONTUSE__"
     export MKL_SCALAPACK="yes"
   fi
-  # Block libtorch installation bacause of compatibility issue
+  # Block libtorch installation because of compatibility issue
   if [ "${with_libtorch}" = "__INSTALL__" ]; then
     report_error ${LINENO} \
       "Installing prebuilt libtorch is disabled for oneMKL builds due to known

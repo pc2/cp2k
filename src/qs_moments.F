@@ -13,9 +13,9 @@
 ! **************************************************************************************************
 MODULE qs_moments
    USE ai_angmom, ONLY: angmom
-   USE ai_moments, ONLY: contract_cossin, &
-                         cossin, &
+   USE ai_moments, ONLY: contract_expikr, &
                          diff_momop, &
+                         expikr, &
                          moment
    USE atomic_kind_types, ONLY: atomic_kind_type, &
                                 get_atomic_kind
@@ -26,6 +26,7 @@ MODULE qs_moments
    USE block_p_types, ONLY: block_p_type
    USE cell_types, ONLY: cell_type, &
                          pbc, &
+                         pbc_stable, &
                          get_cell
    USE commutator_rpnl, ONLY: build_com_mom_nl
    USE cp_blacs_env, ONLY: cp_blacs_env_type
@@ -158,7 +159,7 @@ CONTAINS
 !> \param basis_type ...
 !> \param all_images accumulate all neighbor images belonging to one atom pair
 !> \param minimum_image apply the half-cell image filter
-!> \param neighbor_image use the neighbor-list image vector for one atom-pair representative
+!> \param neighbor_image preserve the neighbor-list image geometry
 !> \param first_component first Cartesian moment component to write
 ! **************************************************************************************************
    SUBROUTINE build_local_moment_matrix(qs_env, moments, nmoments, ref_point, ref_points, basis_type, &
@@ -207,7 +208,6 @@ CONTAINS
       IF (PRESENT(minimum_image)) my_minimum_image = minimum_image
       my_neighbor_image = .FALSE.
       IF (PRESENT(neighbor_image)) my_neighbor_image = neighbor_image
-      CPASSERT(.NOT. (my_all_images .AND. my_neighbor_image))
 
       nm = (6 + 11*nmoments + 6*nmoments**2 + nmoments**3)/6 - 1
       CPASSERT(SIZE(moments) >= nm)
@@ -330,7 +330,11 @@ CONTAINS
                ra(:) = pbc(particle_set(iatom)%r(:), cell)
                rb(:) = ra(:) + rab(:)
                rac(:) = pbc(rc, ra, cell)
-               rbc(:) = pbc(rc, rb, cell)
+               IF (my_neighbor_image) THEN
+                  rbc(:) = rac(:) + rab(:)
+               ELSE
+                  rbc(:) = pbc(rc, rb, cell)
+               END IF
                dab = NORM2(rab)
             ELSE IF (my_neighbor_image) THEN
                ! Keep the neighbor-list image while selecting one atom-pair representative.
@@ -1145,13 +1149,14 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'build_berry_kpoint_matrix'
 
       CHARACTER                                          :: matrix_symmetry
-      INTEGER :: handle, i, iatom, ic, icol, ikind, inode, irow, iset, jatom, jkind, jset, ldab, &
+      COMPLEX(dp), ALLOCATABLE                           :: expab(:, :)
+      INTEGER :: handle, i, iatom, ic, icol, ikind, inode, irow, iset, jatom, jkind, jset, &
                  ldsa, ldsb, ldwork, natom, ncoa, ncob, nimg, nkind, nseta, nsetb, sgfa, sgfb
       INTEGER, DIMENSION(3)                              :: icell
       INTEGER, DIMENSION(:), POINTER                     :: row_blk_sizes
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: found, full_pairs, use_cell_mapping
-      REAL(dp), DIMENSION(:, :), POINTER                 :: cblock, cosab, sblock, sinab, work
+      LOGICAL                                            :: found, full_pairs, stable_images, use_cell_mapping
+      REAL(dp), DIMENSION(:, :), POINTER                 :: cblock, sblock, work
       REAL(KIND=dp)                                      :: dab
       REAL(KIND=dp), DIMENSION(3)                        :: ra, rab, rb
       TYPE(cell_type), POINTER                           :: cell
@@ -1179,9 +1184,10 @@ CONTAINS
       CALL get_qs_env(qs_env, &
                       ks_env=ks_env, &
                       dft_control=dft_control)
+      CALL get_ks_env(ks_env=ks_env, kpoints=kpoints)
+      stable_images = kpoints%nkp > 0 .AND. kpoints%symmetry
       nimg = dft_control%nimages
       IF (nimg > 1) THEN
-         CALL get_ks_env(ks_env=ks_env, kpoints=kpoints)
          CALL get_kpoint_info(kpoint=kpoints, cell_to_index=cell_to_index)
          use_cell_mapping = .TRUE.
       ELSE
@@ -1242,9 +1248,7 @@ CONTAINS
       END DO
 
       CALL get_qs_kind_set(qs_kind_set=qs_kind_set, maxco=ldwork)
-      ldab = ldwork
-      ALLOCATE (cosab(ldab, ldab))
-      ALLOCATE (sinab(ldab, ldab))
+      ALLOCATE (expab(ldwork, ldwork))
       ALLOCATE (work(ldwork, ldwork))
 
       CALL neighbor_list_iterator_create(nl_iterator, sab_orb)
@@ -1307,7 +1311,12 @@ CONTAINS
                                    row=irow, col=icol, BLOCK=cblock, found=found)
             CPASSERT(found)
 
-            ra(:) = pbc(particle_set(iatom)%r(:), cell)
+            ! Absolute phases must use the same atom images as the orbital neighbour list.
+            IF (stable_images) THEN
+               ra(:) = pbc_stable(particle_set(iatom)%r(:), cell)
+            ELSE
+               ra(:) = pbc(particle_set(iatom)%r(:), cell)
+            END IF
             rb(:) = ra + rab
             dab = SQRT(rab(1)*rab(1) + rab(2)*rab(2) + rab(3)*rab(3))
 
@@ -1324,13 +1333,13 @@ CONTAINS
                   sgfb = first_sgfb(1, jset)
 
                   ! Calculate the primitive integrals
-                  CALL cossin(la_max(iset), npgfa(iset), zeta(:, iset), rpgfa(:, iset), la_min(iset), &
+                  CALL expikr(la_max(iset), npgfa(iset), zeta(:, iset), rpgfa(:, iset), la_min(iset), &
                               lb_max(jset), npgfb(jset), zetb(:, jset), rpgfb(:, jset), lb_min(jset), &
-                              ra, rb, kvec, cosab, sinab)
-                  CALL contract_cossin(cblock, sblock, &
+                              ra, rb, kvec, expab)
+                  CALL contract_expikr(cblock, sblock, &
                                        iatom, ncoa, nsgfa(iset), sgfa, sphi_a, ldsa, &
                                        jatom, ncob, nsgfb(jset), sgfb, sphi_b, ldsb, &
-                                       cosab, sinab, ldab, work, ldwork, ordered=full_pairs)
+                                       expab, work, ldwork, ordered=full_pairs)
 
                END DO
             END DO
@@ -1338,8 +1347,7 @@ CONTAINS
       END DO
       CALL neighbor_list_iterator_release(nl_iterator)
 
-      DEALLOCATE (cosab)
-      DEALLOCATE (sinab)
+      DEALLOCATE (expab)
       DEALLOCATE (work)
       DEALLOCATE (basis_set_list)
       DEALLOCATE (row_blk_sizes)
@@ -1366,6 +1374,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: unit_number
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_moment_berry_phase'
+      REAL(dp), PARAMETER                                :: eps_occ = 1.0E-6_dp
 
       CHARACTER(LEN=8), ALLOCATABLE, DIMENSION(:)        :: rlab
       CHARACTER(LEN=default_string_length)               :: description
@@ -1373,13 +1382,17 @@ CONTAINS
                                                             zij(3, 3), zijk(3, 3, 3), &
                                                             zijkl(3, 3, 3, 3), zphase(3), zz
       INTEGER                                            :: handle, i, ia, idim, ikind, ispin, ix, &
-                                                            iy, iz, j, k, l, nao, nm, nmo, nmom, &
-                                                            nmotot, tmp_dim
-      LOGICAL                                            :: floating, ghost, uniform
-      REAL(dp)                                           :: charge, ci(3), cij(3, 3), dd, occ, trace
+                                                            iy, iz, j, k, l, nao, nm, nmo, nmo_max, &
+                                                            nmom, tmp_dim
+      LOGICAL                                            :: floating, fractional, ghost
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: all_occupied
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :)              :: mo_occupied
+      REAL(dp)                                           :: charge, ci(3), cij(3, 3), dd, nel_det, &
+                                                            occ, trace
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: mmom
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: rmom
       REAL(dp), DIMENSION(3)                             :: kvec, qq, rcc, ria
+      REAL(dp), DIMENSION(:), POINTER                    :: occupation_numbers
       TYPE(atomic_kind_type), POINTER                    :: atomic_kind
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_cfm_type), ALLOCATABLE, DIMENSION(:)       :: eigrmat
@@ -1451,11 +1464,11 @@ CONTAINS
       ALLOCATE (op_fm_set(2, dft_control%nspins))
       ALLOCATE (opvec(dft_control%nspins))
       ALLOCATE (eigrmat(dft_control%nspins))
-      nmotot = 0
+      nmo_max = 0
       DO ispin = 1, dft_control%nspins
          NULLIFY (tmp_fm_struct, mo_coeff)
          CALL get_mo_set(mo_set=mos(ispin), mo_coeff=mo_coeff, nao=nao, nmo=nmo)
-         nmotot = nmotot + nmo
+         nmo_max = MAX(nmo_max, nmo)
          CALL cp_fm_create(opvec(ispin), mo_coeff%matrix_struct)
          CALL cp_fm_struct_create(tmp_fm_struct, nrow_global=nmo, &
                                   ncol_global=nmo, para_env=para_env, context=mo_coeff%matrix_struct%context)
@@ -1467,12 +1480,25 @@ CONTAINS
       END DO
 
       ! occupation
+      ALLOCATE (mo_occupied(nmo_max, dft_control%nspins), all_occupied(dft_control%nspins))
+      mo_occupied = .FALSE.
+      fractional = .FALSE.
+      nel_det = 0.0_dp
       DO ispin = 1, dft_control%nspins
-         CALL get_mo_set(mo_set=mos(ispin), maxocc=occ, uniform_occupation=uniform)
-         IF (.NOT. uniform) THEN
-            CPWARN("Berry phase moments for non uniform MOs' occupation numbers not implemented")
-         END IF
+         NULLIFY (occupation_numbers)
+         CALL get_mo_set(mo_set=mos(ispin), maxocc=occ, nmo=nmo, occupation_numbers=occupation_numbers)
+         DO i = 1, nmo
+            IF (occupation_numbers(i) > eps_occ) THEN
+               mo_occupied(i, ispin) = .TRUE.
+               nel_det = nel_det + occ
+               IF (ABS(occupation_numbers(i) - occ) > eps_occ) fractional = .TRUE.
+            END IF
+         END DO
+         all_occupied(ispin) = ALL(mo_occupied(1:nmo, ispin))
       END DO
+      IF (fractional) THEN
+         CPWARN("Berry phase moments for fractional MOs' occupation numbers not implemented")
+      END IF
 
       ! reference point
       CALL get_reference_point(rcc, qs_env=qs_env, reference=reference, ref_point=ref_point)
@@ -1581,7 +1607,7 @@ CONTAINS
 
       ! electronic contribution
 
-      ria = twopi*REAL(nmotot, dp)*occ*MATMUL(cell%h_inv, rcc)
+      ria = twopi*nel_det*MATMUL(cell%h_inv, rcc)
       xphase = CMPLX(COS(ria), SIN(ria), dp)
 
       ! charge
@@ -1618,6 +1644,9 @@ CONTAINS
                         CMPLX(op_fm_set(1, ispin)%local_data(:, idim), &
                               -op_fm_set(2, ispin)%local_data(:, idim), dp)
                   END DO
+                  IF (.NOT. all_occupied(ispin)) THEN
+                     CALL berry_phase_remove_unocc(eigrmat(ispin), mo_occupied(:, ispin))
+                  END IF
                   ! CALL cp_cfm_lu_decompose(eigrmat(ispin), zdeta)
                   CALL cp_cfm_det(eigrmat(ispin), zdeta)
                   zdet = zdet*zdeta
@@ -1650,6 +1679,9 @@ CONTAINS
                            CMPLX(op_fm_set(1, ispin)%local_data(:, idim), &
                                  -op_fm_set(2, ispin)%local_data(:, idim), dp)
                      END DO
+                     IF (.NOT. all_occupied(ispin)) THEN
+                        CALL berry_phase_remove_unocc(eigrmat(ispin), mo_occupied(:, ispin))
+                     END IF
                      ! CALL cp_cfm_lu_decompose(eigrmat(ispin), zdeta)
                      CALL cp_cfm_det(eigrmat(ispin), zdeta)
                      zdet = zdet*zdeta
@@ -1741,10 +1773,42 @@ CONTAINS
          CALL cp_cfm_release(eigrmat(ispin))
       END DO
       DEALLOCATE (eigrmat)
+      DEALLOCATE (mo_occupied, all_occupied)
 
       CALL timestop(handle)
 
    END SUBROUTINE qs_moment_berry_phase
+
+! **************************************************************************************************
+!> \brief Removes unoccupied MOs from the Berry phase matrix Z_ij = <psi_i|exp(i k.r)|psi_j> by
+!>        replacing their rows and columns with those of the unit matrix. The determinant of the
+!>        result equals the determinant of Z.
+!> \param zmat        nmo x nmo Berry phase matrix of one spin channel, modified on output
+!> \param mo_occupied .TRUE. for the MOs that are part of the Slater determinant
+! **************************************************************************************************
+   SUBROUTINE berry_phase_remove_unocc(zmat, mo_occupied)
+
+      TYPE(cp_cfm_type), INTENT(IN)                      :: zmat
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: mo_occupied
+
+      INTEGER                                            :: icol, irow, ncol_local, nrow_local
+      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+
+      NULLIFY (col_indices, row_indices)
+      CALL cp_cfm_get_info(zmat, nrow_local=nrow_local, ncol_local=ncol_local, &
+                           row_indices=row_indices, col_indices=col_indices)
+      DO icol = 1, ncol_local
+         DO irow = 1, nrow_local
+            IF (mo_occupied(row_indices(irow)) .AND. mo_occupied(col_indices(icol))) CYCLE
+            IF (row_indices(irow) == col_indices(icol)) THEN
+               zmat%local_data(irow, icol) = z_one
+            ELSE
+               zmat%local_data(irow, icol) = z_zero
+            END IF
+         END DO
+      END DO
+
+   END SUBROUTINE berry_phase_remove_unocc
 
 ! **************************************************************************************************
 !> \brief ...
@@ -1892,7 +1956,7 @@ CONTAINS
       INTEGER                                            :: akind, handle, i, ia, iatom, idir, &
                                                             ikind, ispin, ix, iy, iz, l, nm, nmom, &
                                                             order
-      LOGICAL                                            :: my_com_nl, my_velreprs
+      LOGICAL                                            :: my_com_nl, my_velreprs, use_periodic_images
       REAL(dp)                                           :: charge, dd, strace, trace
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: mmom, nlcom_rrv, nlcom_rrv_vrr, &
                                                             nlcom_rv, nlcom_rvr, nlcom_rxrv, &
@@ -1994,7 +2058,10 @@ CONTAINS
          END DO
          CALL build_local_moments_der_matrix(qs_env, moments_der, 1, 2, ref_point=rcc, moments=moments)
       ELSE
-         CALL build_local_moment_matrix(qs_env, moments, nmom, ref_point=rcc)
+         ! In non-periodic directions the moment must include the same images as the overlap.
+         use_periodic_images = ANY(cell%perd /= 0) .AND. ANY(cell%perd == 0)
+         CALL build_local_moment_matrix(qs_env, moments, nmom, ref_point=rcc, &
+                                        all_images=use_periodic_images, neighbor_image=use_periodic_images)
       END IF
 
       CALL qs_rho_get(rho, rho_ao=rho_ao)
@@ -2212,6 +2279,11 @@ CONTAINS
       CALL cp_results_erase(results=results, description=description)
       CALL put_results(results=results, description=description, &
                        values=rmom(2:4, 3))
+
+      IF (unit_number > 0 .AND. ANY(cell%perd /= 0) .AND. ANY(cell%perd == 0)) THEN
+         WRITE (unit_number, "(T3,A)") &
+            "Only dipole components perpendicular to the periodic lattice vectors are well-defined."
+      END IF
 
       IF (magnetic .AND. my_velreprs) THEN
          CALL print_moments(unit_number, nmom, rmom, rlab, rcc, cell, periodic=.FALSE., mmom=mmom, rmom_vel=rmom_vel)
@@ -3015,7 +3087,7 @@ CONTAINS
 
                      CALL dgemm("T", "N", nsgfa(iset), nsgfb(jset), ncoa, &
                                 1.0_dp, sphi_a(1, sgfa), ldsa, &
-                                work(1, 1), ldwork, 1.0_dp, dblock(1, 1), SIZE(dblock, 1))
+                                work(1, 1), ldwork, 1.0_dp, dblock(sgfa, sgfb), SIZE(dblock, 1))
                   END DO
                END DO
             END DO

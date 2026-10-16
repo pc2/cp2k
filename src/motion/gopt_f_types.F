@@ -35,7 +35,8 @@ MODULE gopt_f_types
                                               default_shellcore_method_id,&
                                               default_ts_method_id
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
-                                              section_vals_type
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE particle_list_types,             ONLY: particle_list_type
@@ -58,7 +59,6 @@ MODULE gopt_f_types
 ! **************************************************************************************************
    TYPE gopt_f_type
       INTEGER                                  :: ref_count = 0
-      INTEGER                                  :: nfree = 0
       INTEGER                                  :: type_id = default_cell_method_id
       INTEGER                                  :: ts_method_id = 0
       INTEGER                                  :: shellcore_method_id = 0
@@ -133,6 +133,12 @@ CONTAINS
       gopt_env%dimer_rotation = .FALSE.
       gopt_env%do_line_search = .FALSE.
       ALLOCATE (gopt_env%spgr)
+      ! This routine reads the space-group flags once. The optimizer
+      ! drivers consume spgr%* only.
+      CALL section_vals_val_get(geo_opt_section, "KEEP_SPACE_GROUP", &
+                                l_val=gopt_env%spgr%keep_space_group)
+      CALL section_vals_val_get(geo_opt_section, "SHOW_SPACE_GROUP", &
+                                l_val=gopt_env%spgr%show_space_group)
       CALL force_env_retain(force_env)
       gopt_env%force_env => force_env
       gopt_env%motion_section => section_vals_get_subs_vals(force_env%root_section, "MOTION")
@@ -151,7 +157,6 @@ CONTAINS
                             shell_particles=shell_particles)
          IF (ASSOCIATED(shell_particles)) nshell = shell_particles%n_els
          ! The same number of shell and core particles is assumed
-         gopt_env%nfree = particles%n_els + nshell
          gopt_env%label = "GEO_OPT"
          gopt_env%tag = "GEOMETRY"
          SELECT CASE (gopt_param%type_id)
@@ -180,13 +185,11 @@ CONTAINS
             END SELECT
          END SELECT
       CASE (default_cell_method_id)
-         gopt_env%nfree = 6
          gopt_env%label = "CELL_OPT"
          gopt_env%tag = "  CELL  "
          ALLOCATE (gopt_env%cell_env)
          CALL cell_opt_env_create(gopt_env%cell_env, force_env, gopt_env%geo_section)
       CASE (default_shellcore_method_id)
-         gopt_env%nfree = subsys%shell_particles%n_els
          gopt_env%label = "SHELL_OPT"
          gopt_env%tag = "  SHELL-CORE  "
          gopt_env%shellcore_method_id = gopt_param%shellcore_method_id

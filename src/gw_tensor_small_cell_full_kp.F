@@ -19,7 +19,9 @@ MODULE gw_tensor_small_cell_full_kp
                                               cp_cfm_release,&
                                               cp_cfm_to_cfm,&
                                               cp_cfm_type
+   USE cp_fm_redistribution,            ONLY: cp_fm_to_replicated_array
    USE cp_fm_types,                     ONLY: cp_fm_set_all,&
+                                              cp_fm_set_submatrix,&
                                               cp_fm_type
    USE dbt_api,                         ONLY: dbt_clear,&
                                               dbt_contract,&
@@ -27,16 +29,13 @@ MODULE gw_tensor_small_cell_full_kp
                                               dbt_create,&
                                               dbt_destroy,&
                                               dbt_type
+   USE dbt_matrix_redistribution,       ONLY: cp_dbt_to_fm,&
+                                              cp_fm_to_dbt
    USE gw_utils,                        ONLY: add_R,&
                                               analyt_conti_and_print,&
                                               de_init_bs_env,&
                                               get_V_tr_R,&
-                                              is_cell_in_index_to_cell,&
-                                              time_to_freq
-   USE gw_utils_communication,          ONLY: fm_to_local_array,&
-                                              fm_to_local_tensor,&
-                                              local_array_to_fm,&
-                                              local_dbt_to_global_fm
+                                              is_cell_in_index_to_cell
    USE gw_utils_fm,                     ONLY: cfm_contract_ABA,&
                                               local_add_on_diag,&
                                               local_complex_power
@@ -55,6 +54,9 @@ MODULE gw_tensor_small_cell_full_kp
    USE post_scf_bandstructure_types,    ONLY: post_scf_bandstructure_type
    USE post_scf_bandstructure_utils,    ONLY: get_all_VBM_CBM_bandgaps
    USE qs_environment_types,            ONLY: qs_environment_type
+   USE time_frequency_grids,            ONLY: negative_time,&
+                                              positive_time,&
+                                              transform_time_to_frequency
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -194,8 +196,8 @@ CONTAINS
 
          CALL bs_env%para_env%sync()
 
-         CALL local_dbt_to_global_fm(t_chi_R, bs_env%fm_chi_R_t(:, i_t), bs_env%mat_RI_RI, &
-                                     bs_env%mat_RI_RI_tensor, bs_env)
+         CALL cp_dbt_to_fm(t_chi_R, bs_env%fm_chi_R_t(:, i_t), bs_env%mat_RI_RI, bs_env%mat_RI_RI_tensor, &
+                           bs_env%para_env)
 
          CALL destroy_t_1d(Gocc_S)
          CALL destroy_t_1d(Gvir_S)
@@ -453,8 +455,9 @@ CONTAINS
 
       ! replicate to tensor from local tensor group
       DO i_cell_S = 1, bs_env%nimages_scf_desymm
-         CALL fm_to_local_tensor(bs_env%fm_G_S(i_cell_S), bs_env%mat_ao_ao%matrix, &
-                                 bs_env%mat_ao_ao_tensor%matrix, G_S(i_cell_S), bs_env)
+         CALL cp_fm_to_dbt(bs_env%fm_G_S(i_cell_S), bs_env%mat_ao_ao%matrix, bs_env%mat_ao_ao_tensor%matrix, &
+                           G_S(i_cell_S), bs_env%para_env, bs_env%para_env_tensor%num_pe, &
+                           bs_env%eps_filter)
       END DO
 
       CALL timestop(handle)
@@ -573,9 +576,9 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chi_k_w, eps_k_w, W_k_w
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: M_inv, M_inv_V_sqrt, V_sqrt
-      INTEGER                                            :: handle, i_t, ikp, ikp_local, j_w, n_RI, &
-                                                            nimages_scf_desymm
-      REAL(KIND=dp)                                      :: freq_j, t1, time_i, weight_ij
+      INTEGER                                            :: handle, i_cell_R, i_t, ikp, ikp_local, &
+                                                            j_w, n_RI, nimages_scf_desymm
+      REAL(KIND=dp)                                      :: t1, weight_ij
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: chi_R, MWM_R, W_R
 
       CALL timeset(routineN, handle)
@@ -604,11 +607,9 @@ CONTAINS
          ! χ_PQ^R(iτ) -> χ_PQ^R(iω_j) (which is stored in chi_R, single ω_j from j_w loop)
          chi_R(:, :, :) = 0.0_dp
          DO i_t = 1, bs_env%num_time_freq_points
-            freq_j = bs_env%time_frequency_grid%frequency(j_w)
-            time_i = bs_env%time_frequency_grid%imaginary_time(i_t)
-            weight_ij = bs_env%time_frequency_grid%cosine_time_to_frequency_weights(j_w, i_t)*COS(time_i*freq_j)
+            weight_ij = bs_env%time_frequency_grid%cosine_time_to_frequency(j_w, i_t)
 
-            CALL fm_to_local_array(bs_env%fm_chi_R_t(:, i_t), chi_R, weight_ij, add=.TRUE.)
+            CALL cp_fm_to_replicated_array(bs_env%fm_chi_R_t(:, i_t), chi_R, weight_ij, add=.TRUE.)
          END DO
 
          ikp_local = 0
@@ -661,10 +662,11 @@ CONTAINS
 
          ! 7. Ŵ^R(iω) -> Ŵ^R(iτ) and to fully distributed fm matrix bs_env%fm_MWM_R_t
          DO i_t = 1, bs_env%num_time_freq_points
-            freq_j = bs_env%time_frequency_grid%frequency(j_w)
-            time_i = bs_env%time_frequency_grid%imaginary_time(i_t)
-            weight_ij = bs_env%time_frequency_grid%cosine_frequency_to_time_weights(i_t, j_w)*COS(time_i*freq_j)
-            CALL local_array_to_fm(MWM_R, bs_env%fm_MWM_R_t(:, i_t), weight_ij, add=.TRUE.)
+            weight_ij = bs_env%time_frequency_grid%cosine_frequency_to_time(i_t, j_w)
+            DO i_cell_R = 1, nimages_scf_desymm
+               CALL cp_fm_set_submatrix(bs_env%fm_MWM_R_t(i_cell_R, i_t), MWM_R(:, :, i_cell_R), &
+                                        alpha=weight_ij, beta=1.0_dp)
+            END DO
          END DO ! i_t
 
       END DO ! j_w
@@ -878,8 +880,8 @@ CONTAINS
 
          CALL bs_env%para_env%sync()
 
-         CALL local_dbt_to_global_fm(Sigma_x_R, bs_env%fm_Sigma_x_R, bs_env%mat_ao_ao, &
-                                     bs_env%mat_ao_ao_tensor, bs_env)
+         CALL cp_dbt_to_fm(Sigma_x_R, bs_env%fm_Sigma_x_R, bs_env%mat_ao_ao, bs_env%mat_ao_ao_tensor, &
+                           bs_env%para_env)
 
       END DO ! ispin
 
@@ -965,13 +967,11 @@ CONTAINS
 
             CALL bs_env%para_env%sync()
 
-            CALL local_dbt_to_global_fm(Sigma_c_R_pos_tau, &
-                                        bs_env%fm_Sigma_c_R_pos_tau(:, i_t, ispin), &
-                                        bs_env%mat_ao_ao, bs_env%mat_ao_ao_tensor, bs_env)
+            CALL cp_dbt_to_fm(Sigma_c_R_pos_tau, bs_env%fm_Sigma_c_R_pos_tau(:, i_t, ispin), bs_env%mat_ao_ao, &
+                              bs_env%mat_ao_ao_tensor, bs_env%para_env)
 
-            CALL local_dbt_to_global_fm(Sigma_c_R_neg_tau, &
-                                        bs_env%fm_Sigma_c_R_neg_tau(:, i_t, ispin), &
-                                        bs_env%mat_ao_ao, bs_env%mat_ao_ao_tensor, bs_env)
+            CALL cp_dbt_to_fm(Sigma_c_R_neg_tau, bs_env%fm_Sigma_c_R_neg_tau(:, i_t, ispin), bs_env%mat_ao_ao, &
+                              bs_env%mat_ao_ao_tensor, bs_env%para_env)
 
             IF (bs_env%unit_nr > 0) THEN
                WRITE (bs_env%unit_nr, '(T2,A,I10,A,I3,A,F7.1,A)') &
@@ -1045,12 +1045,15 @@ CONTAINS
       CALL bs_env%para_env%sum(Mi_Vtr_Mi_R_arr)
 
       ! use bs_env%fm_chi_R_t for temporary storage
-      CALL local_array_to_fm(Mi_Vtr_Mi_R_arr, bs_env%fm_chi_R_t(:, 1))
+      DO i_cell_R = 1, nimages_scf
+         CALL cp_fm_set_submatrix(bs_env%fm_chi_R_t(i_cell_R, 1), Mi_Vtr_Mi_R_arr(:, :, i_cell_R))
+      END DO
 
       ! communicate Mi_Vtr_Mi_R to tensor format; full replication in tensor group
       DO i_cell_R = 1, nimages_scf
-         CALL fm_to_local_tensor(bs_env%fm_chi_R_t(i_cell_R, 1), bs_env%mat_RI_RI%matrix, &
-                                 bs_env%mat_RI_RI_tensor%matrix, Mi_Vtr_Mi_R(i_cell_R), bs_env)
+         CALL cp_fm_to_dbt(bs_env%fm_chi_R_t(i_cell_R, 1), bs_env%mat_RI_RI%matrix, &
+                           bs_env%mat_RI_RI_tensor%matrix, Mi_Vtr_Mi_R(i_cell_R), bs_env%para_env, &
+                           bs_env%para_env_tensor%num_pe, bs_env%eps_filter)
       END DO
 
       CALL timestop(handle)
@@ -1371,8 +1374,9 @@ CONTAINS
 
       ! communicate fm_W_R to tensor W_R; full replication in tensor group
       DO i_cell_R = 1, bs_env%nimages_scf_desymm
-         CALL fm_to_local_tensor(fm_W_R(i_cell_R), bs_env%mat_RI_RI%matrix, &
-                                 bs_env%mat_RI_RI_tensor%matrix, W_R(i_cell_R), bs_env)
+         CALL cp_fm_to_dbt(fm_W_R(i_cell_R), bs_env%mat_RI_RI%matrix, bs_env%mat_RI_RI_tensor%matrix, &
+                           W_R(i_cell_R), bs_env%para_env, bs_env%para_env_tensor%num_pe, &
+                           bs_env%eps_filter)
       END DO
 
       CALL timestop(handle)
@@ -1388,9 +1392,10 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'compute_QP_energies'
 
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: Sigma_c_ikp_n_freq
       INTEGER                                            :: handle, ikp, ispin, j_t
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: Sigma_x_ikp_n
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: Sigma_c_ikp_n_freq, Sigma_c_ikp_n_time
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: Sigma_c_ikp_n_time
       TYPE(cp_cfm_type)                                  :: cfm_mo_coeff
 
       CALL timeset(routineN, handle)
@@ -1398,7 +1403,7 @@ CONTAINS
       CALL cp_cfm_create(cfm_mo_coeff, bs_env%fm_s_Gamma%matrix_struct)
       ALLOCATE (Sigma_x_ikp_n(bs_env%n_ao))
       ALLOCATE (Sigma_c_ikp_n_time(bs_env%n_ao, bs_env%num_time_freq_points, 2))
-      ALLOCATE (Sigma_c_ikp_n_freq(bs_env%n_ao, bs_env%num_time_freq_points, 2))
+      ALLOCATE (Sigma_c_ikp_n_freq(bs_env%n_ao, bs_env%num_freq_points_fit))
 
       DO ispin = 1, bs_env%n_spin
 
@@ -1415,13 +1420,14 @@ CONTAINS
             !    Σ^c_nn(k,+/-i|τ_j|) = sum_µν C^*_µn(k) Σ^c_µν(k,+/-i|τ_j|) C_νn(k)
             DO j_t = 1, bs_env%num_time_freq_points
                CALL trafo_to_k_and_nn(bs_env%fm_Sigma_c_R_pos_tau(:, j_t, ispin), &
-                                      Sigma_c_ikp_n_time(:, j_t, 1), cfm_mo_coeff, bs_env, ikp)
+                                      Sigma_c_ikp_n_time(:, j_t, positive_time), cfm_mo_coeff, bs_env, ikp)
                CALL trafo_to_k_and_nn(bs_env%fm_Sigma_c_R_neg_tau(:, j_t, ispin), &
-                                      Sigma_c_ikp_n_time(:, j_t, 2), cfm_mo_coeff, bs_env, ikp)
+                                      Sigma_c_ikp_n_time(:, j_t, negative_time), cfm_mo_coeff, bs_env, ikp)
             END DO
 
             ! 4. Σ^c_nn(k_i,iω) = ∫ from -∞ to ∞ dτ e^-iωτ Σ^c_nn(k_i,iτ)
-            CALL time_to_freq(bs_env, Sigma_c_ikp_n_time, Sigma_c_ikp_n_freq, ispin)
+            CALL transform_time_to_frequency(bs_env%time_frequency_grid, Sigma_c_ikp_n_time, Sigma_c_ikp_n_freq)
+            Sigma_c_ikp_n_freq(1:bs_env%n_occ(ispin), :) = CONJG(Sigma_c_ikp_n_freq(1:bs_env%n_occ(ispin), :))
 
             ! 5. Analytic continuation Σ^c_nn(k_i,iω) -> Σ^c_nn(k_i,ϵ) and
             !    ϵ_nk_i^GW = ϵ_nk_i^DFT + Σ^c_nn(k_i,ϵ) + Σ^x_nn(k_i) - v^xc_nn(k_i)

@@ -57,6 +57,10 @@ registry["Cube_O_effective_charge"] = GenericMatcher(
     r"^\s*8\s+([-+0-9.EeDd]+)\s+", col=1, regex=True, first=True
 )
 
+registry["Shake_colvar_multiplier"] = GenericMatcher(
+    r"Shake  Lagrangian Multipliers:", col=4
+)
+
 registry["M002"] = GenericMatcher(r"MD| Potential energy", col=5)
 registry["M003"] = GenericMatcher(r"Total energy [eV]:", col=4)
 registry["M004"] = GenericMatcher(r"Ideal and single determinant", col=8)
@@ -67,6 +71,11 @@ registry["Cell_vector_a_y"] = GenericMatcher(r"CELL| Vector a [angstrom]:", col=
 registry["Cell_angle_alpha"] = GenericMatcher(
     r"CELL| Angle (b,c), alpha [degree]:", col=6
 )
+# The "|a| =  ..." column of the cell-vector lines: the vector length,
+# as printed by write_cell_low (last occurrence = the final cell).
+registry["Cell_length_a"] = GenericMatcher(r"CELL| Vector a [angstrom]:", col=10)
+registry["Cell_length_b"] = GenericMatcher(r"CELL| Vector b [angstrom]:", col=10)
+registry["Cell_length_c"] = GenericMatcher(r"CELL| Vector c [angstrom]:", col=10)
 
 registry["Vib_freq"] = GenericMatcher(r"VIB|Frequency", col=3)  # M008
 registry["Vib_frc_const"] = GenericMatcher(r"VIB|Frc consts", col=4)  # M128
@@ -129,6 +138,9 @@ registry["SKALA_GAPW_composite_electrons"] = GenericMatcher(
 registry["WANNIER90_SCF_MO_REUSE"] = TextPresenceMatcher(
     "WANNIER90| Reused SCF MO coefficients for the Wannier90 full k-point mesh."
 )
+registry["WANNIER90_PROJECTION_MIN_SVALUE"] = GenericMatcher(
+    "WANNIER90| Minimum projection singular value", col=6
+)
 registry["WANNIER90_FULL_MESH_DIAG"] = TextPresenceMatcher(
     "WANNIER90| Falling back to full-mesh diagonalization for the Wannier90 files."
 )
@@ -166,6 +178,11 @@ registry["WANNIER90_BLOCH_PHASE_GAUGE"] = TextPresenceMatcher(
 registry["WANNIER90_REUSE_VALIDATION"] = TextPresenceMatcher(
     "WANNIER90| Reused MO validation: subspace deviation"
 )
+registry["WANNIER90_CANDIDATE_METRIC_DEVIATION"] = GenericMatcher(
+    r"WANNIER90\| Best atom/AO candidate.*max metric deviation\s+([^,\s]+)",
+    col=1,
+    regex=True,
+)
 registry["M012"] = GenericMatcher(r"B2(T) =", col=4)
 registry["M013"] = GenericMatcher(r"sparseness function f2 =", col=5)
 registry["M014"] = GenericMatcher(r"CheckSum Shifts =", col=4)
@@ -174,6 +191,8 @@ registry["M016"] = GenericMatcher(r"CheckSum Chi =", col=4)
 registry["M017"] = GenericMatcher(r"Total=", col=8)
 registry["Dipole_trajectory_norm"] = GenericMatcher("MOMENTS|", col=6)
 registry["Dipole_trajectory_cell_xx"] = GenericMatcher("MOMENTS|", col=7)
+registry["Dipole_z_first"] = GenericMatcher(r"X=", col=6, first=True)
+registry["Dipole_z"] = GenericMatcher(r"X=", col=6)
 registry["Molecular_moment_x"] = GenericMatcher(r"Order: 1", col=3)
 registry["M018"] = GenericMatcher(r"MS| TRACKED FREQUENCY", col=6)
 registry["M019"] = GenericMatcher(r"CheckSum splines =", col=4)
@@ -262,10 +281,10 @@ registry["E_G0W0_gap_beta"] = GenericMatcher(r"Beta GW HOMO-LUMO gap (eV)", col=
 
 # static COHSEX HOMO-LUMO gap of molecule in the O(N^4) GW code, diagonal (DG) and canonical (CN)
 registry["E_static_COHSEX_gap_DG"] = GenericMatcher(
-    r"static COHSEX HOMO-LUMO gap (eV), DG and CN", col=9
+    r"static COHSEX HOMO-LUMO gap, diagonal (eV)", col=7
 )
 registry["E_static_COHSEX_gap_CN"] = GenericMatcher(
-    r"static COHSEX HOMO-LUMO gap (eV), DG and CN", col=10
+    r"static COHSEX HOMO-LUMO gap, canonical (eV)", col=7
 )
 
 registry["IC_gap"] = GenericMatcher(r"IC HOMO-LUMO gap (eV)", col=5)
@@ -313,10 +332,18 @@ registry["M085"] = GenericMatcher(r"Total FORCE_EVAL ( SIRIUS ) energy", col=9)
 registry["M086"] = GenericMatcher(r"DIPOLE : CheckSum  =", col=5)
 registry["M087"] = GenericMatcher(r"POLAR : CheckSum  =", col=5)
 registry["XAS_excit_ener"] = GenericMatcher(r"XAS excitation energy (eV):", col=7)
+# Squared dipoles for the first RIXS absorption and emission.
+registry["RIXS_absorption_dipole_squared"] = GenericMatcher(
+    r"^\s*[-+0-9.EeDd]+(?:\s+[-+0-9.EeDd]+){4}\s*$", col=5, regex=True, first=True
+)
+registry["RIXS_emission_dipole_squared"] = GenericMatcher(
+    r"^\s*[-+0-9.EeDd]+(?:\s+[-+0-9.EeDd]+){5}\s*$", col=6, regex=True, first=True
+)
 registry["M089"] = GenericMatcher(r"Electronic density on regular grids:", col=7)
 registry["M090"] = GenericMatcher(r"Final localization:", col=3)
 registry["M091"] = GenericMatcher(r"Ionization potentials for XPS", col=8)
 registry["M092"] = GenericMatcher(r"FCIDUMP| Checksum:", col=3)
+registry["AS_NMIXING_deprecated"] = TextPresenceMatcher("NMIXING has no effect")
 registry["FCIDUMP_MS2"] = GenericMatcher(
     r"&FCI .*MS2=\s*([-+0-9]+),", col=1, regex=True
 )
@@ -384,6 +411,7 @@ registry["BSE_2nd_excit_ener_UKS"] = GenericMatcher(
     r"BSE|                2       UKS              -TDA-", col=5
 )
 registry["BSE_osc_str_n2_UKS"] = GenericMatcher(r"BSE|             2     -TDA-", col=7)
+registry["BSE_osc_str_n11_UKS"] = GenericMatcher(r"BSE|            11     -TDA-", col=7)
 registry["BSE_1st_excit_ener_UKS_ABBA"] = GenericMatcher(
     r"BSE|                1       UKS             -ABBA-", col=5
 )
@@ -455,8 +483,12 @@ registry["Dipole_at_kp_1"] = GenericMatcher(r"  1   1   2", col=4, abs_value=Tru
 # Dipole moment calculated at a specific k-point (-0.375,-0.375, 0.00)
 registry["Dipole_for_CrSBr"] = GenericMatcher(r"  1  31  32", col=4, abs_value=True)
 
+# Berry total dipole moment in trajectory format
+registry["Dipole_berry_traj"] = GenericMatcher(r"MOMENTS|", col=6)
+
 # Berry curvature calculated from dipoles near K point in graphene BZ
 registry["BC_near_K_point"] = GenericMatcher(r"   1    4", col=5)
+
 
 # GEXT extrapolation
 registry["gext"] = GenericMatcher(r"GEXT overlap fitting error:", col=5)
@@ -479,6 +511,16 @@ registry["E_RIRS_LUMO"] = GenericMatcher(r"G0W0 conduction band minimum", col=6)
 # RI-RS evGW0 calculation for molecules; the band edges are labelled evGW0 rather than
 # G0W0 once SELF_CONSISTENCY EVGW0 is requested, so these need their own matchers
 registry["E_RIRS_evGW0_HOMO"] = GenericMatcher(r"evGW0 valence band maximum", col=6)
+
+registry["E_static_COHSEX_HOMO"] = GenericMatcher(
+    r"static COHSEX valence band maximum", col=7
+)
+registry["E_static_COHSEX_LUMO"] = GenericMatcher(
+    r"static COHSEX conduction band minimum", col=7
+)
+registry["E_static_COHSEX_gap"] = GenericMatcher(
+    r"static COHSEX indirect band gap", col=7
+)
 registry["E_RIRS_evGW0_LUMO"] = GenericMatcher(r"evGW0 conduction band minimum", col=6)
 registry["E_evGW0_direct_gap"] = GenericMatcher(r"evGW0 direct band gap", col=6)
 
@@ -548,3 +590,42 @@ registry["Harris_direct_energy_difference"] = GenericMatcher(
     r"Trial-DM minus Harris-like energy:", col=5
 )
 # EOF
+
+registry["LOCALIZER_GAP"] = GenericMatcher("SPECTRAL_LOCALIZER| Gap [hartree]:", col=4)
+
+registry["QUADRATIC_GAP"] = GenericMatcher(
+    "QUADRATIC_PSEUDOSPECTRUM| Gap [hartree]:", col=4
+)
+
+registry["QUADRATIC_ENERGY_RESIDUAL"] = GenericMatcher(
+    "QUADRATIC_PSEUDOSPECTRUM| Energy residual [hartree]:", col=5
+)
+
+registry["QUADRATIC_TRANSLATION_LEAKAGE"] = GenericMatcher(
+    "QUADRATIC_PSEUDOSPECTRUM| Translation residual 1 full/projected/leakage:", col=8
+)
+
+registry["QUADRATIC_TRANSLATION_IMAG"] = GenericMatcher(
+    "QUADRATIC_PSEUDOSPECTRUM| Translation expectation 1 real/imag:", col=7
+)
+
+registry["LOCALIZER_CHERN"] = GenericMatcher("SPECTRAL_LOCALIZER| Chern index:", col=4)
+
+registry["LOCALIZER_Z2"] = GenericMatcher("SPECTRAL_LOCALIZER| Z2 index:", col=4)
+
+registry["LOCALIZER_UNRESOLVED"] = TextPresenceMatcher(
+    "SPECTRAL_LOCALIZER| UNRESOLVED:"
+)
+
+registry["Band_first_eigenvalue"] = GenericMatcher(
+    r"^\s*1\s+([-+]?\d+\.\d{8})\s+\d+\.\d{8}\s*$", col=2, regex=True
+)
+registry["Kubo_hall_max"] = GenericMatcher(r"KUBO_TRANSPORT| hall_max", col=3)
+
+registry["Kubo_symmetry_current_error"] = GenericMatcher(
+    r"KUBO_TRANSPORT| Symmetry errors S/H/current:", col=7
+)
+
+registry["Kubo_symmetry_points"] = GenericMatcher(
+    r"KUBO_TRANSPORT| Property symmetry representatives:", col=5
+)

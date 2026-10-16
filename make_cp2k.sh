@@ -139,7 +139,6 @@ CP2K_BUILD_TYPE="${CP2K_BUILD_TYPE:-Release}"
 DEPS_BUILD_TYPE="${DEPS_BUILD_TYPE:-Release}"
 CMAKE_FEATURE_FLAG_ALL="-DCP2K_USE_EVERYTHING=ON" # all features are activated by default
 CMAKE_FEATURE_FLAGS="-DCP2K_BLAS_VENDOR=OpenBLAS" # LAPACK/BLAS from OpenBLAS by default
-CMAKE_FEATURE_FLAGS+=" -DCP2K_USE_FFTW3=ON"       # FFTW3 is always activated unless explicitly disabled
 CMAKE_FEATURE_FLAG_MPI="-DCP2K_USE_MPI=ON"        # MPI is switched on by default
 CMAKE_FEATURE_FLAGS_GPU="-DCP2K_USE_SPLA_GEMM_OFFLOADING=ON"
 CMAKE_PRESET="native-gnu-x86_64"
@@ -315,7 +314,7 @@ while [[ $# -gt 0 ]]; do
             # Enable or disable all features
             CMAKE_FEATURE_FLAG_ALL="-DCP2K_USE_EVERYTHING=${ON_OFF}"
             for package in adios2 cosma deepmdkit dla-future dla-future-fortran elpa \
-              gauxc greenx hdf5 libfabric libfci libint libvdwxc libsmeagol libvori \
+              gauxc greenx hdf5 libfabric libfci libint2 libvdwxc libsmeagol libvori \
               libxc libxs libxsmm mimic-mcl openpmd-api pace pexsi plumed py-torch sirius \
               spfft spglib spla tblite trexio; do
               SED_PATTERN_LIST+=" -e '/\s*-\s+\"${package}@/ ${SUBST}"
@@ -325,9 +324,9 @@ while [[ $# -gt 0 ]]; do
               SED_PATTERN_LIST+=" -e '/\s*-\s+\"smm=libxs\"/ s/libxs/blas/'"
             fi
             ;;
-          ace | cosma | deepmd | dftd4 | dlaf | elpa | fftw3 | gauxc | greenx | hdf5 | libfci | \
-            libgint | libint2 | libsmeagol | libtorch | libxc | libxs | mimic | openpmd | pexsi | \
-            plumed | spglib | tblite | trexio | vori)
+          ace | cosma | deepmd | dftd4 | dlaf | elpa | gauxc | greenx | hdf5 | libfci | libgint | \
+            libint2 | libsmeagol | libtorch | libxc | libxs | mimic | openpmd | pexsi | plumed | \
+            spglib | tblite | trexio | vori)
             CMAKE_FEATURE_FLAGS+=" -DCP2K_USE_${2^^}=${ON_OFF}"
             # Translate package selection to sed pattern
             case "${2,,}" in
@@ -361,9 +360,6 @@ while [[ $# -gt 0 ]]; do
                 else
                   SED_PATTERN_LIST+=" -e 's/\+dlaf/\~dlaf/'"
                 fi
-                ;;
-              fftw3)
-                SED_PATTERN_LIST+=" -e '/\s*-\s+\"fftw@/ ${SUBST}"
                 ;;
               gauxc)
                 SED_PATTERN_LIST+=" -e '/\s*-\s+\"${2,,}@/ ${SUBST}"
@@ -854,7 +850,9 @@ if [[ "${HELP}" == "yes" ]]; then
   echo " --gcc_version         : Use the specified GCC version (default: automatically decided by spack)"
   echo " --gpu_model           : Select GPU model (default: none)"
   echo " --install_path        : Define the CP2K installation path (default: ./install)"
-  echo " -j                    : Maximum number of processes used in parallel"
+  echo " -j                    : Maximum number of processes (CPU cores) used in parallel"
+  echo "                         If the variable OMP_NUM_THREADS is set and the -j flag is not supplied, then"
+  echo "                         the maximum number of processes is defined by OMP_NUM_THREADS"
   echo " --mpi_mode            : Set preferred MPI mode (default: \"mpich\")"
   echo " --num_packages        : Maximum number of packages built by spack in parallel (default: 4)"
   echo " -opencl               : Enable the use of the Open Computing Language (OpenCL)"
@@ -880,8 +878,8 @@ if [[ "${HELP}" == "yes" ]]; then
   echo "   (see also --build_deps flag)"
   echo " - The folder ${CP2K_ROOT}/install is updated after each successful run"
   echo ""
-  echo "Packages: all | ace | cosma | deepmd | dftd4 | dlaf | elpa | fftw3 | gauxc | greenx | hdf5 | libfci |"
-  echo "          libgint | libint | libsmeagol | libtorch | libvdwxc | libxs | mimic | openpmd | pexsi | plumed |"
+  echo "Packages: all | ace | cosma | deepmd | dftd4 | dlaf | elpa | gauxc | greenx | hdf5 | libfci |"
+  echo "          libgint | libint2 | libsmeagol | libtorch | libvdwxc | libxs | mimic | openpmd | pexsi | plumed |"
   echo "          sirius | spfft | spglib | spla | tblite | trexio | vori "
   echo ""
   echo "Features: cray_pm_accel_energy | cusolver_mp | dbm_gpu | elpa_gpu | grid_gpu | libxc_gpu | pw_gpu |"
@@ -1672,7 +1670,7 @@ if ((EXIT_CODE != 0)); then
 fi
 
 # Install Skala resource files if needed
-export GAUXC_SKALA_MODEL="(not available)"
+export SKALA_MODEL="(not available)"
 if spack location -i gauxc &> /dev/null; then
   GAUXC_PATH="share/gauxc/onedft_models"
   GAUXC_PREFIX="$(spack location -i gauxc)"
@@ -1690,21 +1688,21 @@ if spack location -i gauxc &> /dev/null; then
     MATCHES=("${GAUXC_MODEL_TARGET_PATH}"/skala*)
     shopt -u nullglob
     if ((${#MATCHES[@]} > 0)); then
-      export GAUXC_SKALA_MODEL="${MATCHES[${#MATCHES[@]} - 1]}"
+      export SKALA_MODEL="${MATCHES[${#MATCHES[@]} - 1]}"
     else
-      echo -e "\nERROR: Failed to resolve GAUXC_SKALA_MODEL in target path ${GAUXC_MODEL_TARGET_PATH}"
+      echo -e "\nERROR: Failed to resolve SKALA_MODEL in target path ${GAUXC_MODEL_TARGET_PATH}"
       ${EXIT_CMD} 1
     fi
   fi
 fi
-echo -e "\nGAUXC_SKALA_MODEL = ${GAUXC_SKALA_MODEL}"
+echo -e "\nSKALA_MODEL = ${SKALA_MODEL}"
 
 # Collect and compress all log files when building within a container
 if [[ "${IN_CONTAINER}" == "yes" ]]; then
   if ! cat "${CMAKE_BUILD_PATH}"/cmake.log \
     "${CMAKE_BUILD_PATH}"/ninja.log \
     "${CMAKE_BUILD_PATH}"/install.log |
-    gzip > "${CP2K_ROOT}"/install/build_cp2k.log.gz; then
+    gzip > "${CP2K_ROOT}"/build_cp2k.log.gz; then
     echo -e "\nERROR: The compressed log file generation failed"
     ${EXIT_CMD} 1
   fi
@@ -1813,7 +1811,7 @@ export OMP_STACKSIZE=256M
 [[ -f ${INSTALL_PREFIX}/ase/config.ini ]] && export ASE_CONFIG_PATH="${INSTALL_PREFIX}/ase/config.ini"
 [[ -f ${INSTALL_PREFIX}/bin/GMXRC ]] && source ${INSTALL_PREFIX}/bin/GMXRC
 ${OMPI_VARS}
-export GAUXC_SKALA_MODEL=${GAUXC_SKALA_MODEL}
+export SKALA_MODEL=${SKALA_MODEL}
 exec "\$@"
 ***
 chmod 750 "${LAUNCH_SCRIPT}"
@@ -1826,7 +1824,7 @@ if [[ "${VERSION}" =~ ^(s|p)dbg$ ]]; then
   echo "LSAN_OPTIONS = \${LSAN_OPTIONS}"
 fi
 ldd -- ${INSTALL_PREFIX}/bin/cp2k.${VERSION} 2>&1 | grep -E 'not ' | sort | uniq
-export GAUXC_SKALA_MODEL=${GAUXC_SKALA_MODEL}
+export SKALA_MODEL=${SKALA_MODEL}
 ${CP2K_ROOT}/tests/do_regtest.py ${TESTOPTS} \$* ${INSTALL_PREFIX}/bin ${VERSION}
 ***
 chmod 750 "${INSTALL_PREFIX}"/bin/run_tests

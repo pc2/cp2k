@@ -20,8 +20,9 @@ MODULE machine
                             C_PTR, &
                             C_NULL_CHAR, &
                             C_ASSOCIATED
-   USE ISO_FORTRAN_ENV, ONLY: input_unit, &
-                              output_unit
+   USE ISO_FORTRAN_ENV, ONLY: ERROR_UNIT, &
+                              INPUT_UNIT, &
+                              OUTPUT_UNIT
    USE omp_lib, ONLY: omp_get_wtime
    USE kinds, ONLY: default_path_length, &
                     default_string_length, &
@@ -43,8 +44,9 @@ MODULE machine
    ! for example in farming or path integral runs
    ! default_input_unit should never be used
    ! but we need to know what it is, as we should not try to open it for output
-   INTEGER, PUBLIC, PARAMETER                   :: default_output_unit = output_unit, &
-                                                   default_input_unit = input_unit, &
+   INTEGER, PUBLIC, PARAMETER                   :: default_error_unit = ERROR_UNIT, &
+                                                   default_input_unit = INPUT_UNIT, &
+                                                   default_output_unit = OUTPUT_UNIT, &
                                                    timestamp_length = 23
 
 #include "machine_cpuid.h"
@@ -76,7 +78,7 @@ MODULE machine
 
    PUBLIC :: m_walltime, m_timestamp, m_hostnm, m_flush, &
              m_getcwd, m_getlog, m_getpid, m_procrun, m_abort, &
-             m_chdir, m_mov, m_memory, m_memory_details, m_energy, &
+             m_chdir, m_mov, m_unlink, m_memory, m_memory_details, m_energy, &
              m_cpuinfo, m_cpuid_static, m_cpuid, m_cpuid_name, &
              m_cpuid_vlen, m_omp_get_stacksize, m_omp_trace_issues
 

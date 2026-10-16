@@ -19,7 +19,7 @@ MODULE rpa_main
         Bates2013, DelBen2013, DelBen2015, Freeman1977, Gruneis2009, Ren2011, Ren2013, &
         Wilhelm2016a, Wilhelm2016b, Wilhelm2017, Wilhelm2018, cite_reference
    USE bse_main,                        ONLY: bse_solve,&
-                                              prepare_bse_env
+                                              prepare_bse_env_from_ri_rpa_gw
    USE bse_types,                       ONLY: bse_env_release
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_release,&
@@ -30,11 +30,14 @@ MODULE rpa_main
                                               dbcsr_get_info,&
                                               dbcsr_p_type,&
                                               dbcsr_type
-   USE cp_fm_basic_linalg,              ONLY: cp_fm_scale_and_add
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_add_on_diag,&
+                                              cp_fm_scale_and_add
+   USE cp_fm_redistribution,            ONLY: cp_array_to_fm
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_get_diag,&
                                               cp_fm_get_info,&
                                               cp_fm_release,&
                                               cp_fm_set_all,&
@@ -44,8 +47,7 @@ MODULE rpa_main
    USE dgemm_counter_types,             ONLY: dgemm_counter_init,&
                                               dgemm_counter_type,&
                                               dgemm_counter_write
-   USE group_dist_types,                ONLY: create_group_dist,&
-                                              get_group_dist,&
+   USE group_dist_types,                ONLY: get_group_dist,&
                                               group_dist_d1_type,&
                                               maxsize,&
                                               release_group_dist
@@ -73,7 +75,6 @@ MODULE rpa_main
                                               mp_para_env_type
    USE minimax_exp,                     ONLY: check_exp_minimax_range
    USE mp2_laplace,                     ONLY: SOS_MP2_postprocessing
-   USE mp2_ri_grad_util,                ONLY: array2fm
    USE mp2_types,                       ONLY: mp2_type,&
                                               three_dim_real_array,&
                                               two_dim_int_array,&
@@ -116,8 +117,7 @@ MODULE rpa_main
                                               rpa_sigma_create,&
                                               rpa_sigma_matrix_spectral,&
                                               rpa_sigma_type
-   USE rpa_util,                        ONLY: Q_trace_and_add_unit_matrix,&
-                                              alloc_im_time,&
+   USE rpa_util,                        ONLY: alloc_im_time,&
                                               calc_mat_Q,&
                                               compute_Erpa_by_freq_int,&
                                               contract_P_omega_with_mat_L,&
@@ -596,14 +596,11 @@ CONTAINS
          ALLOCATE (fm_mat_Q(nspins), fm_mat_Q_gemm(nspins), fm_mat_S(nspins))
       END IF
 
-      CALL create_integ_mat(BIb_C_2D, para_env, para_env_sub, color_sub, ngroup, integ_group_size, &
-                            dimen_RI_red, dimen_ia, color_rpa_group, &
-                            mp2_env%block_size_row, mp2_env%block_size_col, unit_nr, &
-                            my_ia_size, my_ia_start, my_ia_end, &
-                            my_group_L_size, my_group_L_start, my_group_L_end, &
-                            para_env_RPA, fm_mat_S, nrow_block_mat, ncol_block_mat, &
-                            dimen_ia_for_block_size=dimen_ia(1), &
-                            do_im_time=do_im_time, fm_mat_Q_gemm=fm_mat_Q_gemm, fm_mat_Q=fm_mat_Q, qs_env=qs_env)
+      CALL create_integ_mat(BIb_C_2D, para_env, dimen_RI_red, dimen_ia, mp2_env%block_size_row, &
+                            mp2_env%block_size_col, unit_nr, my_ia_start, my_ia_end, my_group_L_start, &
+                            my_group_L_end, para_env_RPA, fm_mat_S, nrow_block_mat, ncol_block_mat, &
+                            dimen_ia_for_block_size=dimen_ia(1), do_im_time=do_im_time, &
+                            fm_mat_Q_gemm=fm_mat_Q_gemm, fm_mat_Q=fm_mat_Q, qs_env=qs_env)
 
       DEALLOCATE (BIb_C_2D, my_ia_end, my_ia_size, my_ia_start)
 
@@ -611,14 +608,12 @@ CONTAINS
       ALLOCATE (fm_mat_S_gw(nspins))
       IF (my_do_gw .AND. .NOT. do_im_time) THEN
 
-         CALL create_integ_mat(BIb_C_2D_gw, para_env, para_env_sub, color_sub, ngroup, integ_group_size, &
-                               dimen_RI_red, [dimen_nm_gw, dimen_nm_gw], color_rpa_group, &
+         CALL create_integ_mat(BIb_C_2D_gw, para_env, dimen_RI_red, [dimen_nm_gw, dimen_nm_gw], &
                                mp2_env%block_size_row, mp2_env%block_size_col, unit_nr, &
-                               [my_nm_gw_size, my_nm_gw_size], [my_nm_gw_start, my_nm_gw_start], [my_nm_gw_end, my_nm_gw_end], &
-                               my_group_L_size, my_group_L_start, my_group_L_end, &
-                               para_env_RPA, fm_mat_S_gw, nrow_block_mat, ncol_block_mat, &
-                               fm_mat_Q(1)%matrix_struct%context, fm_mat_Q(1)%matrix_struct%context, &
-                               fm_mat_Q=fm_mat_R_gw)
+                               [my_nm_gw_start, my_nm_gw_start], [my_nm_gw_end, my_nm_gw_end], &
+                               my_group_L_start, my_group_L_end, para_env_RPA, fm_mat_S_gw, nrow_block_mat, &
+                               ncol_block_mat, fm_mat_Q(1)%matrix_struct%context, &
+                               fm_mat_Q(1)%matrix_struct%context, fm_mat_Q=fm_mat_R_gw)
          DEALLOCATE (BIb_C_2D_gw)
 
       END IF
@@ -626,21 +621,18 @@ CONTAINS
       ! for Bethe-Salpeter, we need other matrix fm_mat_S (per spin; the ab slab dimension is spin-independent)
       IF (do_bse) THEN
          ALLOCATE (fm_mat_S_ij_bse(nspins), fm_mat_S_ab_bse(nspins))
-         CALL create_integ_mat(BIb_C_2D_bse_ij, para_env, para_env_sub, color_sub, ngroup, integ_group_size, &
-                               dimen_RI_red, dimen_homo_square, color_rpa_group, &
-                               mp2_env%block_size_row, mp2_env%block_size_col, unit_nr, &
-                               my_ij_comb_bse_size, my_ij_comb_bse_start, my_ij_comb_bse_end, &
-                               my_group_L_size, my_group_L_start, my_group_L_end, &
-                               para_env_RPA, fm_mat_S_ij_bse, nrow_block_mat, ncol_block_mat, &
+         CALL create_integ_mat(BIb_C_2D_bse_ij, para_env, dimen_RI_red, dimen_homo_square, &
+                               mp2_env%block_size_row, mp2_env%block_size_col, unit_nr, my_ij_comb_bse_start, &
+                               my_ij_comb_bse_end, my_group_L_start, my_group_L_end, para_env_RPA, &
+                               fm_mat_S_ij_bse, nrow_block_mat, ncol_block_mat, &
                                fm_mat_Q(1)%matrix_struct%context, fm_mat_Q(1)%matrix_struct%context)
 
-         CALL create_integ_mat(BIb_C_2D_bse_ab, para_env, para_env_sub, color_sub, ngroup, integ_group_size, &
-                               dimen_RI_red, [(bse_lev_virt(ispin)**2, ispin=1, nspins)], color_rpa_group, &
-                               mp2_env%block_size_row, mp2_env%block_size_col, unit_nr, &
-                               my_ab_comb_bse_size, my_ab_comb_bse_start, my_ab_comb_bse_end, &
-                               my_group_L_size, my_group_L_start, my_group_L_end, &
-                               para_env_RPA, fm_mat_S_ab_bse, nrow_block_mat, ncol_block_mat, &
-                               fm_mat_Q(1)%matrix_struct%context, fm_mat_Q(1)%matrix_struct%context)
+         CALL create_integ_mat(BIb_C_2D_bse_ab, para_env, dimen_RI_red, &
+                               [(bse_lev_virt(ispin)**2, ispin=1, nspins)], mp2_env%block_size_row, &
+                               mp2_env%block_size_col, unit_nr, my_ab_comb_bse_start, my_ab_comb_bse_end, &
+                               my_group_L_start, my_group_L_end, para_env_RPA, fm_mat_S_ab_bse, &
+                               nrow_block_mat, ncol_block_mat, fm_mat_Q(1)%matrix_struct%context, &
+                               fm_mat_Q(1)%matrix_struct%context)
 
       END IF
 
@@ -794,20 +786,13 @@ CONTAINS
 !> \brief ...
 !> \param BIb_C_2D ...
 !> \param para_env ...
-!> \param para_env_sub ...
-!> \param color_sub ...
-!> \param ngroup ...
-!> \param integ_group_size ...
 !> \param dimen_RI ...
 !> \param dimen_ia ...
-!> \param color_rpa_group ...
 !> \param ext_row_block_size ...
 !> \param ext_col_block_size ...
 !> \param unit_nr ...
-!> \param my_ia_size ...
 !> \param my_ia_start ...
 !> \param my_ia_end ...
-!> \param my_group_L_size ...
 !> \param my_group_L_start ...
 !> \param my_group_L_end ...
 !> \param para_env_RPA ...
@@ -822,26 +807,20 @@ CONTAINS
 !> \param fm_mat_Q ...
 !> \param qs_env ...
 ! **************************************************************************************************
-   SUBROUTINE create_integ_mat(BIb_C_2D, para_env, para_env_sub, color_sub, ngroup, integ_group_size, &
-                               dimen_RI, dimen_ia, color_rpa_group, &
-                               ext_row_block_size, ext_col_block_size, unit_nr, &
-                               my_ia_size, my_ia_start, my_ia_end, &
-                               my_group_L_size, my_group_L_start, my_group_L_end, &
-                               para_env_RPA, fm_mat_S, nrow_block_mat, ncol_block_mat, &
-                               blacs_env_ext, blacs_env_ext_S, dimen_ia_for_block_size, &
-                               do_im_time, fm_mat_Q_gemm, fm_mat_Q, qs_env)
+   SUBROUTINE create_integ_mat(BIb_C_2D, para_env, dimen_RI, dimen_ia, ext_row_block_size, ext_col_block_size, &
+                               unit_nr, my_ia_start, my_ia_end, my_group_L_start, my_group_L_end, para_env_RPA, &
+                               fm_mat_S, nrow_block_mat, ncol_block_mat, blacs_env_ext, blacs_env_ext_S, &
+                               dimen_ia_for_block_size, do_im_time, fm_mat_Q_gemm, fm_mat_Q, qs_env)
 
       TYPE(two_dim_real_array), DIMENSION(:), &
          INTENT(INOUT)                                   :: BIb_C_2D
-      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env, para_env_sub
-      INTEGER, INTENT(IN)                                :: color_sub, ngroup, integ_group_size, &
-                                                            dimen_RI
+      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
+      INTEGER, INTENT(IN)                                :: dimen_RI
       INTEGER, DIMENSION(:), INTENT(IN)                  :: dimen_ia
-      INTEGER, INTENT(IN)                                :: color_rpa_group, ext_row_block_size, &
-                                                            ext_col_block_size, unit_nr
-      INTEGER, DIMENSION(:), INTENT(IN)                  :: my_ia_size, my_ia_start, my_ia_end
-      INTEGER, INTENT(IN)                                :: my_group_L_size, my_group_L_start, &
-                                                            my_group_L_end
+      INTEGER, INTENT(IN)                                :: ext_row_block_size, ext_col_block_size, &
+                                                            unit_nr
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: my_ia_start, my_ia_end
+      INTEGER, INTENT(IN)                                :: my_group_L_start, my_group_L_end
       TYPE(mp_para_env_type), INTENT(IN), POINTER        :: para_env_RPA
       TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: fm_mat_S
       INTEGER, INTENT(INOUT)                             :: nrow_block_mat, ncol_block_mat
@@ -855,14 +834,11 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'create_integ_mat'
 
       INTEGER                                            :: col_row_proc_ratio, grid_2D(2), handle, &
-                                                            iproc, iproc_col, iproc_row, ispin, &
-                                                            mepos_in_RPA_group
-      INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: group_grid_2_mepos
+                                                            iproc, iproc_col, iproc_row, ispin
       LOGICAL                                            :: my_blacs_ext, my_blacs_S_ext, &
                                                             my_do_im_time
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env, blacs_env_Q
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
-      TYPE(group_dist_d1_type)                           :: gd_ia, gd_L
 
       CALL timeset(routineN, handle)
 
@@ -941,28 +917,10 @@ CONTAINS
 
             END IF ! external blacs_env
 
-            CALL create_group_dist(gd_ia, my_ia_start(ispin), my_ia_end(ispin), my_ia_size(ispin), para_env_RPA)
-            CALL create_group_dist(gd_L, my_group_L_start, my_group_L_end, my_group_L_size, para_env_RPA)
+            CALL cp_array_to_fm(BIb_C_2D(ispin)%array, fm_struct, my_group_L_start, my_group_L_end, &
+                                my_ia_start(ispin), my_ia_end(ispin), fm_mat_S(ispin))
 
-            ! create the info array
-
-            mepos_in_RPA_group = MOD(color_sub, integ_group_size)
-            ALLOCATE (group_grid_2_mepos(0:integ_group_size - 1, 0:para_env_sub%num_pe - 1))
-            group_grid_2_mepos = 0
-            group_grid_2_mepos(mepos_in_RPA_group, para_env_sub%mepos) = para_env_RPA%mepos
-            CALL para_env_RPA%sum(group_grid_2_mepos)
-
-            CALL array2fm(BIb_C_2D(ispin)%array, fm_struct, my_group_L_start, my_group_L_end, &
-                          my_ia_start(ispin), my_ia_end(ispin), gd_L, gd_ia, &
-                          group_grid_2_mepos, ngroup, para_env_sub%num_pe, fm_mat_S(ispin), &
-                          integ_group_size, color_rpa_group)
-
-            DEALLOCATE (group_grid_2_mepos)
             CALL cp_fm_struct_release(fm_struct)
-
-            ! deallocate the info array
-            CALL release_group_dist(gd_L)
-            CALL release_group_dist(gd_ia)
 
             ! sum the local data across processes belonging to different RPA group.
             IF (para_env_RPA%num_pe /= para_env%num_pe) THEN
@@ -1112,7 +1070,9 @@ CONTAINS
                                                             color_rpa_group
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_matrix_PQ
       TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: fm_mat_S
-      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_Q_gemm, fm_mat_Q, fm_mat_S_gw
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_Q_gemm
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(INOUT)      :: fm_mat_Q
+      TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_S_gw
       TYPE(cp_fm_type), INTENT(IN)                       :: fm_mat_R_gw
       TYPE(cp_fm_type), DIMENSION(:), INTENT(IN)         :: fm_mat_S_ij_bse, fm_mat_S_ab_bse
       LOGICAL, INTENT(IN)                                :: my_do_gw, do_bse
@@ -1163,7 +1123,7 @@ CONTAINS
       REAL(KIND=dp) :: alpha, dbcsr_time, e_exchange, e_exchange_corr, eps_filter, &
          eps_filter_im_time, ext_scaling, fermi_level_offset, fermi_level_offset_input, &
          my_flop_rate, omega, omega_max_fit, omega_old, tau, tau_old
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: delta_corr, e_fermi, trace_Qomega, &
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: delta_corr, diag_Qomega, e_fermi, &
                                                             vec_omega_fit_gw, wkp_W
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: static_cohsex_eigenval_cn, &
                                                             static_cohsex_eigenval_dg, vec_W_gw
@@ -1233,8 +1193,8 @@ CONTAINS
             IF (do_im_time) CPABORT("COHSEX is only implemented in the O(N^4) GW code.")
             IF (do_periodic) CPABORT("COHSEX with PERIODIC_CORRECTION is not implemented.")
             ! BSE after static COHSEX: W = v + α W^c(0) with one α for both A and B
-            IF (do_bse .AND. mp2_env%ri_g0w0%scale_cohsex_occ /= mp2_env%ri_g0w0%scale_cohsex_virt) THEN
-               CALL cp_abort(__LOCATION__, "BSE after COHSEX requires SCALE_COHSEX_OCC = SCALE_COHSEX_VIRT "// &
+            IF (do_bse .AND. mp2_env%ri_g0w0%cohsex_scale_occ /= mp2_env%ri_g0w0%cohsex_scale_virt) THEN
+               CALL cp_abort(__LOCATION__, "BSE after COHSEX requires COHSEX_SCALE_OCC = COHSEX_SCALE_VIRT "// &
                              "(the scaling of W^c in the BSE).")
             END IF
             IF (do_ri_sos_laplace_mp2) CPABORT("COHSEX with SOS-MP2 is not implemented.")
@@ -1339,7 +1299,7 @@ CONTAINS
 
       ! This array is needed for RPA
       IF (.NOT. do_ri_sos_laplace_mp2) THEN
-         ALLOCATE (trace_Qomega(dimen_RI_red))
+         ALLOCATE (diag_Qomega(dimen_RI_red))
       END IF
 
       IF (do_ri_sos_laplace_mp2 .AND. .NOT. do_im_time) THEN
@@ -1493,24 +1453,29 @@ CONTAINS
                   CALL cp_fm_scale_and_add(1.0_dp, fm_mat_Q_static_bse_gemm, 1.0_dp, fm_mat_Q_gemm(ispin))
                END DO
             END IF
-            CALL Q_trace_and_add_unit_matrix(dimen_RI_red, trace_Qomega, fm_mat_Q(1))
+            CALL cp_fm_add_on_diag(fm_mat_Q(1), 1.0_dp, n_active=dimen_RI_red)
             IF (do_bse) THEN
-               ALLOCATE (static_cohsex_eigenval_dg(nmo, nspins), static_cohsex_eigenval_cn(nmo, nspins), &
-                         static_cohsex_u(nmo, nmo, nspins))
-               CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, homo, &
-                                              gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), mo_coeff, &
-                                              unit_nr, qs_env, mp2_env, static_cohsex_eigenval_dg, static_cohsex_eigenval_cn, &
-                                              static_cohsex_u)
-               ! the BSE reads the quasiparticle energies from Eigenval: ϵ^CN (with the canonical
-               ! MOs, see the BSE block) or ϵ^DG (with the KS MOs)
+               ! the BSE reads the quasiparticle energies from Eigenval: ϵ^CN (QP_UPDATE, with the
+               ! canonical MOs, see the BSE block) or ϵ^DG (DIAGONAL, with the KS MOs)
                IF (mp2_env%ri_g0w0%cohsex_flavor == cohsex_qp_update) THEN
+                  ALLOCATE (static_cohsex_eigenval_cn(nmo, nspins), static_cohsex_u(nmo, nmo, nspins))
+                  CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, &
+                                                 homo, gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), &
+                                                 mo_coeff, unit_nr, qs_env, mp2_env, &
+                                                 eigenval_cn=static_cohsex_eigenval_cn, u_qp_all=static_cohsex_u)
                   Eigenval(:, 1, :) = static_cohsex_eigenval_cn(:, :)
+                  DEALLOCATE (static_cohsex_eigenval_cn)
                ELSE
+                  ALLOCATE (static_cohsex_eigenval_dg(nmo, nspins))
+                  CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, &
+                                                 homo, gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), &
+                                                 mo_coeff, unit_nr, qs_env, mp2_env, &
+                                                 eigenval_dg=static_cohsex_eigenval_dg)
                   Eigenval(:, 1, :) = static_cohsex_eigenval_dg(:, :)
+                  DEALLOCATE (static_cohsex_eigenval_dg)
                END IF
-               DEALLOCATE (static_cohsex_eigenval_dg, static_cohsex_eigenval_cn)
-               ! direct terms of the BSE with W = v + α W^c(0), α = SCALE_COHSEX_OCC (= SCALE_COHSEX_VIRT)
-               mp2_env%bse%wc_scaling = mp2_env%ri_g0w0%scale_cohsex_occ
+               ! direct terms of the BSE with W = v + α W^c(0), α = COHSEX_SCALE_OCC (= COHSEX_SCALE_VIRT)
+               mp2_env%bse%wc_scaling = mp2_env%ri_g0w0%cohsex_scale_occ
             ELSE
                CALL static_cohsex_qp_energies(fm_mat_Q(1), fm_mat_S_gw, fm_mat_S_gw_work, dimen_RI_red, nmo, homo, &
                                               gw_corr_lev_occ, gw_corr_lev_virt, Eigenval(:, 1, :), mo_coeff, &
@@ -1635,7 +1600,9 @@ CONTAINS
             ELSE
                IF (calc_forces .AND. .NOT. do_im_time) CALL rpa_grad_copy_Q(fm_mat_Q(1), rpa_grad)
 
-               CALL Q_trace_and_add_unit_matrix(dimen_RI_red, trace_Qomega, fm_mat_Q(1))
+               ! epsilon = I + Q; retain the diagonal of Q for the RPA energy.
+               CALL cp_fm_get_diag(fm_mat_Q(1), diag_Qomega, n_active=dimen_RI_red)
+               CALL cp_fm_add_on_diag(fm_mat_Q(1), 1.0_dp, n_active=dimen_RI_red)
 
                IF (do_kpoints_cubic_RPA .OR. do_kpoints_from_Gamma) THEN
                   CALL invert_eps_compute_W_and_Erpa_kp(dimen_RI, jquad, nkp, count_ev_sc_GW, para_env, &
@@ -1647,7 +1614,7 @@ CONTAINS
                                                         fm_mat_W, cfm_mat_RI_global_work, mat_MinvVMinv, &
                                                         fm_matrix_Minv, fm_matrix_Minv_Vtrunc_Minv)
                ELSE
-                  CALL compute_Erpa_by_freq_int(dimen_RI_red, trace_Qomega, fm_mat_Q(1), para_env_RPA, Erpa, &
+                  CALL compute_Erpa_by_freq_int(dimen_RI_red, diag_Qomega, fm_mat_Q(1), para_env_RPA, Erpa, &
                                                 time_frequency_grid%frequency_weights(jquad))
                END IF
 
@@ -1878,15 +1845,15 @@ CONTAINS
                END IF
                CALL rotate_bse_slab(fm_mat_S_ia_bse(ispin), dimen_RI_red, homo(ispin), virtual(ispin), &
                                     static_cohsex_u(1:homo(ispin), 1:homo(ispin), ispin), &
-                                    static_cohsex_u(homo(ispin) + 1:nmo, homo(ispin) + 1:nmo, ispin), mp2_env)
+                                    static_cohsex_u(homo(ispin) + 1:nmo, homo(ispin) + 1:nmo, ispin))
                CALL rotate_bse_slab(fm_mat_S_ij_bse(ispin), dimen_RI_red, homo(ispin), homo(ispin), &
                                     static_cohsex_u(1:homo(ispin), 1:homo(ispin), ispin), &
-                                    static_cohsex_u(1:homo(ispin), 1:homo(ispin), ispin), mp2_env)
+                                    static_cohsex_u(1:homo(ispin), 1:homo(ispin), ispin))
                CALL rotate_bse_slab(fm_mat_S_ab_bse(ispin), dimen_RI_red, bse_lev_virt(ispin), bse_lev_virt(ispin), &
                                     static_cohsex_u(homo(ispin) + 1:homo(ispin) + bse_lev_virt(ispin), &
                                                     homo(ispin) + 1:homo(ispin) + bse_lev_virt(ispin), ispin), &
                                     static_cohsex_u(homo(ispin) + 1:homo(ispin) + bse_lev_virt(ispin), &
-                                                    homo(ispin) + 1:homo(ispin) + bse_lev_virt(ispin), ispin), mp2_env)
+                                                    homo(ispin) + 1:homo(ispin) + bse_lev_virt(ispin), ispin))
                ! transition dipoles, NTOs and exciton descriptors with C^QP
                CALL get_static_cohsex_mo_coeff(mo_coeff(ispin), static_cohsex_u(:, :, ispin), mo_coeff_bse(ispin))
             END DO
@@ -1894,10 +1861,10 @@ CONTAINS
          IF (ALLOCATED(static_cohsex_u)) DEALLOCATE (static_cohsex_u)
 
          ! the solver keeps [1+Q(0)]^-1 and the window-sized slabs; Q(0) and the full slabs stay the GW's
-         CALL prepare_bse_env(mp2_env%bse, fm_mat_S_ia_bse, fm_mat_S_ij_bse, fm_mat_S_ab_bse, &
-                              fm_mat_Q_static_bse_gemm, Eigenval, Eigenval_scf, &
-                              homo, virtual, dimen_RI, dimen_RI_red, mp2_env%ri_g0w0%corr_mos_occ, &
-                              bse_lev_virt, qs_env, unit_nr)
+         CALL prepare_bse_env_from_ri_rpa_gw(mp2_env%bse, fm_mat_S_ia_bse, fm_mat_S_ij_bse, fm_mat_S_ab_bse, &
+                                             fm_mat_Q_static_bse_gemm, Eigenval, Eigenval_scf, &
+                                             homo, virtual, dimen_RI, dimen_RI_red, mp2_env%ri_g0w0%corr_mos_occ, &
+                                             bse_lev_virt, qs_env, unit_nr)
          CALL cp_fm_release(fm_mat_Q_static_bse_gemm)
          IF (ALLOCATED(mo_coeff_bse)) THEN
             CALL bse_solve(mp2_env%bse, mo_coeff_bse, unit_nr)
@@ -1946,7 +1913,7 @@ CONTAINS
       IF (.NOT. do_im_time .AND. .NOT. do_ri_sos_laplace_mp2) CALL exchange_work%release()
 
       IF (.NOT. do_ri_sos_laplace_mp2) THEN
-         DEALLOCATE (trace_Qomega)
+         DEALLOCATE (diag_Qomega)
       END IF
 
       CALL time_frequency_grid_release(time_frequency_grid)

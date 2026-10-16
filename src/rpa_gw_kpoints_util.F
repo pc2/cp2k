@@ -13,17 +13,17 @@
 MODULE rpa_gw_kpoints_util
    USE cell_types,                      ONLY: cell_type,&
                                               get_cell,&
-                                              pbc
+                                              minimum_image_weights
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_add_on_diag,&
-                                              cp_cfm_column_scale,&
+                                              cp_cfm_get_diag,&
                                               cp_cfm_scale_and_add_fm,&
                                               cp_cfm_uplo_to_full
    USE cp_cfm_cholesky,                 ONLY: cp_cfm_cholesky_decompose,&
                                               cp_cfm_cholesky_invert
    USE cp_cfm_diag,                     ONLY: cp_cfm_geeig,&
                                               cp_cfm_geeig_canon,&
-                                              cp_cfm_heevd
+                                              cp_cfm_power
    USE cp_cfm_types,                    ONLY: cp_cfm_copy_general,&
                                               cp_cfm_create,&
                                               cp_cfm_get_info,&
@@ -89,7 +89,7 @@ MODULE rpa_gw_kpoints_util
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'rpa_gw_kpoints_util'
 
-   PUBLIC :: invert_eps_compute_W_and_Erpa_kp, cp_cfm_power, real_space_to_kpoint_transform_rpa, &
+   PUBLIC :: invert_eps_compute_W_and_Erpa_kp, real_space_to_kpoint_transform_rpa, &
              get_mat_cell_T_from_mat_gamma, get_bandstruc_and_k_dependent_MOs, &
              compute_wkp_W, mat_kp_from_mat_gamma, cfm_screened_interaction_from_eps_cholesky
 
@@ -180,7 +180,7 @@ CONTAINS
       INTEGER                                            :: handle, ikp, num_integ_points
       LOGICAL                                            :: do_this_ikp
       REAL(KIND=dp)                                      :: t1, t2
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: trace_Qomega
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diag_Qomega
 
       CALL timeset(routineN, handle)
 
@@ -195,7 +195,7 @@ CONTAINS
       CALL transform_P_from_real_space_to_kpoints(mat_P_omega, mat_P_omega_kp, &
                                                   kpoints, eps_filter_im_time, jquad)
 
-      ALLOCATE (trace_Qomega(dimen_RI))
+      ALLOCATE (diag_Qomega(dimen_RI))
 
       IF (unit_nr > 0) WRITE (unit_nr, '(/T3,A,1X,I3)') &
          'GW_INFO| Computing chi and W frequency point', jquad
@@ -215,10 +215,10 @@ CONTAINS
                                qs_env%mp2_env%ri_rpa_im_time%make_chi_pos_definite)
 
          ! 2. Cholesky decomposition of Id + Q(iw,k)
-         CALL cholesky_decomp_Q(cfm_mat_Q, para_env, trace_Qomega, dimen_RI)
+         CALL cholesky_decomp_Q(cfm_mat_Q, diag_Qomega, dimen_RI)
 
          ! 3. Computing E_c^RPA = E_c^RPA + a_w/N_k*sum_k ln[det(1+Q(iw,k))-Tr(Q(iw,k))]
-         CALL frequency_and_kpoint_integration(Erpa, cfm_mat_Q, para_env, trace_Qomega, &
+         CALL frequency_and_kpoint_integration(Erpa, cfm_mat_Q, para_env, diag_Qomega, &
                                                dimen_RI, grid%frequency_weights(jquad), kpoints%wkp(ikp))
 
          IF (do_gw_im_time) THEN
@@ -246,7 +246,7 @@ CONTAINS
          CALL deallocate_kp_matrices(cfm_matrix_L_kpoints, cfm_mat_Minv_L_kpoints)
       END IF
 
-      DEALLOCATE (trace_Qomega)
+      DEALLOCATE (diag_Qomega)
 
       t2 = m_walltime()
 
@@ -288,64 +288,6 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE deallocate_kp_matrices
-
-! **************************************************************************************************
-!> \brief ...
-!> \param matrix ...
-!> \param threshold ...
-!> \param exponent ...
-!> \param min_eigval ...
-! **************************************************************************************************
-   SUBROUTINE cp_cfm_power(matrix, threshold, exponent, min_eigval)
-      TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix
-      REAL(KIND=dp)                                      :: threshold, exponent
-      REAL(KIND=dp), OPTIONAL                            :: min_eigval
-
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'cp_cfm_power'
-
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: eigenvalues_exponent
-      INTEGER                                            :: handle, i, ncol_global, nrow_global
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues
-      TYPE(cp_cfm_type)                                  :: cfm_work
-
-      CALL timeset(routineN, handle)
-
-      CALL cp_cfm_create(cfm_work, matrix%matrix_struct)
-      CALL cp_cfm_set_all(cfm_work, z_zero)
-
-      ! Test that matrix is square
-      CALL cp_cfm_get_info(matrix, nrow_global=nrow_global, ncol_global=ncol_global)
-      CPASSERT(nrow_global == ncol_global)
-      ALLOCATE (eigenvalues(nrow_global), SOURCE=0.0_dp)
-      ALLOCATE (eigenvalues_exponent(nrow_global), SOURCE=z_zero)
-
-      ! Diagonalize matrix: get eigenvectors and eigenvalues
-      CALL cp_cfm_heevd(matrix, cfm_work, eigenvalues)
-
-      DO i = 1, nrow_global
-         IF (eigenvalues(i) > threshold) THEN
-            eigenvalues_exponent(i) = CMPLX((eigenvalues(i))**(0.5_dp*exponent), threshold, KIND=dp)
-         ELSE
-            IF (PRESENT(min_eigval)) THEN
-               eigenvalues_exponent(i) = CMPLX(min_eigval, 0.0_dp, KIND=dp)
-            ELSE
-               eigenvalues_exponent(i) = z_zero
-            END IF
-         END IF
-      END DO
-
-      CALL cp_cfm_column_scale(cfm_work, eigenvalues_exponent)
-
-      CALL parallel_gemm("N", "C", nrow_global, nrow_global, nrow_global, z_one, &
-                         cfm_work, cfm_work, z_zero, matrix)
-
-      DEALLOCATE (eigenvalues, eigenvalues_exponent)
-
-      CALL cp_cfm_release(cfm_work)
-
-      CALL timestop(handle)
-
-   END SUBROUTINE cp_cfm_power
 
 ! **************************************************************************************************
 !> \brief ...
@@ -454,47 +396,26 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param cfm_mat_Q ...
-!> \param para_env ...
-!> \param trace_Qomega ...
+!> \param diag_Qomega ...
 !> \param dimen_RI ...
 ! **************************************************************************************************
-   SUBROUTINE cholesky_decomp_Q(cfm_mat_Q, para_env, trace_Qomega, dimen_RI)
+   SUBROUTINE cholesky_decomp_Q(cfm_mat_Q, diag_Qomega, dimen_RI)
 
-      TYPE(cp_cfm_type), INTENT(IN)                      :: cfm_mat_Q
-      TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: trace_Qomega
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: cfm_mat_Q
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: diag_Qomega
       INTEGER, INTENT(IN)                                :: dimen_RI
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'cholesky_decomp_Q'
 
-      INTEGER                                            :: handle, i_global, iiB, info_chol, &
-                                                            j_global, jjB, ncol_local, nrow_local
-      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+      INTEGER                                            :: handle, info_chol
+      COMPLEX(KIND=dp), DIMENSION(dimen_RI)              :: diag_Q
 
       CALL timeset(routineN, handle)
 
-      ! get info of fm_mat_Q
-      CALL cp_cfm_get_info(matrix=cfm_mat_Q, &
-                           nrow_local=nrow_local, &
-                           ncol_local=ncol_local, &
-                           row_indices=row_indices, &
-                           col_indices=col_indices)
-
-      ! calculate the trace of Q and add 1 on the diagonal
-      trace_Qomega = 0.0_dp
-!$OMP     PARALLEL DO DEFAULT(NONE) PRIVATE(jjB,iiB,i_global,j_global) &
-!$OMP                 SHARED(ncol_local,nrow_local,col_indices,row_indices,trace_Qomega,cfm_mat_Q,dimen_RI)
-      DO jjB = 1, ncol_local
-         j_global = col_indices(jjB)
-         DO iiB = 1, nrow_local
-            i_global = row_indices(iiB)
-            IF (j_global == i_global .AND. i_global <= dimen_RI) THEN
-               trace_Qomega(i_global) = REAL(cfm_mat_Q%local_data(iiB, jjB))
-               cfm_mat_Q%local_data(iiB, jjB) = cfm_mat_Q%local_data(iiB, jjB) + z_one
-            END IF
-         END DO
-      END DO
-      CALL para_env%sum(trace_Qomega)
+      ! epsilon = I + Q; the Hermitian Q has a real diagonal for the RPA energy.
+      CALL cp_cfm_get_diag(cfm_mat_Q, diag_Q, n_active=dimen_RI)
+      diag_Qomega = REAL(diag_Q, KIND=dp)
+      CALL cp_cfm_add_on_diag(cfm_mat_Q, z_one, n_active=dimen_RI)
 
       CALL cp_cfm_cholesky_decompose(matrix=cfm_mat_Q, n=dimen_RI, info_out=info_chol)
 
@@ -509,58 +430,39 @@ CONTAINS
 !> \param Erpa ...
 !> \param cfm_mat_Q ...
 !> \param para_env ...
-!> \param trace_Qomega ...
+!> \param diag_Qomega ...
 !> \param dimen_RI ...
 !> \param freq_weight ...
 !> \param kp_weight ...
 ! **************************************************************************************************
-   SUBROUTINE frequency_and_kpoint_integration(Erpa, cfm_mat_Q, para_env, trace_Qomega, &
+   SUBROUTINE frequency_and_kpoint_integration(Erpa, cfm_mat_Q, para_env, diag_Qomega, &
                                                dimen_RI, freq_weight, kp_weight)
 
       REAL(KIND=dp), INTENT(INOUT)                       :: Erpa
       TYPE(cp_cfm_type), INTENT(IN)                      :: cfm_mat_Q
       TYPE(mp_para_env_type), INTENT(IN)                 :: para_env
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trace_Qomega
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: diag_Qomega
       INTEGER, INTENT(IN)                                :: dimen_RI
       REAL(KIND=dp), INTENT(IN)                          :: freq_weight, kp_weight
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'frequency_and_kpoint_integration'
 
-      INTEGER                                            :: handle, i_global, iiB, j_global, jjB, &
-                                                            ncol_local, nrow_local
-      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
+      INTEGER                                            :: handle, iiB
+      COMPLEX(KIND=dp), DIMENSION(dimen_RI)              :: diag_chol
       REAL(KIND=dp)                                      :: FComega
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: Q_log
 
       CALL timeset(routineN, handle)
 
-      ! get info of cholesky_decomposed(fm_mat_Q)
-      CALL cp_cfm_get_info(matrix=cfm_mat_Q, &
-                           nrow_local=nrow_local, &
-                           ncol_local=ncol_local, &
-                           row_indices=row_indices, &
-                           col_indices=col_indices)
-
       ALLOCATE (Q_log(dimen_RI))
-      Q_log = 0.0_dp
-!$OMP    PARALLEL DO DEFAULT(NONE) PRIVATE(jjB,iiB,i_global,j_global) &
-!$OMP                SHARED(ncol_local,nrow_local,col_indices,row_indices,Q_log,cfm_mat_Q,dimen_RI)
-      DO jjB = 1, ncol_local
-         j_global = col_indices(jjB)
-         DO iiB = 1, nrow_local
-            i_global = row_indices(iiB)
-            IF (j_global == i_global .AND. i_global <= dimen_RI) THEN
-               Q_log(i_global) = 2.0_dp*LOG(REAL(cfm_mat_Q%local_data(iiB, jjB)))
-            END IF
-         END DO
-      END DO
-      CALL para_env%sum(Q_log)
+      ! epsilon = U^H U; log(det(epsilon)) = 2*sum(log(real(U_ii))).
+      CALL cp_cfm_get_diag(cfm_mat_Q, diag_chol, n_active=dimen_RI)
+      Q_log(:) = 2.0_dp*LOG(REAL(diag_chol, KIND=dp))
 
       FComega = 0.0_dp
       DO iiB = 1, dimen_RI
          IF (MODULO(iiB, para_env%num_pe) /= para_env%mepos) CYCLE
-         ! FComega=FComega+(LOG(Q_log(iiB))-trace_Qomega(iiB))/2.0_dp
-         FComega = FComega + (Q_log(iiB) - trace_Qomega(iiB))/2.0_dp
+         FComega = FComega + (Q_log(iiB) - diag_Qomega(iiB))/2.0_dp
       END DO
 
       Erpa = Erpa + FComega*freq_weight*kp_weight
@@ -572,7 +474,7 @@ CONTAINS
    END SUBROUTINE frequency_and_kpoint_integration
 
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Split a real Gamma matrix among nearest images using normalized equal weights.
 !> \param mat_P_omega ...
 !> \param qs_env ...
 !> \param kpoints ...
@@ -587,16 +489,12 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'get_mat_cell_T_from_mat_gamma'
 
-      INTEGER                                            :: col, handle, i_cell, i_dim, j_cell, &
-                                                            num_cells_P, num_integ_points, row
-      INTEGER, DIMENSION(3)                              :: cell_grid_P, periodic
+      INTEGER                                            :: col, handle, i_cell, num_cells_P, row
+      INTEGER, DIMENSION(3)                              :: periodic
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell_P
-      LOGICAL :: i_cell_is_the_minimum_image_cell
-      REAL(KIND=dp)                                      :: abs_rab_cell_i, abs_rab_cell_j
-      REAL(KIND=dp), DIMENSION(3)                        :: cell_vector, cell_vector_j, rab_cell_i, &
-                                                            rab_cell_j
-      REAL(KIND=dp), DIMENSION(3, 3)                     :: hmat
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: data_block
+      LOGICAL                                            :: found
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: weights
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: data_block, image_block
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -604,34 +502,18 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       NULLIFY (cell, particle_set)
-      CALL get_qs_env(qs_env, cell=cell, &
-                      particle_set=particle_set)
-      CALL get_cell(cell=cell, h=hmat, periodic=periodic)
+      CALL get_qs_env(qs_env, cell=cell, particle_set=particle_set)
+      CALL get_cell(cell=cell, periodic=periodic)
 
-      DO i_dim = 1, 3
-         ! we have at most 3 neigboring cells per dimension and at least one because
-         ! the density response at Gamma is only divided to neighboring
-         IF (periodic(i_dim) == 1) THEN
-            cell_grid_P(i_dim) = MAX(MIN((kpoints%nkp_grid(i_dim)/2)*2 - 1, 1), 3)
-         ELSE
-            cell_grid_P(i_dim) = 1
-         END IF
-      END DO
-
-      ! overwrite the cell indices in kpoints
-      CALL init_cell_index_rpa(cell_grid_P, kpoints%cell_to_index, kpoints%index_to_cell, cell)
-
+      ! Nearest-neighbour candidate cells depend on periodicity, not on the target k-point mesh.
+      CALL init_cell_index_rpa(2*periodic + 1, kpoints%cell_to_index, kpoints%index_to_cell, cell)
       index_to_cell_P => kpoints%index_to_cell
-
       num_cells_P = SIZE(index_to_cell_P, 2)
+      CPASSERT(SIZE(mat_P_omega) >= num_cells_P)
+      ALLOCATE (weights(num_cells_P))
 
-      num_integ_points = SIZE(mat_P_omega, 1)
-
-      ! first, copy the Gamma-only result from mat_P_omega(1) into all other matrices and
-      ! remove the blocks later which do not belong to the cell index
       DO i_cell = 2, num_cells_P
-         CALL dbcsr_copy(mat_P_omega(i_cell)%matrix, &
-                         mat_P_omega(1)%matrix)
+         CALL dbcsr_copy(mat_P_omega(i_cell)%matrix, mat_P_omega(1)%matrix)
       END DO
 
       IF (jquad == 1 .AND. unit_nr > 0) THEN
@@ -646,41 +528,22 @@ CONTAINS
             WRITE (unit_nr, '(T3,A,T81)') &
                'GW_INFO| Make chi(iw,k) positive definite?                               FALSE'
          END IF
-
       END IF
 
-      DO i_cell = 1, num_cells_P
-
-         CALL dbcsr_iterator_start(iter, mat_P_omega(i_cell)%matrix)
-         DO WHILE (dbcsr_iterator_blocks_left(iter))
-            CALL dbcsr_iterator_next_block(iter, row, col, data_block)
-
-            cell_vector(1:3) = MATMUL(hmat, REAL(index_to_cell_P(1:3, i_cell), dp))
-            rab_cell_i(1:3) = pbc(particle_set(row)%r(1:3), cell) - &
-                              (pbc(particle_set(col)%r(1:3), cell) + cell_vector(1:3))
-            abs_rab_cell_i = SQRT(rab_cell_i(1)**2 + rab_cell_i(2)**2 + rab_cell_i(3)**2)
-
-            ! minimum image convention
-            i_cell_is_the_minimum_image_cell = .TRUE.
-            DO j_cell = 1, num_cells_P
-               cell_vector_j(1:3) = MATMUL(hmat, REAL(index_to_cell_P(1:3, j_cell), dp))
-               rab_cell_j(1:3) = pbc(particle_set(row)%r(1:3), cell) - &
-                                 (pbc(particle_set(col)%r(1:3), cell) + cell_vector_j(1:3))
-               abs_rab_cell_j = SQRT(rab_cell_j(1)**2 + rab_cell_j(2)**2 + rab_cell_j(3)**2)
-
-               IF (abs_rab_cell_i > abs_rab_cell_j + 1.0E-6_dp) THEN
-                  i_cell_is_the_minimum_image_cell = .FALSE.
-               END IF
-            END DO
-
-            IF (.NOT. i_cell_is_the_minimum_image_cell) THEN
-               data_block(:, :) = data_block(:, :)*0.0_dp
-            END IF
-
+      CALL dbcsr_iterator_start(iter, mat_P_omega(1)%matrix)
+      DO WHILE (dbcsr_iterator_blocks_left(iter))
+         CALL dbcsr_iterator_next_block(iter, row, col, data_block)
+         CALL minimum_image_weights(particle_set(row)%r, particle_set(col)%r, &
+                                    cell, index_to_cell_P, weights)
+         ! Keep the Gamma block unchanged until its contributions to all other images are copied.
+         DO i_cell = num_cells_P, 1, -1
+            CALL dbcsr_get_block_p(matrix=mat_P_omega(i_cell)%matrix, row=row, col=col, &
+                                   block=image_block, found=found)
+            CPASSERT(found)
+            image_block = weights(i_cell)*data_block
          END DO
-         CALL dbcsr_iterator_stop(iter)
-
       END DO
+      CALL dbcsr_iterator_stop(iter)
 
       CALL timestop(handle)
 
@@ -898,8 +761,8 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_from_RI_index
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell
-      REAL(KIND=dp)                                      :: contribution, omega, tau, weight, &
-                                                            weight_im, weight_re
+      REAL(KIND=dp)                                      :: contribution, weight, weight_im, &
+                                                            weight_re
       REAL(KIND=dp), DIMENSION(3, 3)                     :: hmat
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
@@ -990,9 +853,7 @@ CONTAINS
 
          DO iquad = 1, num_integ_points
 
-            omega = grid%frequency(jquad)
-            tau = grid%imaginary_time(iquad)
-            weight = grid%cosine_frequency_to_time_weights(iquad, jquad)*COS(tau*omega)
+            weight = grid%cosine_frequency_to_time(iquad, jquad)
 
             IF (jquad == 1 .AND. ikp == 1) THEN
                CALL cp_fm_set_all(matrix=fm_mat_W_tau(iquad), alpha=0.0_dp)
@@ -1018,9 +879,7 @@ CONTAINS
 
             DO iquad = 1, num_integ_points
 
-               omega = grid%frequency(jquad)
-               tau = grid%imaginary_time(iquad)
-               weight = grid%cosine_frequency_to_time_weights(iquad, jquad)*COS(tau*omega)
+               weight = grid%cosine_frequency_to_time(iquad, jquad)
 
                IF (jquad == 1 .AND. jkp == 1) THEN
                   CALL cp_fm_set_all(matrix=fm_mat_W_tau(iquad), alpha=0.0_dp)
@@ -1375,9 +1234,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'create_kp_and_calc_kp_orbitals'
 
-      INTEGER                                            :: handle, i_dim, i_re_im, ikp, ispin, nkp, &
-                                                            nspins
-      INTEGER, DIMENSION(3)                              :: cell_grid, periodic
+      INTEGER                                            :: handle, i_re_im, ikp, ispin, nkp, nspins
+      INTEGER, DIMENSION(3)                              :: periodic
       LOGICAL                                            :: my_with_xc_terms
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(cell_type), POINTER                           :: cell
@@ -1420,16 +1278,7 @@ CONTAINS
 
       CALL get_cell(cell=cell, periodic=periodic)
 
-      DO i_dim = 1, 3
-         ! we have at most 3 neigboring cells per dimension and at least one because
-         ! the density response at Gamma is only divided to neighboring
-         IF (periodic(i_dim) == 1) THEN
-            cell_grid(i_dim) = MAX(MIN((kpoints%nkp_grid(i_dim)/2)*2 - 1, 1), 3)
-         ELSE
-            cell_grid(i_dim) = 1
-         END IF
-      END DO
-      CALL init_cell_index_rpa(cell_grid, kpoints%cell_to_index, kpoints%index_to_cell, cell)
+      CALL init_cell_index_rpa(2*periodic + 1, kpoints%cell_to_index, kpoints%index_to_cell, cell)
 
       ! get S(k)
       CALL get_qs_env(qs_env, matrix_s=matrix_s, scf_env=scf_env, scf_control=scf_control, dft_control=dft_control)

@@ -51,7 +51,7 @@ MODULE bibliography
                             Hunt2003, Guidon2008, Elber1987, Jonsson1998, Jonsson2000_1, &
                             Jonsson2000_2, Wales2004, Stewart1982, E2002, Laino2008, &
                             Blochl1995, Tao2003, VandeVondele2006, VanVoorhis2015, Hu2007, Hu2010, Grimme2006, &
-                            Branduardi2007, Schenter2008, BeckeRoussel1989, Proynov2007, &
+                            Chai2008, Branduardi2007, Schenter2008, BeckeRoussel1989, Proynov2007, &
                             VandenCic2006, Becke1997, Foiles1986, Ricci2003, Kolafa2004, &
                             Kuhne2007, Kunert2003, Ceriotti2009, ceriotti2009b, Guidon2009, &
                             BarducBus2008, Grimme2010, Guidon2010, Marques2012, Jones2011, &
@@ -93,14 +93,16 @@ MODULE bibliography
                             Sander2015, Schreiber2008, vanSetten2015, Setyawan2010, Ahart2024, Knysh2024, &
                             Schambeck2024, Mewes2018, Sertcan2024, Drautz2019, Lysogorskiy2021, Bochkarev2024, &
                             VazdaCruz2021, Chen2025, Hernandez2025, Marek2025, Hehn2022, Hehn2024, Pasquier2025, &
+                            Hedin1965, Hybertsen1986, Tyagi2024, Tyagi2026, &
                             Hanasaki2025, Graml2026, Tan2025, Broyden1965, Johnson1988, Kerker1981, &
                             FuHo1983, MethfesselPaxton1989, Marzari1999, dosSantos2023, Mermin1965, &
                             KuhneHeskeProdan2020, Schreder2021, Schreder2024_1, Schreder2024_2, &
                             Shiga2022, Lindh1995, Chai2024a, Rullan2026, Sundararaman2017, Andreussi2019, &
                             Chai2025a, Neugebauer2023, Chai2024b, Moynihan2017, Cococcioni2005, &
-                            Cances2000, Herbst2022, Zhang2025, Gresch2017, Soluyanov2011, Davidson1975, &
+                            Cances2000, Herbst2022, Zhang2025, Gresch2017, Soluyanov2011, Dixon2023, Doll2025, &
+                            Wong2026, Loring2015, EsteveParedes2023, Cerjan2023, Bairnsfather2026, Davidson1975, &
                             Olsen1988, Stratmann1998, Vecharynski2017, Stathopoulos1998, Bai2012, &
-                            Fukaya2014, Schreder2024_3
+                            Fukaya2014, Schreder2024_3, Pizzi2020, Marzari1997, Souza2001
 
 CONTAINS
 
@@ -756,6 +758,13 @@ CONTAINS
                          source="J. Comput. Chem.", volume="27", pages="1787-1799", &
                          year=2006, doi="10.1002/jcc.20495")
 
+      CALL add_reference(key=Chai2008, &
+                         authors=s2a("J.-D. Chai", "M. Head-Gordon"), &
+                         title="Long-range corrected hybrid density functionals with "// &
+                         "damped atom-atom dispersion corrections", &
+                         source="Phys. Chem. Chem. Phys.", volume="10", pages="6615-6620", &
+                         year=2008, doi="10.1039/B810189B")
+
       CALL add_reference(key=Grimme2010, &
                          authors=s2a("S. Grimme", "J. Antony", "S. Ehrlich", "H. Krieg"), &
                          title="A consistent and accurate ab initio parametrization of density "// &
@@ -1294,6 +1303,30 @@ CONTAINS
                          "and molecular dynamics simulations", &
                          source="J. Am. Chem. Soc.", volume="114", pages="10024-10035", &
                          year=1992, doi="10.1021/ja00051a040")
+
+      CALL add_reference(key=Pizzi2020, &
+                         authors=s2a("G. Pizzi", "V. Vitale", "R. Arita", "S. Blugel", "F. Freimuth", &
+                                     "G. Geranton", "M. Gibertini", "D. Gresch", "C. Johnson", "T. Koretsune", &
+                                     "J. Ibanez-Azpiroz", "H. Lee", "J.-M. Lihm", "D. Marchand", "A. Marrazzo", &
+                                     "Y. Mokrousov", "J. I. Mustafa", "Y. Nohara", "Y. Nomura", "L. Paulatto", &
+                                     "S. Ponce", "T. Ponweiser", "J. Qiao", "F. Thole", "S. S. Tsirkin", &
+                                     "M. Wierzbowska", "N. Marzari", "D. Vanderbilt", "I. Souza", &
+                                     "A. A. Mostofi", "J. R. Yates"), &
+                         title="Wannier90 as a community code: new features and applications", &
+                         source="J. Phys.: Condens. Matter", volume="32", pages="165902", &
+                         year=2020, doi="10.1088/1361-648X/ab51ff")
+
+      CALL add_reference(key=Marzari1997, &
+                         authors=s2a("N. Marzari", "D. Vanderbilt"), &
+                         title="Maximally localized generalized Wannier functions for composite energy bands", &
+                         source="Phys. Rev. B", volume="56", pages="12847-12865", &
+                         year=1997, doi="10.1103/PhysRevB.56.12847")
+
+      CALL add_reference(key=Souza2001, &
+                         authors=s2a("I. Souza", "N. Marzari", "D. Vanderbilt"), &
+                         title="Maximally localized Wannier functions for entangled energy bands", &
+                         source="Phys. Rev. B", volume="65", pages="035109", &
+                         year=2001, doi="10.1103/PhysRevB.65.035109")
 
       CALL add_reference(key=Monkhorst1976, &
                          authors=s2a("H. J. Monkhorst", "J. D. Pack"), &
@@ -2130,6 +2163,33 @@ CONTAINS
                          source="J. Chem. Theory Comput.", volume="21", pages="9814-9822", &
                          year=2025, doi="10.1021/acs.jctc.5c01246")
 
+      CALL add_reference(key=Hedin1965, &
+                         authors=s2a("L. Hedin"), &
+                         title="New method for calculating the one-particle Green's function with application "// &
+                         "to the electron-gas problem", &
+                         source="Phys. Rev.", volume="139", pages="A796-A823", &
+                         year=1965, doi="10.1103/PhysRev.139.A796")
+
+      CALL add_reference(key=Hybertsen1986, &
+                         authors=s2a("M. S. Hybertsen", "S. G. Louie"), &
+                         title="Electron correlation in semiconductors and insulators: Band gaps and "// &
+                         "quasiparticle energies", &
+                         source="Phys. Rev. B", volume="34", pages="5390-5413", &
+                         year=1986, doi="10.1103/PhysRevB.34.5390")
+
+      CALL add_reference(key=Tyagi2024, &
+                         authors=s2a("R. Tyagi", "V. K. Voora"), &
+                         title="Single-Pole Polarization Models: Rapid Evaluation of Electron Affinities of "// &
+                         "Solvated-Electron and Superatomic Molecular Anionic States", &
+                         source="J. Phys. Chem. Lett.", volume="15", pages="1218-1226", &
+                         year=2024, doi="10.1021/acs.jpclett.3c03392")
+
+      CALL add_reference(key=Tyagi2026, &
+                         authors=s2a("R. Tyagi", "J. Wilhelm", "V. Voora"), &
+                         title="Electron affinity of liquid water", &
+                         source="In preparation", &
+                         year=2026)
+
       CALL add_reference(key=Pasquier2025, &
                          authors=s2a("R. Pasquier", "M. Camarasa-Gómez", &
                                      "A. Hehn", "D. Hernangómez-Pérez", "J. Wilhelm"), &
@@ -2316,6 +2376,48 @@ CONTAINS
                          title="Computing topological invariants without inversion symmetry", &
                          source="Phys. Rev. B", volume="83", pages="235401", &
                          year=2011, doi="10.1103/PhysRevB.83.235401")
+
+      CALL add_reference(key=Dixon2023, &
+                         authors=s2a("K. Y. Dixon", "T. A. Loring", "A. Cerjan"), &
+                         title="Classifying topology in photonic heterostructures with gapless environments", &
+                         source="Phys. Rev. Lett.", volume="131", pages="213801", &
+                         year=2023, doi="10.1103/PhysRevLett.131.213801")
+
+      CALL add_reference(key=Wong2026, &
+                         authors=s2a("S. Wong", "I. Yamazaki", "C. Siefert", "I. Duff", "T. A. Loring", "A. Cerjan"), &
+                         title="Efficient local classification of parity-based material topology", &
+                         source="Phys. Rev. B", volume="114", pages="084201", &
+                         year=2026, doi="10.1103/6hj9-tgct")
+
+      CALL add_reference(key=Loring2015, &
+                         authors=s2a("T. A. Loring"), &
+                         title="K-theory and pseudospectra for topological insulators", &
+                         source="Ann. Phys.", volume="356", pages="383-416", &
+                         year=2015, doi="10.1016/j.aop.2015.02.031")
+
+      CALL add_reference(key=Doll2025, &
+                         authors=s2a("N. Doll", "T. A. Loring", "H. Schulz-Baldes"), &
+                         title="Topological indices for periodic gapped Hamiltonians and fuzzy tori", &
+                         source="Math. Phys. Anal. Geom.", volume="28", pages="13", &
+                         year=2025, doi="10.1007/s11040-025-09508-0")
+
+      CALL add_reference(key=EsteveParedes2023, &
+                         authors=s2a("J. J. Esteve-Paredes", "J. J. Palacios"), &
+                         title="A comprehensive study of the velocity, momentum and position matrix elements "// &
+                         "for Bloch states using a local orbital basis", &
+                         source="SciPost Phys. Core", volume="6", pages="002", &
+                         year=2023, doi="10.21468/SciPostPhysCore.6.1.002")
+
+      CALL add_reference(key=Cerjan2023, &
+                         authors=s2a("A. Cerjan", "T. A. Loring", "F. Vides"), &
+                         title="Quadratic pseudospectrum for identifying localized states", &
+                         source="J. Math. Phys.", volume="64", pages="023501", &
+                         year=2023, doi="10.1063/5.0098336")
+
+      CALL add_reference(key=Bairnsfather2026, &
+                         authors=s2a("C. A. Bairnsfather", "R. M. Kaufmann", "T. A. Loring", "A. Cerjan"), &
+                         title="Band Unfolding via the Quadratic Pseudospectrum", &
+                         source="arXiv", pages="2605.05423", year=2026, doi="10.48550/arXiv.2605.05423")
 
       CALL add_reference(key=Davidson1975, &
                          authors=s2a("E. R. Davidson"), &

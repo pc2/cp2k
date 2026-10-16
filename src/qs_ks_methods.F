@@ -136,7 +136,8 @@ MODULE qs_ks_methods
    USE qs_rho0_ggrid,                   ONLY: integrate_vhg0_rspace
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_sccs,                         ONLY: sccs
+   USE qs_sccs,                         ONLY: sccs,&
+                                              sccs_core_fill_coefficients
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE qs_vxc_atom,                     ONLY: calculate_vxc_atom,&
                                               gapw_cdft_one_center
@@ -341,6 +342,17 @@ CONTAINS
                       particle_set=particle_set, &
                       qs_kind_set=qs_kind_set, &
                       natom=natom)
+
+      ! Reject force/stress requests before assembling even the baseline KS matrix.
+      IF (dft_control%low_spin_roks .AND. dft_control%qs_control%gapw) THEN
+         IF (.NOT. virial%pv_numer .AND. &
+             (virial%pv_calculate .OR. (virial%pv_availability .AND. calculate_forces))) THEN
+            CALL cp_abort(__LOCATION__, "GAPW low spin ROKS stress is not implemented.")
+         END IF
+         IF (calculate_forces) THEN
+            CALL cp_abort(__LOCATION__, "GAPW low spin ROKS forces are not implemented.")
+         END IF
+      END IF
 
       CALL qs_rho_get(rho, rho_r=rho_r, rho_ao_kp=rho_ao)
 
@@ -694,6 +706,10 @@ CONTAINS
          END IF
          IF (dft_control%use_gauxc) THEN
             IF (native_skala_evaluator) THEN
+               IF (gapw .AND. dft_control%low_spin_roks) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                "GAPW low spin ROKS requires the molecular GauXC grid, not native Skala grids.")
+               END IF
                CALL ensure_native_skala_grid_scope(xc_section)
                gapw_representation = skala_gapw_representation(xc_section)
                IF (gapw .OR. gapw_xc) THEN
@@ -1147,6 +1163,25 @@ CONTAINS
                END BLOCK
             ELSE
                CALL integrate_v_core_rspace(v_hartree_rspace, qs_env)
+            END IF
+            ! SCCS with core fill: the dielectric function depends on rho_elec + rho_fill(R),
+            ! which yields an additional nuclear force contribution from v_sccs. The fill
+            ! Gaussians enter integrate_v_core_rspace with the sign convention of rho_core
+            ! (-ccore*exp(-calpha*r**2)), hence the negated potential
+            IF (dft_control%do_sccs) THEN
+               IF (dft_control%sccs_control%core_fill) THEN
+                  BLOCK
+                     REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: calpha, ccore
+                     TYPE(pw_r3d_rs_type)                               :: v_minus_vsccs
+                     CALL sccs_core_fill_coefficients(qs_env, calpha, ccore)
+                     CALL auxbas_pw_pool%create_pw(v_minus_vsccs)
+                     CALL pw_copy(v_sccs_rspace, v_minus_vsccs)
+                     CALL pw_scale(v_minus_vsccs, -1.0_dp)
+                     CALL integrate_v_core_rspace(v_minus_vsccs, qs_env, calpha=calpha, ccore=ccore)
+                     CALL auxbas_pw_pool%give_back_pw(v_minus_vsccs)
+                     DEALLOCATE (calpha, ccore)
+                  END BLOCK
+               END IF
             END IF
          END IF
 

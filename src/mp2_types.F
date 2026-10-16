@@ -33,6 +33,7 @@ MODULE mp2_types
    USE kpoint_types,                    ONLY: kpoint_type
    USE libint_2c_3c,                    ONLY: libint_potential_type
    USE local_gemm_api,                  ONLY: local_gemm_ctxt_type
+   USE matrix_communication,            ONLY: integ_mat_buffer_type => matrix_buffer_type
    USE message_passing,                 ONLY: mp_request_type
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_p_env_types,                  ONLY: qs_p_env_type
@@ -246,8 +247,8 @@ MODULE mp2_types
                                                             matrix_vxc
       LOGICAL                                            :: do_static_cohsex = .FALSE.
       INTEGER                                            :: cohsex_flavor = cohsex_off
-      REAL(KIND=dp)                                      :: scale_cohsex_occ = 1.0_dp, &
-                                                            scale_cohsex_virt = 1.0_dp
+      REAL(KIND=dp)                                      :: cohsex_scale_occ = 1.0_dp, &
+                                                            cohsex_scale_virt = 1.0_dp
       REAL(KIND=dp)                                      :: broadening_print_loc_bandgap = 0.0_dp, &
                                                             energy_window_print_loc_bandgap = 0.0_dp, &
                                                             ldos_thresh_print_loc_bandgap = 0.0_dp, &
@@ -321,9 +322,9 @@ MODULE mp2_types
                                                             frequency_weights=NULL(), &
                                                             imaginary_time=NULL(), &
                                                             time_weights_at_zero_frequency=NULL(), &
-                                                            cosine_time_to_frequency_weights=NULL(), &
-                                                            cosine_frequency_to_time_weights=NULL(), &
-                                                            sine_time_to_frequency_weights=NULL()), &
+                                                            cosine_time_to_frequency=NULL(), &
+                                                            cosine_frequency_to_time=NULL(), &
+                                                            sine_time_to_frequency=NULL()), &
                                                             Eigenval_Gamma=NULL(), &
                                                             wkp_V=NULL(), &
                                                             starts_array_mc_RI=NULL(), &
@@ -384,14 +385,6 @@ MODULE mp2_types
                                                             e_range = 0.0_dp
       LOGICAL                                            :: ri_aux_auto_generated = .FALSE.
    END TYPE mp2_type
-
-   TYPE integ_mat_buffer_type
-      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: msg
-      INTEGER, DIMENSION(:), ALLOCATABLE                 :: sizes
-      INTEGER, DIMENSION(:, :), ALLOCATABLE              :: indx
-      INTEGER                                            :: proc = -1
-      TYPE(mp_request_type)                              :: msg_req = mp_request_type()
-   END TYPE integ_mat_buffer_type
 
    TYPE integ_mat_buffer_type_2D
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: msg
