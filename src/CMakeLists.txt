@@ -272,6 +272,7 @@ list(
   hfx_ri_kp.F
   hfx_screening_methods.F
   hfx_types.F
+  hfx_libheric_wrapper.F
   hirshfeld_methods.F
   hirshfeld_types.F
   input_constants.F
