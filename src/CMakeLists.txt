@@ -231,10 +231,9 @@ list(
   group_dist_types.F
   grrm_utils.F
   gapw_1c_basis_set.F
-  gw_ri_rs_compute_Z_lP.F
-  gw_ri_rs_compute_Z_lP_utils.F
   gw_auto_ri_generate_RI_basis.F
   gw_auto_ri_types.F
+  gw_compute_V_and_W.F
   gw_utils_dbcsr.F
   gw_utils_fm.F
   gw.F
@@ -243,11 +242,15 @@ list(
   gw_tensor_small_cell_full_kp.F
   gw_ri_rs_non_periodic.F
   gw_ri_rs_large_cell_gamma.F
-  gw_ri_rs_grid_from_file.F
-  gw_ri_rs_grid_initialization.F
-  gw_ri_rs_grid_optimization.F
-  gw_ri_rs_grid_setup_main.F
-  gw_ri_rs_utils.F
+  ri_rs_grid_from_file.F
+  ri_rs_grid_initialization.F
+  ri_rs_grid_optimization.F
+  ri_rs_grid_setup.F
+  ri_rs_setup.F
+  ri_rs_types.F
+  ri_rs_utils.F
+  ri_rs_fitting.F
+  ri_rs_matrices.F
   post_scf_bandstructure_types.F
   post_scf_bandstructure_utils.F
   gw_utils.F
@@ -807,6 +810,7 @@ list(
   qs_wannier90.F
   qs_wf_history_methods.F
   qs_wf_history_types.F
+  r12_fundamentals.F
   rel_control_types.F
   replica_methods.F
   replica_types.F
@@ -1899,7 +1903,7 @@ target_link_libraries(
     $<$<BOOL:${CP2K_USE_ACE}>:pace::pace>
     $<$<BOOL:${CP2K_USE_TBLITE}>:cp2k::tblite>
     $<$<BOOL:${CP2K_USE_TBLITE}>:s-dftd3::s-dftd3>
-    $<$<BOOL:${CP2K_USE_SIRIUS}>:cp2k::sirius>
+    $<$<BOOL:${CP2K_USE_SIRIUS}>:sirius::sirius>
     $<$<BOOL:${CP2K_USE_VORI}>:cp2k::VORI::vori>
     $<$<BOOL:${CP2K_USE_SPGLIB}>:Spglib::symspg>
     $<$<BOOL:${CP2K_USE_LIBSMEAGOL}>:cp2k::libsmeagol::smeagol>
@@ -1966,6 +1970,7 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_MPI_F08}>:__MPI_F08>
     __COMPILE_HOST=\"${CP2K_HOST_NAME}\"
     __DATA_DIR=\"${CP2K_DATA_DIR}\"
+    __COMPILE_DIR=\"${CMAKE_BINARY_DIR}\"
     __COMPILE_ARCH=\"${CMAKE_SYSTEM_PROCESSOR}\"
     $<$<BOOL:${CP2K_USE_PLUMED}>:__PLUMED2>
     $<$<BOOL:${CP2K_USE_MAXWELL}>:__LIBMAXWELL>
@@ -2049,10 +2054,8 @@ add_library(cp2k::cp2k ALIAS cp2k)
 if(CP2K_USE_LIBXS)
   message(STATUS "Adding libxs_jit.F from dependency libxs for compilation")
   get_target_property(_libxs_incdirs libxs::libxs INTERFACE_INCLUDE_DIRECTORIES)
-  find_path(CP2K_LIBXS_JIT_DIR "libxs_jit.F" HINTS ${_libxs_incdirs})
-  if(CP2K_LIBXS_JIT_DIR)
-    target_sources(cp2k PRIVATE "${CP2K_LIBXS_JIT_DIR}/libxs_jit.F")
-  endif()
+  find_path(CP2K_LIBXS_JIT_DIR "libxs_jit.F" HINTS ${_libxs_incdirs} REQUIRED)
+  target_sources(cp2k PRIVATE "${CP2K_LIBXS_JIT_DIR}/libxs_jit.F")
   unset(_libxs_incdirs)
 endif()
 
