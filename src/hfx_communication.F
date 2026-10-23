@@ -35,7 +35,7 @@ MODULE hfx_communication
    USE kinds,                           ONLY: dp,&
                                               int_8,&
                                               int_1
-   USE libheric_interface,              ONLY: atom_quartet_type
+   USE hfx_libheric_wrapper,            ONLY: hfx_libheric_atom_quartet
    USE message_passing,                 ONLY: mp_para_env_type,&
                                               mp_request_type,&
                                               mp_waitall
@@ -2253,7 +2253,7 @@ CONTAINS
    SUBROUTINE hfx_libheric_digest_atom_quartet(ds, atom_quartet, nkind, l_max, p_matrix, k_matrix, &
                                                basis_parameter_l, kind_of, fac)
       TYPE(hfx_libheric_digestion_state), INTENT(INOUT)  :: ds
-      TYPE(atom_quartet_type), INTENT(IN)                :: atom_quartet
+      TYPE(hfx_libheric_atom_quartet), INTENT(IN)        :: atom_quartet
       INTEGER, INTENT(IN)                                :: nkind, l_max
       TYPE(hfx_libheric_sparse_matrix), INTENT(IN)       :: p_matrix
       TYPE(hfx_libheric_sparse_matrix), INTENT(INOUT)    :: k_matrix

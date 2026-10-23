@@ -14,6 +14,29 @@
 MODULE hfx_screening_methods
    USE ao_util,                         ONLY: exp_radius_very_extended
    USE basis_set_types,                 ONLY: gto_basis_set_type
+   USE hfx_libheric_wrapper, ONLY: hfx_libheric_query_accelerator_devices, &
+                                   hfx_libheric_create_accelerator_contexts, &
+                                   hfx_libheric_free_accelerator_contexts, &
+                                   hfx_libheric_is_functional, &
+                                   hfx_libheric_set_potential_operator, &
+                                   hfx_libheric_set_quartet_class, &
+                                   hfx_libheric_set_atom_ids, &
+                                   hfx_libheric_set_set_ids, &
+                                   hfx_libheric_set_shell_ids, &
+                                   hfx_libheric_set_B_offset, &
+                                   hfx_libheric_set_D_offset, &
+                                   hfx_libheric_set_exponent_ids, &
+                                   hfx_libheric_set_Q_offset, &
+                                   hfx_libheric_submit_peri, &
+                                   hfx_libheric_finish_quartet_class, &
+                                   hfx_libheric_get_next_staged_atom_quartet, &
+                                   hfx_libheric_prefetch_cached_atom_quartet, &
+                                   hfx_libheric_update_cell, &
+                                   hfx_libheric_accelerator_context, &
+                                   hfx_libheric_atom_quartet, &
+                                   hfx_libheric_acc_kind, &
+                                   hfx_libheric_acc_device, &
+                                   hfx_libheric_optimize_screening_function
    USE hfx_libint_interface,            ONLY: evaluate_eri_screen
    USE hfx_types,                       ONLY: hfx_type, &
                                               hfx_basis_type,&
@@ -24,31 +47,10 @@ MODULE hfx_screening_methods
                                               powell_min_log, &
                                               hfx_libheric_basis_type,&
                                               hfx_libheric_screening_model_type,&
-                                              hfx_libheric_screening_models, &
-                                              hfx_libheric_create_accelerator_contexts
+                                              hfx_libheric_screening_models
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE libint_wrapper,                  ONLY: cp_libint_t
-   USE libheric_interface,              ONLY: libheric_optimize_screening_function => optimize_screening_function, &
-                                              query_accelerator_devices, &
-                                              free_accelerator_contexts, &
-                                              accelerator_context_is_functional, &
-                                              accelerator_context_set_potential_operator, &
-                                              accelerator_context_set_quartet_class, &
-                                              accelerator_context_set_atom_ids, &
-                                              accelerator_context_set_set_ids, &
-                                              accelerator_context_set_shell_ids, &
-                                              accelerator_context_set_B_offset, &
-                                              accelerator_context_set_D_offset, &
-                                              accelerator_context_set_exponent_ids, &
-                                              accelerator_context_set_Q_offset, &
-                                              accelerator_context_submit_peri, &
-                                              accelerator_context_finish_quartet_class, &
-                                              accelerator_context_get_next_staged_atom_quartet, &
-                                              accelerator_context_update_cell, &
-                                              flush_logger, &
-                                              atom_quartet_type, &
-                                              acc_kind, acc_device
    USE machine,                         ONLY: default_output_unit
    USE orbital_pointers,                ONLY: ncoset, nco, nso
    USE particle_types,                  ONLY: particle_type
@@ -1085,11 +1087,13 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
       CHARACTER(len=256)                          :: model_params
       TYPE(particle_type), DIMENSION(:), &
           ALLOCATABLE                             :: particle_set
-      TYPE(acc_kind), DIMENSION(:), ALLOCATABLE   :: acc_kinds
-      TYPE(acc_device), DIMENSION(:), ALLOCATABLE :: acc_devices
+      TYPE(hfx_libheric_acc_kind), &
+         DIMENSION(:), ALLOCATABLE                :: acc_kinds
+      TYPE(hfx_libheric_acc_device), &
+         DIMENSION(:), ALLOCATABLE                :: acc_devices
       TYPE(C_PTR), DIMENSION(:), ALLOCATABLE      :: ctx_handles
-      TYPE(C_PTR)                                 :: local_ctx
-      TYPE(atom_quartet_type)                     :: atom_quartet
+      TYPE(hfx_libheric_accelerator_context)      :: local_ctx
+      TYPE(hfx_libheric_atom_quartet)             :: atom_quartet
       !REAL(dp), DIMENSION(:), POINTER             :: p_work
       !LOGICAL                                     :: assert_flag
       !REAL(dp)                                    :: R1
@@ -1112,13 +1116,13 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
       
       ALLOCATE(acc_kinds(0))
       ! Search for CPU accelerator is implicit
-      CALL query_accelerator_devices(acc_kinds, acc_devices)
+      CALL hfx_libheric_query_accelerator_devices(acc_kinds, acc_devices)
       CALL hfx_libheric_create_accelerator_contexts(max_set, nkind, l_max, basis_parameter_l, &
                                                     cell_mat, acc_devices(1), particle_set, &
-                                                    mem_available, LOGICAL(.TRUE., KIND=C_BOOL), ctx_handles)
+                                                    mem_available, .TRUE., ctx_handles)
       local_ctx = ctx_handles(1)
-      CALL accelerator_context_set_potential_operator(local_ctx, x_data%potential_parameter%potential_type, &
-                                                      x_data%potential_parameter%omega)
+      CALL hfx_libheric_set_potential_operator(local_ctx, x_data%potential_parameter%potential_type, &
+                                               x_data%potential_parameter%omega)
 
       ALLOCATE(screen%coeffs(nkind, nkind, 0:l_max, 0:l_max))
 
@@ -1172,8 +1176,8 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
 
                   END DO
                   n_data = GRID_SIZE + 1
-                  CALL libheric_optimize_screening_function(opt_data_pgf(0, 1), opt_data_pgf(0, 2), n_data, 0.0_dp, &
-                                                            coeff%R_pgf(jpgf, ipgf, jset, iset)%x(1), 4)
+                  CALL hfx_libheric_optimize_screening_function(opt_data_pgf(0, 1), opt_data_pgf(0, 2), n_data, 0.0_dp, &
+                                                                coeff%R_pgf(jpgf, ipgf, jset, iset)%x(1), 4)
                   coeff%R_pgf(jpgf, ipgf, jset, iset)%cutoff2 = ((pgf_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
                   coeff%R_pgf(jpgf, ipgf, jset, iset)%max     = MAXVAL(opt_data_pgf(:, 2)) 
                   coeff%R_pgf(jpgf, ipgf, jset, iset)%y_min   = 0.0_dp
@@ -1193,41 +1197,41 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                   cell_mat(1, 2) = set_radius / REAL(GRID_SIZE, KIND=dp)
                   cell_mat(1, 3) = kind_radius / REAL(GRID_SIZE, KIND=dp)
 
-                  CALL accelerator_context_update_cell(local_ctx, cell_mat(1, 1))
+                  CALL hfx_libheric_update_cell(local_ctx, cell_mat(1, 1))
                   quartet_ctr = 0
                   opt_data_pgf = -HUGE(max_val)
-                  CALL accelerator_context_set_quartet_class(local_ctx, la, lb, la, lb)
-                  IF(.NOT. accelerator_context_is_functional(local_ctx)) &
+                  CALL hfx_libheric_set_quartet_class(local_ctx, la, lb, la, lb)
+                  IF(.NOT. hfx_libheric_is_functional(local_ctx)) &
                       CPABORT("ACC not functional")
                   DO i = 0, GRID_SIZE
-                     CALL accelerator_context_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
-                     CALL accelerator_context_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
-                     CALL accelerator_context_set_shell_ids(local_ctx, 0, 0, 0, 0)
-                     CALL accelerator_context_set_B_offset(local_ctx, i, 0, 0)
-                     CALL accelerator_context_set_D_offset(local_ctx, i, 0, 0)
-                     CALL accelerator_context_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
-                     CALL accelerator_context_set_Q_offset(local_ctx, 0, 0, 0)
-                     CALL accelerator_context_submit_peri(local_ctx)
+                     CALL hfx_libheric_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
+                     CALL hfx_libheric_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
+                     CALL hfx_libheric_set_shell_ids(local_ctx, 0, 0, 0, 0)
+                     CALL hfx_libheric_set_B_offset(local_ctx, i, 0, 0)
+                     CALL hfx_libheric_set_D_offset(local_ctx, i, 0, 0)
+                     CALL hfx_libheric_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
+                     CALL hfx_libheric_set_Q_offset(local_ctx, 0, 0, 0)
+                     CALL hfx_libheric_submit_peri(local_ctx)
                      
-                     CALL accelerator_context_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
-                     CALL accelerator_context_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
-                     CALL accelerator_context_set_shell_ids(local_ctx, 0, 0, 0, 0)
-                     CALL accelerator_context_set_B_offset(local_ctx, 0, i, 0)
-                     CALL accelerator_context_set_D_offset(local_ctx, 0, i, 0)
-                     CALL accelerator_context_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
-                     CALL accelerator_context_set_Q_offset(local_ctx, 0, 0, 0)
-                     CALL accelerator_context_submit_peri(local_ctx)
+                     CALL hfx_libheric_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
+                     CALL hfx_libheric_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
+                     CALL hfx_libheric_set_shell_ids(local_ctx, 0, 0, 0, 0)
+                     CALL hfx_libheric_set_B_offset(local_ctx, 0, i, 0)
+                     CALL hfx_libheric_set_D_offset(local_ctx, 0, i, 0)
+                     CALL hfx_libheric_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
+                     CALL hfx_libheric_set_Q_offset(local_ctx, 0, 0, 0)
+                     CALL hfx_libheric_submit_peri(local_ctx)
                      
-                     CALL accelerator_context_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
-                     CALL accelerator_context_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
-                     CALL accelerator_context_set_shell_ids(local_ctx, 0, 0, 0, 0)
-                     CALL accelerator_context_set_B_offset(local_ctx, 0, 0, i)
-                     CALL accelerator_context_set_D_offset(local_ctx, 0, 0, i)
-                     CALL accelerator_context_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
-                     CALL accelerator_context_set_Q_offset(local_ctx, 0, 0, 0)
-                     CALL accelerator_context_submit_peri(local_ctx)
+                     CALL hfx_libheric_set_atom_ids(local_ctx, ikind - 1, jkind - 1, ikind - 1, jkind - 1)
+                     CALL hfx_libheric_set_set_ids(local_ctx, iset - 1, jset - 1, iset - 1, jset - 1, 0.0_dp)
+                     CALL hfx_libheric_set_shell_ids(local_ctx, 0, 0, 0, 0)
+                     CALL hfx_libheric_set_B_offset(local_ctx, 0, 0, i)
+                     CALL hfx_libheric_set_D_offset(local_ctx, 0, 0, i)
+                     CALL hfx_libheric_set_exponent_ids(local_ctx, ipgf - 1, jpgf - 1, ipgf - 1, jpgf - 1)
+                     CALL hfx_libheric_set_Q_offset(local_ctx, 0, 0, 0)
+                     CALL hfx_libheric_submit_peri(local_ctx)
 
-                     DO WHILE(accelerator_context_get_next_staged_atom_quartet(local_ctx, atom_quartet))
+                     DO WHILE(hfx_libheric_get_next_staged_atom_quartet(local_ctx, atom_quartet))
                         j = quartet_ctr / 3
                         max_val = SQRT(MAX(MAXVAL(atom_quartet%integrals(1:nints, 1)), &
                                           -MINVAL(atom_quartet%integrals(1:nints, 1)))) * max_contraction_a * max_contraction_b
@@ -1248,8 +1252,8 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                         quartet_ctr = quartet_ctr + 1
                      END DO
                   END DO
-                  CALL accelerator_context_finish_quartet_class(local_ctx)
-                  DO WHILE(accelerator_context_get_next_staged_atom_quartet(local_ctx, atom_quartet))
+                  CALL hfx_libheric_finish_quartet_class(local_ctx)
+                  DO WHILE(hfx_libheric_get_next_staged_atom_quartet(local_ctx, atom_quartet))
                      j = quartet_ctr / 3
                      max_val = SQRT(MAX(MAXVAL(atom_quartet%integrals(1:nints, 1)), &
                                        -MINVAL(atom_quartet%integrals(1:nints, 1)))) * max_contraction_a * max_contraction_b
@@ -1316,8 +1320,8 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                   !CPASSERT(assert_flag)
                    
                   n_data = GRID_SIZE + 1
-                  CALL libheric_optimize_screening_function(opt_data_pgf(0, 1), opt_data_pgf(0, 2), n_data, powell_min_log, &
-                                                            coeff%pgf(jpgf, ipgf, jset, iset)%x(1), 4)
+                  CALL hfx_libheric_optimize_screening_function(opt_data_pgf(0, 1), opt_data_pgf(0, 2), n_data, powell_min_log, &
+                                                                coeff%pgf(jpgf, ipgf, jset, iset)%x(1), 4)
                   coeff%pgf(jpgf, ipgf, jset, iset)%cutoff2 = ((pgf_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
                   coeff%pgf(jpgf, ipgf, jset, iset)%max     = MAXVAL(opt_data_pgf(:, 2)) 
                   coeff%pgf(jpgf, ipgf, jset, iset)%y_min   = powell_min_log
@@ -1334,7 +1338,7 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                !CPASSERT(assert_flag)
 
                n_data = GRID_SIZE + 1
-               CALL libheric_optimize_screening_function(opt_data_set(0, 1), opt_data_set(0, 2), n_data, powell_min_log, &
+               CALL hfx_libheric_optimize_screening_function(opt_data_set(0, 1), opt_data_set(0, 2), n_data, powell_min_log, &
                                                              coeff%set(jset, iset)%x(1), 4)
                coeff%set(jset, iset)%cutoff2 = ((set_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
                coeff%set(jset, iset)%max     = MAXVAL(opt_data_set(:, 2)) 
@@ -1355,8 +1359,8 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
             !assert_flag = ALL([(ABS(ref_data_kind(i, 2) - opt_data_kind(i, 2)) .LT. 1e-9, i=0,GRID_SIZE)])
             !CPASSERT(assert_flag)
             n_data = GRID_SIZE + 1
-            CALL libheric_optimize_screening_function(opt_data_kind(0, 1), opt_data_kind(0, 2), n_data, powell_min_log, &
-                                             coeff%kind%x(1), 4)
+            CALL hfx_libheric_optimize_screening_function(opt_data_kind(0, 1), opt_data_kind(0, 2), n_data, powell_min_log, &
+                                                          coeff%kind%x(1), 4)
             coeff%kind%cutoff2 = ((kind_radius * n_data) / REAL(GRID_SIZE, KIND=dp)) ** 2
             coeff%kind%max     = MAXVAL(opt_data_kind(:, 2)) 
             coeff%kind%y_min   = powell_min_log
@@ -1373,7 +1377,7 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
          END DO
      END DO
      END DO
-     CALL free_accelerator_contexts(ctx_handles(1), SIZE(ctx_handles))
+     CALL hfx_libheric_free_accelerator_contexts(ctx_handles(1), SIZE(ctx_handles))
      CALL timestop(handle)
    END SUBROUTINE hfx_libheric_init_screening_models
    

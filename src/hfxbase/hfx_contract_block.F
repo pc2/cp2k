@@ -111,23 +111,23 @@ CONTAINS
                           pbc(mb_max*mc_max), pad(ma_max*md_max), pac(ma_max*mc_max), &
                           prim(ma_max*mb_max*mc_max*md_max), scale
 
-#if !defined (__LIBINT)
-         MARK_USED(ma_max)
-         MARK_USED(mb_max)
-         MARK_USED(mc_max)
-         MARK_USED(md_max)
-         MARK_USED(kbd)
-         MARK_USED(kbc)
-         MARK_USED(kad)
-         MARK_USED(kac)
-         MARK_USED(pbd)
-         MARK_USED(pbc)
-         MARK_USED(pad)
-         MARK_USED(pac)
-         MARK_USED(prim)
-         MARK_USED(scale)
-         CPABORT("libint not compiled in")
-#else
+!#if !defined (__LIBINT)
+!         MARK_USED(ma_max)
+!         MARK_USED(mb_max)
+!         MARK_USED(mc_max)
+!         MARK_USED(md_max)
+!         MARK_USED(kbd)
+!         MARK_USED(kbc)
+!         MARK_USED(kad)
+!         MARK_USED(kac)
+!         MARK_USED(pbd)
+!         MARK_USED(pbc)
+!         MARK_USED(pad)
+!         MARK_USED(pac)
+!         MARK_USED(prim)
+!         MARK_USED(scale)
+!         CPABORT("libint not compiled in")
+!#else
          SELECT CASE (ma_max)
             #:for a in block_sizes
                CASE (${a}$)
@@ -169,10 +169,10 @@ CONTAINS
          CASE DEFAULT
             $:call_block()
          END SELECT
-#endif
+!#endif
       END SUBROUTINE contract_block
 
-#if defined(__LIBINT)
+!#if defined(__LIBINT)
       $:block()
 
       #:for a in block_sizes
@@ -196,5 +196,5 @@ CONTAINS
             #:endif
          #:endfor
       #:endfor
-#endif
+!#endif
    END MODULE hfx_contract_block
