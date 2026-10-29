@@ -304,6 +304,7 @@ MODULE hfx_types
    TYPE hfx_libheric_basis_type
       INTEGER,  DIMENSION(:),       ALLOCATABLE :: npgf
       INTEGER                                   :: nset = 0
+      INTEGER                                   :: nshellsets = 0
       !! Index back into hfx_basis_type
       INTEGER,  DIMENSION(:),       ALLOCATABLE :: global_set
       INTEGER,  DIMENSION(:, :),    ALLOCATABLE :: global_shl
@@ -1947,7 +1948,7 @@ CONTAINS
                                                             ishl, ishl_red, max_shl, &
                                                             ipgf, first_pgf, first_pgf_red, max_pgf, &
                                                             isgf, sgf_ctr, &
-                                                            handle 
+                                                            handle, nshellsets  
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_a, orb_basis_reduced
 
       CALL timeset(routineN, handle)
@@ -2029,6 +2030,7 @@ CONTAINS
                bp%kind_radius      = orb_basis_reduced%kind_radius
              
                iset_red = 0
+               nshellsets = 0
                DO iset = 1, orb_basis_a%nset
                   IF(orb_basis_a%lmin(iset) .LE. l .AND. l .LE. orb_basis_a%lmax(iset)) THEN
                      iset_red = iset_red + 1
@@ -2038,11 +2040,13 @@ CONTAINS
                      DO ishl = 1, orb_basis_a%nshell(iset)
                         IF(orb_basis_a%l(ishl, iset) .EQ. l) THEN
                            ishl_red = ishl_red + 1
+                           nshellsets = nshellsets + 1
                            bp%global_shl(ishl_red, iset_red) = ishl
                         END IF
                     END DO
                   END IF
                END DO
+               bp%nshellsets = nshellsets
             END ASSOCIATE
          END DO
          CALL deallocate_gto_basis_set(orb_basis_reduced)

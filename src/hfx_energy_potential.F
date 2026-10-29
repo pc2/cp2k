@@ -148,7 +148,6 @@ MODULE hfx_energy_potential
                           qs_ks_env_type
    USE t_c_g0, ONLY: init
    USE util, ONLY: sort
-   USE, INTRINSIC :: iso_c_binding, ONLY: C_PTR, C_BOOL
 
    use cp2k_info, only: cp2k_flags
    use offload_api, only: offload_get_chosen_device, offload_set_chosen_device, offload_activate_chosen_device
@@ -3378,15 +3377,16 @@ CONTAINS
       BLOCK 
          TYPE(hfx_libheric_acc_kind), DIMENSION(:), ALLOCATABLE   :: acc_kinds
          TYPE(hfx_libheric_acc_device), DIMENSION(:), ALLOCATABLE :: acc_devices
-         INTEGER                                                   :: i, quartet_class_idx, n_quartet_classes, n_classes_on_rank
-         INTEGER(int_8)                                            :: atom_ij_idx
-         INTEGER(int_8)                                            :: mem_available
-         INTEGER(int_8), DIMENSION(:), ALLOCATABLE                 :: n_quartets 
-         REAL(dp)                                                  :: t_start, t_stop
-         REAL(dp), DIMENSION(:), ALLOCATABLE                       :: timings
-         TYPE(C_PTR), DIMENSION(:), ALLOCATABLE                    :: ctx_handles
-         INTEGER, DIMENSION(:), ALLOCATABLE                        :: next_quartet_idx, next_quartet_buf
-         TYPE(mp_win_type)                                         :: next_quartet_idx_win
+         INTEGER                                                  :: i, quartet_class_idx, n_quartet_classes, n_classes_on_rank
+         INTEGER(int_8)                                           :: atom_ij_idx
+         INTEGER(int_8)                                           :: mem_available
+         INTEGER(int_8), DIMENSION(:), ALLOCATABLE                :: n_quartets 
+         REAL(dp)                                                 :: t_start, t_stop
+         REAL(dp), DIMENSION(:), ALLOCATABLE                      :: timings
+         TYPE(hfx_libheric_accelerator_context), &
+            DIMENSION(:), ALLOCATABLE                             :: ctx_handles
+         INTEGER, DIMENSION(:), ALLOCATABLE                       :: next_quartet_idx, next_quartet_buf
+         TYPE(mp_win_type)                                        :: next_quartet_idx_win
 
          ALLOCATE(acc_kinds(0))
          ! Search for CPU accelerator is implicit
@@ -3683,7 +3683,7 @@ CONTAINS
          CALL para_env%sync()
          END BLOCK
          CALL cp_print_key_finished_output(iw, logger, hfx_section, "HF_INFO")
-         CALL hfx_libheric_free_accelerator_contexts(ctx_handles(1), SIZE(ctx_handles))
+         CALL hfx_libheric_free_accelerator_contexts(ctx_handles, SIZE(ctx_handles))
          CALL next_quartet_idx_win%free()
       END BLOCK
       

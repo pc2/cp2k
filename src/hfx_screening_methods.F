@@ -60,7 +60,6 @@ MODULE hfx_screening_methods
                                               qs_environment_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
-   USE, INTRINSIC :: iso_c_binding,     ONLY: C_PTR, C_BOOL
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -973,7 +972,7 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
                   ref_bad_fit_severity, new_bad_fit_severity, &
                   y_range
       INTEGER  :: i, ref_bad_fit_idx, new_bad_fit_idx
-      CHARACTER(:), ALLOCATABLE :: error_str 
+      CHARACTER(:), ALLOCATABLE :: error_str, tmp_str 
 
 
       mae_err = 0.0_dp
@@ -1017,17 +1016,19 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
       inf_ref = mse_ref / y_range
 
       IF(new_bad_fit_severity .GT. 1e-6) THEN
-         ALLOCATE(CHARACTER(2 * n_data * 30 + 4096) :: error_str)
-         WRITE(error_str, "(A,*(ES28.20,2X))") "x = vec([", x_data
-         WRITE(error_str, "(A,/)") "])"
-         WRITE(error_str, "(A,*(ES28.20,2X))") "y = vec([", y_data
-         WRITE(error_str, "(A,/)") "])"
-         WRITE(error_str, "(A,/,T3,5(A,ES16.8),A,/)") &
-            TRIM(model_str), "model = min(" ,model%max, ", ", &
-            model%x(4), " * x^8 + ", model%x(3), " * x^4 + ", model%x(2), " * x^2 + ", model%x(1), ")"
-         WRITE(error_str, "(T6,A,I3,2(A,ES14.6),/)") "new model is bad fit for y(", new_bad_fit_idx, &
-                                           ") with severity = ", new_bad_fit_severity
-         WRITE(error_str, "(T6,3(A,ES14.6),/)") "mae_err = ", mae_err, ", mse_err = ", mse_err, ", inf_err = ", inf_err
+         ALLOCATE(CHARACTER(2 * n_data * 30 + 4096) :: error_str, tmp_str)
+         WRITE(tmp_str, "(A,*(ES28.20,2X))") "x = vec([", x_data
+         error_str = TRIM(tmp_str) // "])" // NEW_LINE('A')
+         WRITE(tmp_str, "(A,*(ES28.20,2X))") "y = vec([", y_data
+         error_str = TRIM(error_str) // TRIM(tmp_str) // "])" // NEW_LINE('A')
+         WRITE(tmp_str, "(A,3X,5(A,ES16.8),A,6X,A,I3,A,ES14.6,A,6X,3(A,ES14.6))") &
+            TRIM(model_str) // NEW_LINE('A') , &
+            "model = min(" ,model%max, ", ", model%x(4), " * x^8 + ", model%x(3), &
+            " * x^4 + ", model%x(2), " * x^2 + ", model%x(1), ")" // NEW_LINE('A'), &
+            "new model is bad fit for y(", new_bad_fit_idx, &
+            ") with severity = ", new_bad_fit_severity, NEW_LINE('A'), &
+            "mae_err = ", mae_err, ", mse_err = ", mse_err, ", inf_err = ", inf_err
+         error_str = TRIM(error_str) // TRIM(tmp_str) 
          CALL cp_abort(__LOCATION__, TRIM(error_str))
       ELSE IF(mae_err .GT. mae_ref .OR. mse_err .GT. mse_ref .OR. inf_err .GT. inf_ref) THEN
          ALLOCATE(CHARACTER(2 * n_data * 30 + 4096) :: error_str)
@@ -1046,6 +1047,7 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
          WRITE(error_str, "(T6,3(A,ES14.6),/)") "mae_err = ", mae_err, ", mse_err = ", mse_err, ", inf_err = ", inf_err
          WRITE(error_str, "(T6,3(A,ES14.6),/)") "mae_ref = ", mae_ref, ", mse_ref = ", mse_ref, ", inf_ref = ", inf_ref
          CALL cp_warn(__LOCATION__, TRIM(error_str))
+         DEALLOCATE(error_str)
       END IF
       
    END SUBROUTINE hfx_libheric_display_screening_model_error
@@ -1091,7 +1093,8 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
          DIMENSION(:), ALLOCATABLE                :: acc_kinds
       TYPE(hfx_libheric_acc_device), &
          DIMENSION(:), ALLOCATABLE                :: acc_devices
-      TYPE(C_PTR), DIMENSION(:), ALLOCATABLE      :: ctx_handles
+      TYPE(hfx_libheric_accelerator_context), &
+         DIMENSION(:), ALLOCATABLE                :: ctx_handles
       TYPE(hfx_libheric_accelerator_context)      :: local_ctx
       TYPE(hfx_libheric_atom_quartet)             :: atom_quartet
       !REAL(dp), DIMENSION(:), POINTER             :: p_work
@@ -1377,7 +1380,7 @@ SUBROUTINE hfx_libheric_display_screening_model_error(model_str, model, ref_mode
          END DO
      END DO
      END DO
-     CALL hfx_libheric_free_accelerator_contexts(ctx_handles(1), SIZE(ctx_handles))
+     CALL hfx_libheric_free_accelerator_contexts(ctx_handles, SIZE(ctx_handles))
      CALL timestop(handle)
    END SUBROUTINE hfx_libheric_init_screening_models
    
